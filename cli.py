@@ -66,10 +66,11 @@ def require_db():
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
-def cmd_scan():
+def cmd_scan(projects_dir=None):
     from scanner import scan, PROJECTS_DIR
-    print(f"Scanning {PROJECTS_DIR} ...")
-    scan()
+    target = Path(projects_dir) if projects_dir else PROJECTS_DIR
+    print(f"Scanning {target} ...")
+    scan(projects_dir=target)
 
 
 def cmd_today():
@@ -244,13 +245,13 @@ def cmd_stats():
     conn.close()
 
 
-def cmd_dashboard():
+def cmd_dashboard(projects_dir=None):
     import webbrowser
     import threading
     import time
 
     print("Running scan first...")
-    cmd_scan()
+    cmd_scan(projects_dir=projects_dir)
 
     print("\nStarting dashboard server...")
     from dashboard import serve
@@ -270,10 +271,10 @@ USAGE = """
 Claude Code Usage Dashboard
 
 Usage:
-  python cli.py scan       Scan JSONL files and update database
-  python cli.py today      Show today's usage summary
-  python cli.py stats      Show all-time statistics
-  python cli.py dashboard  Scan + start dashboard at http://localhost:8080
+  python cli.py scan [--projects-dir PATH]   Scan JSONL files and update database
+  python cli.py today                        Show today's usage summary
+  python cli.py stats                        Show all-time statistics
+  python cli.py dashboard [--projects-dir PATH]  Scan + start dashboard
 """
 
 COMMANDS = {
@@ -283,8 +284,22 @@ COMMANDS = {
     "dashboard": cmd_dashboard,
 }
 
+def parse_projects_dir(args):
+    """Extract --projects-dir value from argument list."""
+    for i, arg in enumerate(args):
+        if arg == "--projects-dir" and i + 1 < len(args):
+            return args[i + 1]
+    return None
+
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         print(USAGE)
         sys.exit(0)
-    COMMANDS[sys.argv[1]]()
+
+    command = sys.argv[1]
+    projects_dir = parse_projects_dir(sys.argv[2:])
+
+    if command in ("scan", "dashboard") and projects_dir:
+        COMMANDS[command](projects_dir=projects_dir)
+    else:
+        COMMANDS[command]()

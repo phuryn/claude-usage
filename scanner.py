@@ -408,5 +408,11 @@ def scan(projects_dir=PROJECTS_DIR, db_path=DB_PATH, verbose=True):
 
 
 if __name__ == "__main__":
-    print(f"Scanning {PROJECTS_DIR} ...")
-    scan()
+    import sys
+    projects_dir = PROJECTS_DIR
+    for i, arg in enumerate(sys.argv[1:]):
+        if arg == "--projects-dir" and i + 1 < len(sys.argv[1:]):
+            projects_dir = Path(sys.argv[i + 2])
+            break
+    print(f"Scanning {projects_dir} ...")
+    scan(projects_dir=projects_dir)
