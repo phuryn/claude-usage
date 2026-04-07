@@ -10,6 +10,8 @@ from datetime import datetime
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
+import context_scanner
+
 
 def get_dashboard_data(db_path=DB_PATH):
     if not db_path.exists():
@@ -219,6 +221,23 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <tbody id="sessions-body"></tbody>
     </table>
   </div>
+  <div class="table-card">
+    <div class="section-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <span>Context Window Budget</span>
+      <select id="ctx-project" style="margin-left:auto;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px;max-width:60%"></select>
+    </div>
+    <div id="ctx-meta" class="muted" style="font-size:11px;margin-bottom:12px"></div>
+    <div id="ctx-bar" style="height:14px;border-radius:7px;background:var(--bg);overflow:hidden;display:flex;margin-bottom:12px;border:1px solid var(--border)"></div>
+    <div id="ctx-stats" class="stats-row" style="margin-bottom:16px"></div>
+    <div class="chart-wrap" style="height:180px;margin-bottom:16px"><canvas id="ctx-trend"></canvas></div>
+    <details>
+      <summary style="cursor:pointer;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Files in context</summary>
+      <table style="margin-top:8px"><thead><tr>
+        <th>Kind</th><th>Scope</th><th>Path</th><th>Tokens</th>
+      </tr></thead><tbody id="ctx-files"></tbody></table>
+    </details>
+  </div>
+
   <div class="table-card">
     <div class="section-title">Cost by Model</div>
     <table>
@@ -615,6 +634,102 @@ function renderModelCostTable(byModel) {
   }).join('');
 }
 
+// ── Context Window ─────────────────────────────────────────────────────────
+let ctxSelected = null;
+
+async function loadContext(project) {
+  try {
+    const url = '/api/context' + (project ? ('?project=' + encodeURIComponent(project)) : '');
+    const r = await fetch(url);
+    const d = await r.json();
+    if (d.error) { console.error(d.error); return; }
+    renderContext(d);
+  } catch(e) { console.error(e); }
+}
+
+function shortPath(p) {
+  if (!p) return '';
+  const parts = p.split('/').filter(Boolean);
+  return parts.length > 2 ? '\u2026/' + parts.slice(-2).join('/') : p;
+}
+
+function renderContext(d) {
+  // Project picker
+  const sel = document.getElementById('ctx-project');
+  if (sel.options.length !== d.projects.length) {
+    sel.innerHTML = d.projects.map(p =>
+      `<option value="${p}">${shortPath(p)}</option>`
+    ).join('');
+    sel.onchange = () => { ctxSelected = sel.value; loadContext(ctxSelected); };
+  }
+  if (d.selected) sel.value = d.selected;
+
+  const snap = d.snapshot;
+  if (!snap) {
+    document.getElementById('ctx-meta').textContent = 'No project selected.';
+    return;
+  }
+
+  const window = d.context_window;
+  const always = snap.always_tokens;
+  const onDemand = snap.on_demand_tokens;
+  const remaining = Math.max(0, window - always);
+  const pctAlways = Math.min(100, (always / window) * 100);
+
+  document.getElementById('ctx-meta').textContent =
+    `${snap.files.length} files \u00b7 ${fmt(window)} token window \u00b7 ${shortPath(snap.project_dir)}`;
+
+  document.getElementById('ctx-bar').innerHTML =
+    `<div style="width:${pctAlways}%;background:var(--accent)" title="Always loaded: ${fmt(always)} tokens"></div>` +
+    `<div style="flex:1;background:var(--card)" title="Free: ${fmt(remaining)} tokens"></div>`;
+
+  document.getElementById('ctx-stats').innerHTML = [
+    { label: 'Always Loaded',  value: fmt(always),    sub: pctAlways.toFixed(1) + '% of window' },
+    { label: 'On-Demand',      value: fmt(onDemand),  sub: 'available, not auto-loaded' },
+    { label: 'Free',           value: fmt(remaining), sub: 'in 200k window', color: '#4ade80' },
+    { label: 'Files',          value: snap.files.length.toString(), sub: 'discovered' },
+  ].map(s => `
+    <div class="stat-card">
+      <div class="label">${s.label}</div>
+      <div class="value" style="${s.color ? 'color:' + s.color : ''}">${s.value}</div>
+      <div class="sub">${s.sub}</div>
+    </div>`).join('');
+
+  // Trend chart
+  const ctx = document.getElementById('ctx-trend').getContext('2d');
+  if (charts.ctx) charts.ctx.destroy();
+  if (d.trend.length) {
+    charts.ctx = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: d.trend.map(t => t.day),
+        datasets: [
+          { label: 'Always loaded', data: d.trend.map(t => t.always),
+            borderColor: '#d97757', backgroundColor: 'rgba(217,119,87,0.15)', fill: true, tension: 0.25 },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#8892a4' } } },
+        scales: {
+          x: { ticks: { color: '#8892a4', maxTicksLimit: 10 }, grid: { color: '#2a2d3a' } },
+          y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
+        }
+      }
+    });
+  }
+
+  // File table — top 50 by tokens
+  const sorted = [...snap.files].sort((a,b) => b.tokens - a.tokens).slice(0, 50);
+  document.getElementById('ctx-files').innerHTML = sorted.map(f => `
+    <tr>
+      <td><span class="model-tag" style="background:${f.kind==='always'?'rgba(217,119,87,0.18)':'rgba(136,146,164,0.15)'};color:${f.kind==='always'?'var(--accent)':'var(--muted)'}">${f.kind}</span></td>
+      <td class="muted">${f.scope || ''}</td>
+      <td class="muted" style="font-family:monospace;font-size:11px">${f.rel}</td>
+      <td class="num">${fmt(f.tokens)}</td>
+    </tr>`).join('');
+}
+
 // ── Data loading ───────────────────────────────────────────────────────────
 async function loadData() {
   try {
@@ -646,7 +761,9 @@ async function loadData() {
 }
 
 loadData();
+loadContext();
 setInterval(loadData, 30000);
+setInterval(() => loadContext(ctxSelected), 60000);
 </script>
 </body>
 </html>
@@ -663,6 +780,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
+
+        elif self.path.startswith("/api/context"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            project = (qs.get("project", [None])[0]) or None
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                projects = context_scanner.known_projects(conn)
+                # Default to most-active project if none specified
+                target = project or (projects[0] if projects else None)
+                snapshot = context_scanner.scan_project(target) if target else None
+                trend = context_scanner.get_trend(conn, project_dir=target, days=90)
+                conn.close()
+                payload = {
+                    "projects": projects,
+                    "selected": target,
+                    "snapshot": snapshot,
+                    "trend": trend,
+                    "context_window": context_scanner.CONTEXT_WINDOW,
+                }
+            except Exception as e:
+                payload = {"error": str(e)}
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         elif self.path == "/api/data":
             data = get_dashboard_data()
