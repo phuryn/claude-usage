@@ -49,17 +49,16 @@ class TestGetPricing(unittest.TestCase):
         self.assertEqual(p["input"], 5.00)
         self.assertEqual(p["output"], 25.00)
 
-    def test_unknown_model_returns_default(self):
-        p = get_pricing("some-unknown-model")
-        self.assertEqual(p, PRICING["default"])
+    def test_unknown_model_returns_none(self):
+        self.assertIsNone(get_pricing("glm-5.1"))
+        self.assertIsNone(get_pricing("gpt-4o"))
+        self.assertIsNone(get_pricing("some-unknown-model"))
 
-    def test_none_model_returns_default(self):
-        p = get_pricing(None)
-        self.assertEqual(p, PRICING["default"])
+    def test_none_model_returns_none(self):
+        self.assertIsNone(get_pricing(None))
 
-    def test_empty_string_returns_default(self):
-        p = get_pricing("")
-        self.assertEqual(p, PRICING["default"])
+    def test_empty_string_returns_none(self):
+        self.assertIsNone(get_pricing(""))
 
 
 class TestCalcCost(unittest.TestCase):
@@ -99,6 +98,14 @@ class TestCalcCost(unittest.TestCase):
 
     def test_zero_tokens(self):
         cost = calc_cost("claude-opus-4-6", 0, 0, 0, 0)
+        self.assertEqual(cost, 0.0)
+
+    def test_unknown_model_costs_zero(self):
+        cost = calc_cost("glm-5.1", 1_000_000, 500_000, 100_000, 50_000)
+        self.assertEqual(cost, 0.0)
+
+    def test_non_anthropic_model_costs_zero(self):
+        cost = calc_cost("gpt-4o", 1_000_000, 500_000, 0, 0)
         self.assertEqual(cost, 0.0)
 
 

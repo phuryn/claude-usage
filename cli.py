@@ -23,16 +23,15 @@ PRICING = {
     "claude-sonnet-4-5": {"input":  3.00, "output": 15.00},
     "claude-haiku-4-5":  {"input":  1.00, "output":  5.00},
     "claude-haiku-4-6":  {"input":  1.00, "output":  5.00},
-    "default":           {"input":  3.00, "output": 15.00},
 }
 
 def get_pricing(model):
     if not model:
-        return PRICING["default"]
+        return None
     if model in PRICING:
         return PRICING[model]
     for key in PRICING:
-        if key != "default" and model.startswith(key):
+        if model.startswith(key):
             return PRICING[key]
     # Substring fallback: match model family by keyword
     m = model.lower()
@@ -42,10 +41,12 @@ def get_pricing(model):
         return PRICING["claude-sonnet-4-6"]
     if "haiku" in m:
         return PRICING["claude-haiku-4-5"]
-    return PRICING["default"]
+    return None
 
 def calc_cost(model, inp, out, cache_read, cache_creation):
     p = get_pricing(model)
+    if not p:
+        return 0.0
     return (
         inp          * p["input"]  / 1_000_000 +
         out          * p["output"] / 1_000_000 +

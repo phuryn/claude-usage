@@ -149,9 +149,9 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertIn("m.includes('sonnet')", HTML_TEMPLATE)
         self.assertIn("m.includes('haiku')", HTML_TEMPLATE)
 
-    def test_template_has_default_pricing(self):
-        """Verify dashboard has DEFAULT_PRICING for unknown non-billable models."""
-        self.assertIn("DEFAULT_PRICING", HTML_TEMPLATE)
+    def test_unknown_models_return_null(self):
+        """Verify getPricing returns null for non-Anthropic models."""
+        self.assertIn("return null;", HTML_TEMPLATE)
 
 
 class TestPricingParity(unittest.TestCase):
@@ -173,16 +173,12 @@ class TestPricingParity(unittest.TestCase):
         from cli import PRICING as CLI_PRICING
         js_prices = self._extract_js_pricing()
         for model in CLI_PRICING:
-            if model == "default":
-                continue
             self.assertIn(model, js_prices, f"{model} missing from dashboard JS")
 
     def test_prices_match(self):
         from cli import PRICING as CLI_PRICING
         js_prices = self._extract_js_pricing()
         for model in CLI_PRICING:
-            if model == "default":
-                continue
             self.assertAlmostEqual(
                 CLI_PRICING[model]["input"], js_prices[model]["input"],
                 msg=f"{model} input price mismatch"
