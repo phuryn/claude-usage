@@ -67,8 +67,7 @@ def require_db():
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 def cmd_scan():
-    from scanner import scan, PROJECTS_DIR
-    print(f"Scanning {PROJECTS_DIR} ...")
+    from scanner import scan
     scan()
 
 

@@ -10,7 +10,10 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
+XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
 DB_PATH = Path.home() / ".claude" / "usage.db"
+
+DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
 
 
 def get_db(db_path=DB_PATH):
@@ -252,11 +255,27 @@ def insert_turns(conn, turns):
     ])
 
 
-def scan(projects_dir=PROJECTS_DIR, db_path=DB_PATH, verbose=True):
+def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
     conn = get_db(db_path)
     init_db(conn)
 
-    jsonl_files = glob.glob(str(projects_dir / "**" / "*.jsonl"), recursive=True)
+    # Build list of directories to scan
+    if projects_dirs:
+        dirs_to_scan = [Path(d) for d in projects_dirs]
+    elif projects_dir:
+        dirs_to_scan = [Path(projects_dir)]
+    else:
+        dirs_to_scan = DEFAULT_PROJECTS_DIRS
+
+    # Collect JSONL files from all directories, skipping non-existent ones
+    jsonl_files = []
+    for d in dirs_to_scan:
+        if d.exists():
+            if verbose:
+                print(f"Scanning {d} ...")
+            jsonl_files.extend(glob.glob(str(d / "**" / "*.jsonl"), recursive=True))
+        elif verbose:
+            print(f"Skipping {d} (not found)")
     jsonl_files.sort()
 
     new_files = 0
@@ -283,7 +302,7 @@ def scan(projects_dir=PROJECTS_DIR, db_path=DB_PATH, verbose=True):
         is_new = row is None
         if verbose:
             status = "NEW" if is_new else "UPD"
-            print(f"  [{status}] {os.path.relpath(filepath, projects_dir)}")
+            print(f"  [{status}] {filepath}")
 
         session_metas, turns = parse_jsonl_file(filepath)
 
@@ -408,5 +427,4 @@ def scan(projects_dir=PROJECTS_DIR, db_path=DB_PATH, verbose=True):
 
 
 if __name__ == "__main__":
-    print(f"Scanning {PROJECTS_DIR} ...")
     scan()
