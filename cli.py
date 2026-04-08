@@ -77,10 +77,8 @@ def require_db():
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 def cmd_scan(projects_dir=None):
-    from scanner import scan, PROJECTS_DIR
-    target = Path(projects_dir) if projects_dir else PROJECTS_DIR
-    print(f"Scanning {target} ...")
-    scan(projects_dir=target)
+    from scanner import scan
+    scan(projects_dir=Path(projects_dir) if projects_dir else None)
 
 
 def cmd_today():
