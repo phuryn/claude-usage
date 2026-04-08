@@ -361,7 +361,7 @@ def scan(projects_dir=PROJECTS_DIR, db_path=DB_PATH, verbose=True):
                     print(f"  Warning: {e}")
 
                 turns = new_turns
-                sessions = aggregate_sessions(list(new_metas.values()) or [], turns)
+                sessions = aggregate_sessions(session_metas, turns)
                 # Update session timestamps from full parse
                 for meta in session_metas:
                     sessions_to_update = [s for s in sessions if s["session_id"] == meta["session_id"]]
