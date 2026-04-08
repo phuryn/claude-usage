@@ -52,6 +52,24 @@ cd claude-usage
 python3 cli.py dashboard
 ```
 
+### Docker (Compose)
+```
+git clone https://github.com/phuryn/claude-usage
+cd claude-usage
+docker compose up -d --build
+```
+
+Then open: http://localhost:8080
+
+Services:
+- `dashboard`: scans once at startup and serves the UI
+- `scanner`: runs `python cli.py scan` every 5 minutes
+
+Volume behavior:
+- The compose file mounts `${HOME}/.claude` from the host into the container.
+- On Linux/WSL, `${HOME}` is the Linux/WSL home. This means usage is read from that environment's Claude logs.
+- If you want to read a different host location, change the source side of the bind mount in `docker-compose.yml`.
+
 ---
 
 ## Usage
