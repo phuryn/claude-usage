@@ -158,6 +158,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .model-tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; background: rgba(79,142,247,0.15); color: var(--blue); }
   .cost { color: var(--green); font-family: monospace; }
   .cost-na { color: var(--muted); font-family: monospace; font-size: 11px; }
+  .pct-cell { color: var(--muted); }
   .num { font-family: monospace; }
   .muted { color: var(--muted); }
   .section-title { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
@@ -215,7 +216,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <table>
       <thead><tr>
         <th>Session</th><th>Project</th><th>Last Active</th><th>Duration</th>
-        <th>Model</th><th>Turns</th><th>Input</th><th>Output</th><th>Est. Cost</th>
+        <th>Model</th><th>Turns</th><th>Input</th><th>Output</th><th>Est. Cost</th><th>% of Period</th>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
     </table>
@@ -490,7 +491,7 @@ function applyFilter() {
   renderDailyChart(daily);
   renderModelChart(byModel);
   renderProjectChart(byProject);
-  renderSessionsTable(filteredSessions.slice(0, 20));
+  renderSessionsTable(filteredSessions.slice(0, 20), totals.cost);
   renderModelCostTable(byModel);
 }
 
@@ -585,12 +586,15 @@ function renderProjectChart(byProject) {
   });
 }
 
-function renderSessionsTable(sessions) {
+function renderSessionsTable(sessions, periodCost) {
   document.getElementById('sessions-body').innerHTML = sessions.map(s => {
     const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
     const costCell = isBillable(s.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
+    const pctCell = (isBillable(s.model) && periodCost > 0)
+      ? `<td class="num pct-cell">${(cost / periodCost * 100).toFixed(1)}%</td>`
+      : `<td class="cost-na">\u2014</td>`;
     return `<tr>
       <td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>
       <td>${esc(s.project)}</td>
@@ -601,6 +605,7 @@ function renderSessionsTable(sessions) {
       <td class="num">${fmt(s.input)}</td>
       <td class="num">${fmt(s.output)}</td>
       ${costCell}
+      ${pctCell}
     </tr>`;
   }).join('');
 }
