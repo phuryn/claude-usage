@@ -11,6 +11,8 @@ from datetime import datetime
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
 import context_scanner
+import transcript_reader
+import releases_fetcher
 
 
 def get_dashboard_data(db_path=DB_PATH):
@@ -73,6 +75,7 @@ def get_dashboard_data(db_path=DB_PATH):
         except Exception:
             duration_min = 0
         sessions_all.append({
+            "session_id_full": r["session_id"],
             "session_id":    r["session_id"][:8],
             "project":       r["project_name"] or "unknown",
             "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
@@ -210,6 +213,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <h2>Top Projects by Tokens</h2>
       <div class="chart-wrap"><canvas id="chart-project"></canvas></div>
     </div>
+    <div class="chart-card wide">
+      <h2 id="releases-title">Latest Releases</h2>
+      <div id="releases-body" class="muted" style="font-size:13px">Loading...</div>
+    </div>
   </div>
   <div class="table-card">
     <div class="section-title">Recent Sessions</div>
@@ -247,6 +254,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </tr></thead>
       <tbody id="model-cost-body"></tbody>
     </table>
+  </div>
+</div>
+
+<div id="tx-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;max-width:1100px;width:100%;max-height:90vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">
+      <div>
+        <div id="tx-title" style="font-size:14px;font-weight:600;color:var(--text)"></div>
+        <div id="tx-sub" class="muted" style="font-size:11px;margin-top:3px"></div>
+      </div>
+      <button onclick="closeTranscript()" style="background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px">Close</button>
+    </div>
+    <div id="tx-body" style="overflow-y:auto;padding:16px 20px;font-size:13px;line-height:1.5"></div>
   </div>
 </div>
 
@@ -602,7 +622,7 @@ function renderSessionsTable(sessions) {
     const costCell = isBillable(s.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
-    return `<tr>
+    return `<tr style="cursor:pointer" onclick="openTranscript('${s.session_id_full}')">
       <td class="muted" style="font-family:monospace">${s.session_id}&hellip;</td>
       <td>${s.project}</td>
       <td class="muted">${s.last}</td>
@@ -632,6 +652,83 @@ function renderModelCostTable(byModel) {
       ${costCell}
     </tr>`;
   }).join('');
+}
+
+// ── Transcript modal ───────────────────────────────────────────────────────
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function openTranscript(sessionId) {
+  const modal = document.getElementById('tx-modal');
+  modal.style.display = 'flex';
+  document.getElementById('tx-title').textContent = 'Loading transcript\u2026';
+  document.getElementById('tx-sub').textContent = sessionId;
+  document.getElementById('tx-body').innerHTML = '<div class="muted">Reading JSONL\u2026</div>';
+  try {
+    const r = await fetch('/api/transcript?session_id=' + encodeURIComponent(sessionId));
+    const d = await r.json();
+    if (d.error) {
+      document.getElementById('tx-body').innerHTML = '<div style="color:#f87171">' + escapeHtml(d.error) + '</div>';
+      return;
+    }
+    document.getElementById('tx-title').textContent = 'Session ' + sessionId.slice(0, 8) + '\u2026 \u00b7 ' + d.turn_count + ' turns';
+    document.getElementById('tx-sub').textContent = (d.project || '') + '  \u00b7  ' + (d.file || '');
+    document.getElementById('tx-body').innerHTML = d.turns.map(t => {
+      const isUser = t.role === 'user';
+      const accent = isUser ? '#4f8ef7' : '#d97757';
+      const tag = isUser ? 'USER' : (t.tool_name ? 'ASSISTANT \u00b7 ' + t.tool_name : 'ASSISTANT');
+      return `
+        <div style="margin-bottom:14px;border-left:3px solid ${accent};padding:8px 12px;background:rgba(255,255,255,0.02);border-radius:0 6px 6px 0">
+          <div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">
+            ${tag} \u00b7 ${(t.timestamp || '').slice(0, 19).replace('T', ' ')}${t.model ? ' \u00b7 ' + escapeHtml(t.model) : ''}
+          </div>
+          <pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-family:inherit;color:var(--text);font-size:12px">${escapeHtml(t.text)}</pre>
+        </div>`;
+    }).join('') || '<div class="muted">No turns.</div>';
+  } catch (e) {
+    document.getElementById('tx-body').innerHTML = '<div style="color:#f87171">' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function closeTranscript() {
+  document.getElementById('tx-modal').style.display = 'none';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeTranscript();
+});
+
+// ── Releases ───────────────────────────────────────────────────────────────
+async function loadReleases() {
+  try {
+    const r = await fetch('/api/releases');
+    const d = await r.json();
+    document.getElementById('releases-title').textContent = 'Latest Releases \u00b7 ' + (d.repo || '');
+    if (d.error && (!d.releases || !d.releases.length)) {
+      document.getElementById('releases-body').innerHTML = '<div style="color:#f87171">' + escapeHtml(d.error) + '</div>';
+      return;
+    }
+    const items = (d.releases || []).slice(0, 8);
+    if (!items.length) {
+      document.getElementById('releases-body').innerHTML = '<div class="muted">No releases.</div>';
+      return;
+    }
+    document.getElementById('releases-body').innerHTML = items.map(rel => {
+      const badge = rel.prerelease ? '<span class="model-tag" style="background:rgba(251,191,36,0.18);color:#fbbf24;margin-left:6px">pre</span>' : '';
+      return `
+        <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+            <a href="${rel.html_url}" target="_blank" style="color:var(--accent);font-weight:600;text-decoration:none">${escapeHtml(rel.tag || rel.name)}</a>
+            ${badge}
+            <span class="muted" style="font-size:11px">${(rel.published_at || '').slice(0, 10)}</span>
+          </div>
+          ${rel.body ? `<div class="muted" style="font-size:12px;margin-top:4px;max-height:80px;overflow:hidden;white-space:pre-wrap">${escapeHtml(rel.body.slice(0, 400))}${rel.body.length > 400 ? '\u2026' : ''}</div>` : ''}
+        </div>`;
+    }).join('');
+  } catch (e) {
+    document.getElementById('releases-body').innerHTML = '<div style="color:#f87171">' + escapeHtml(e.message) + '</div>';
+  }
 }
 
 // ── Context Window ─────────────────────────────────────────────────────────
@@ -762,6 +859,8 @@ async function loadData() {
 
 loadData();
 loadContext();
+loadReleases();
+setInterval(loadReleases, 6 * 60 * 60 * 1000);
 setInterval(loadData, 30000);
 setInterval(() => loadContext(ctxSelected), 60000);
 </script>
@@ -780,6 +879,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
+
+        elif self.path.startswith("/api/transcript"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            sid = (qs.get("session_id", [None])[0]) or ""
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                payload = transcript_reader.read_transcript(sid, conn)
+                conn.close()
+            except Exception as e:
+                payload = {"error": str(e)}
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path.startswith("/api/releases"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            repo = (qs.get("repo", [None])[0]) or None
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                payload = releases_fetcher.get_releases(conn, repo=repo)
+                conn.close()
+            except Exception as e:
+                payload = {"error": str(e)}
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         elif self.path.startswith("/api/context"):
             from urllib.parse import urlparse, parse_qs
