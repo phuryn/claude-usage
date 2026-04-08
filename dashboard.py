@@ -7,11 +7,15 @@ import sqlite3
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
+from scanner import scan
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
 
 def get_dashboard_data(db_path=DB_PATH):
+    # Scan for new JSONL files before querying
+    scan(verbose=False)
+
     if not db_path.exists():
         return {"error": "Database not found. Run: python cli.py scan"}
 
