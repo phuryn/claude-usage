@@ -1,0 +1,148 @@
+"""Tests for dashboard.py - API endpoint and data retrieval."""
+
+import json
+import os
+import sqlite3
+import tempfile
+import threading
+import unittest
+import urllib.request
+from pathlib import Path
+
+from scanner import get_db, init_db, upsert_sessions, insert_turns
+from dashboard import get_dashboard_data, DashboardHandler, HTML_TEMPLATE
+
+try:
+    from http.server import HTTPServer
+except ImportError:
+    HTTPServer = None
+
+
+class TestGetDashboardData(unittest.TestCase):
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        conn = get_db(self.db_path)
+        init_db(conn)
+        # Insert sample data
+        sessions = [{
+            "session_id": "sess-abc123", "project_name": "user/myproject",
+            "first_timestamp": "2026-04-08T09:00:00Z",
+            "last_timestamp": "2026-04-08T10:00:00Z",
+            "git_branch": "main", "model": "claude-sonnet-4-6",
+            "total_input_tokens": 5000, "total_output_tokens": 2000,
+            "total_cache_read": 500, "total_cache_creation": 200,
+            "turn_count": 10,
+        }]
+        upsert_sessions(conn, sessions)
+        turns = [{
+            "session_id": "sess-abc123", "timestamp": "2026-04-08T09:30:00Z",
+            "model": "claude-sonnet-4-6", "input_tokens": 500,
+            "output_tokens": 200, "cache_read_tokens": 50,
+            "cache_creation_tokens": 20, "tool_name": None, "cwd": "/tmp",
+        }]
+        insert_turns(conn, turns)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_returns_valid_structure(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertIn("all_models", data)
+        self.assertIn("daily_by_model", data)
+        self.assertIn("sessions_all", data)
+        self.assertIn("generated_at", data)
+
+    def test_models_populated(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertIn("claude-sonnet-4-6", data["all_models"])
+
+    def test_sessions_populated(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertEqual(len(data["sessions_all"]), 1)
+        session = data["sessions_all"][0]
+        self.assertEqual(session["project"], "user/myproject")
+        self.assertEqual(session["model"], "claude-sonnet-4-6")
+        self.assertEqual(session["input"], 5000)
+
+    def test_daily_by_model_populated(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertGreater(len(data["daily_by_model"]), 0)
+        day = data["daily_by_model"][0]
+        self.assertIn("day", day)
+        self.assertIn("model", day)
+        self.assertIn("input", day)
+
+    def test_missing_db_returns_error(self):
+        data = get_dashboard_data(db_path=Path("/nonexistent/path/usage.db"))
+        self.assertIn("error", data)
+
+    def test_session_id_truncated(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        session = data["sessions_all"][0]
+        self.assertEqual(len(session["session_id"]), 8)
+
+    def test_session_duration_calculated(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        session = data["sessions_all"][0]
+        # 1 hour = 60 minutes
+        self.assertEqual(session["duration_min"], 60.0)
+
+
+class TestDashboardHTTP(unittest.TestCase):
+    """Integration test: start server and make HTTP requests."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), DashboardHandler)
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever)
+        cls.thread.daemon = True
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+
+    def test_index_returns_html(self):
+        url = f"http://127.0.0.1:{self.port}/"
+        with urllib.request.urlopen(url) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("text/html", resp.headers["Content-Type"])
+
+    def test_api_data_returns_json(self):
+        url = f"http://127.0.0.1:{self.port}/api/data"
+        with urllib.request.urlopen(url) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("application/json", resp.headers["Content-Type"])
+            data = json.loads(resp.read())
+            # Should have expected keys (or error if no DB)
+            self.assertTrue("all_models" in data or "error" in data)
+
+    def test_404_for_unknown_path(self):
+        url = f"http://127.0.0.1:{self.port}/nonexistent"
+        try:
+            urllib.request.urlopen(url)
+            self.fail("Expected 404")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 404)
+
+
+class TestHTMLTemplate(unittest.TestCase):
+    def test_template_is_valid_html(self):
+        self.assertIn("<!DOCTYPE html>", HTML_TEMPLATE)
+        self.assertIn("</html>", HTML_TEMPLATE)
+
+    def test_template_has_esc_function(self):
+        """Verify XSS protection is present (PR #10)."""
+        self.assertIn("function esc(", HTML_TEMPLATE)
+
+    def test_template_has_chart_js(self):
+        self.assertIn("chart.js", HTML_TEMPLATE.lower())
+
+
+if __name__ == "__main__":
+    unittest.main()
