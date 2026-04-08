@@ -151,7 +151,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .chart-wrap.tall { height: 300px; }
 
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); }
+  th { text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--text); }
+  .sort-icon { font-size: 9px; opacity: 0.8; }
   td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
   tr:last-child td { border-bottom: none; }
   tr:hover td { background: rgba(255,255,255,0.02); }
@@ -214,8 +217,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="section-title">Recent Sessions</div>
     <table>
       <thead><tr>
-        <th>Session</th><th>Project</th><th>Last Active</th><th>Duration</th>
-        <th>Model</th><th>Turns</th><th>Input</th><th>Output</th><th>Est. Cost</th>
+        <th>Session</th>
+        <th>Project</th>
+        <th class="sortable" onclick="setSessionSort('last')">Last Active <span class="sort-icon" id="sort-icon-last"></span></th>
+        <th class="sortable" onclick="setSessionSort('duration_min')">Duration <span class="sort-icon" id="sort-icon-duration_min"></span></th>
+        <th>Model</th>
+        <th class="sortable" onclick="setSessionSort('turns')">Turns <span class="sort-icon" id="sort-icon-turns"></span></th>
+        <th class="sortable" onclick="setSessionSort('input')">Input <span class="sort-icon" id="sort-icon-input"></span></th>
+        <th class="sortable" onclick="setSessionSort('output')">Output <span class="sort-icon" id="sort-icon-output"></span></th>
+        <th class="sortable" onclick="setSessionSort('cost')">Est. Cost <span class="sort-icon" id="sort-icon-cost"></span></th>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
     </table>
@@ -258,6 +268,8 @@ let rawData = null;
 let selectedModels = new Set();
 let selectedRange = '30d';
 let charts = {};
+let sessionSortCol = 'last';
+let sessionSortDir = 'desc';
 
 // ── Pricing (Anthropic API, April 2026) ────────────────────────────────────
 const PRICING = {
@@ -415,6 +427,43 @@ function updateURL() {
   history.replaceState(null, '', window.location.pathname + search);
 }
 
+// ── Session sort ───────────────────────────────────────────────────────────
+function setSessionSort(col) {
+  if (sessionSortCol === col) {
+    sessionSortDir = sessionSortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    sessionSortCol = col;
+    sessionSortDir = 'desc';
+  }
+  updateSortIcons();
+  applyFilter();
+}
+
+function updateSortIcons() {
+  document.querySelectorAll('.sort-icon').forEach(el => el.textContent = '');
+  const icon = document.getElementById('sort-icon-' + sessionSortCol);
+  if (icon) icon.textContent = sessionSortDir === 'desc' ? ' \u25bc' : ' \u25b2';
+}
+
+function sortSessions(sessions) {
+  return [...sessions].sort((a, b) => {
+    let av, bv;
+    if (sessionSortCol === 'cost') {
+      av = calcCost(a.model, a.input, a.output, a.cache_read, a.cache_creation);
+      bv = calcCost(b.model, b.input, b.output, b.cache_read, b.cache_creation);
+    } else if (sessionSortCol === 'duration_min') {
+      av = parseFloat(a.duration_min) || 0;
+      bv = parseFloat(b.duration_min) || 0;
+    } else {
+      av = a[sessionSortCol] ?? 0;
+      bv = b[sessionSortCol] ?? 0;
+    }
+    if (av < bv) return sessionSortDir === 'desc' ? 1 : -1;
+    if (av > bv) return sessionSortDir === 'desc' ? -1 : 1;
+    return 0;
+  });
+}
+
 // ── Aggregation & filtering ────────────────────────────────────────────────
 function applyFilter() {
   if (!rawData) return;
@@ -490,7 +539,7 @@ function applyFilter() {
   renderDailyChart(daily);
   renderModelChart(byModel);
   renderProjectChart(byProject);
-  renderSessionsTable(filteredSessions.slice(0, 20));
+  renderSessionsTable(sortSessions(filteredSessions).slice(0, 20));
   renderModelCostTable(byModel);
 }
 
@@ -645,6 +694,7 @@ async function loadData() {
       );
       // Build model filter (reads URL for model selection too)
       buildFilterUI(d.all_models);
+      updateSortIcons();
     }
 
     applyFilter();
