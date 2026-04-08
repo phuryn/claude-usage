@@ -11,6 +11,95 @@ from datetime import datetime
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
 
+def get_project_data(project_name, db_path=DB_PATH):
+    if not db_path.exists():
+        return {"error": "Database not found. Run: python cli.py scan"}
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    # Models used by this project
+    model_rows = conn.execute("""
+        SELECT COALESCE(t.model, 'unknown') as model
+        FROM turns t
+        JOIN sessions s ON t.session_id = s.session_id
+        WHERE s.project_name = ?
+        GROUP BY t.model
+        ORDER BY SUM(t.input_tokens + t.output_tokens) DESC
+    """, (project_name,)).fetchall()
+    all_models = [r["model"] for r in model_rows]
+
+    # Daily per-model for this project
+    daily_rows = conn.execute("""
+        SELECT
+            substr(t.timestamp, 1, 10)   as day,
+            COALESCE(t.model, 'unknown') as model,
+            SUM(t.input_tokens)          as input,
+            SUM(t.output_tokens)         as output,
+            SUM(t.cache_read_tokens)     as cache_read,
+            SUM(t.cache_creation_tokens) as cache_creation,
+            COUNT(*)                     as turns
+        FROM turns t
+        JOIN sessions s ON t.session_id = s.session_id
+        WHERE s.project_name = ?
+        GROUP BY day, t.model
+        ORDER BY day, t.model
+    """, (project_name,)).fetchall()
+
+    daily_by_model = [{
+        "day":            r["day"],
+        "model":          r["model"],
+        "input":          r["input"] or 0,
+        "output":         r["output"] or 0,
+        "cache_read":     r["cache_read"] or 0,
+        "cache_creation": r["cache_creation"] or 0,
+        "turns":          r["turns"] or 0,
+    } for r in daily_rows]
+
+    # Sessions for this project
+    session_rows = conn.execute("""
+        SELECT
+            session_id, project_name, first_timestamp, last_timestamp,
+            total_input_tokens, total_output_tokens,
+            total_cache_read, total_cache_creation, model, turn_count
+        FROM sessions
+        WHERE project_name = ?
+        ORDER BY last_timestamp DESC
+    """, (project_name,)).fetchall()
+
+    sessions_all = []
+    for r in session_rows:
+        try:
+            t1 = datetime.fromisoformat(r["first_timestamp"].replace("Z", "+00:00"))
+            t2 = datetime.fromisoformat(r["last_timestamp"].replace("Z", "+00:00"))
+            duration_min = round((t2 - t1).total_seconds() / 60, 1)
+        except Exception:
+            duration_min = 0
+        sessions_all.append({
+            "session_id":    r["session_id"][:8],
+            "project":       r["project_name"] or "unknown",
+            "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
+            "last_date":     (r["last_timestamp"] or "")[:10],
+            "duration_min":  duration_min,
+            "model":         r["model"] or "unknown",
+            "turns":         r["turn_count"] or 0,
+            "input":         r["total_input_tokens"] or 0,
+            "output":        r["total_output_tokens"] or 0,
+            "cache_read":    r["total_cache_read"] or 0,
+            "cache_creation": r["total_cache_creation"] or 0,
+        })
+
+    conn.close()
+
+    return {
+        "project_name":   project_name,
+        "all_models":     all_models,
+        "daily_by_model": daily_by_model,
+        "sessions_all":   sessions_all,
+        "generated_at":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
 def get_dashboard_data(db_path=DB_PATH):
     if not db_path.exists():
         return {"error": "Database not found. Run: python cli.py scan"}
@@ -568,13 +657,21 @@ function renderProjectChart(byProject) {
     },
     options: {
       indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      onClick: (evt, elements) => {
+        if (elements.length > 0) {
+          const idx = elements[0].index;
+          window.location.href = '/project?name=' + encodeURIComponent(top[idx].project);
+        }
+      },
       plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
       scales: {
         x: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
-        y: { ticks: { color: '#8892a4', font: { size: 11 } }, grid: { color: '#2a2d3a' } },
+        y: { ticks: { color: '#8892a4', font: { size: 11 }, cursor: 'pointer' }, grid: { color: '#2a2d3a' } },
       }
     }
   });
+  // Make chart canvas show pointer on hover over bars
+  document.getElementById('chart-project').style.cursor = 'pointer';
 }
 
 function renderSessionsTable(sessions) {
@@ -585,7 +682,7 @@ function renderSessionsTable(sessions) {
       : `<td class="cost-na">n/a</td>`;
     return `<tr>
       <td class="muted" style="font-family:monospace">${s.session_id}&hellip;</td>
-      <td>${s.project}</td>
+      <td><a href="/project?name=${encodeURIComponent(s.project)}" style="color:var(--accent);text-decoration:none">${s.project}</a></td>
       <td class="muted">${s.last}</td>
       <td class="muted">${s.duration_min}m</td>
       <td><span class="model-tag">${s.model}</span></td>
@@ -653,20 +750,598 @@ setInterval(loadData, 30000);
 """
 
 
+PROJECT_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Project Details — Claude Code Usage</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e2e8f0;
+    --muted: #8892a4;
+    --accent: #d97757;
+    --blue: #4f8ef7;
+    --green: #4ade80;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
+
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
+  header .meta { color: var(--muted); font-size: 12px; }
+  .back-link { color: var(--blue); text-decoration: none; font-size: 13px; margin-right: 16px; }
+  .back-link:hover { text-decoration: underline; }
+
+  #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
+  .filter-sep { width: 1px; height: 22px; background: var(--border); flex-shrink: 0; }
+  #model-checkboxes { display: flex; flex-wrap: wrap; gap: 6px; }
+  .model-cb-label { display: flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; border: 1px solid var(--border); cursor: pointer; font-size: 12px; color: var(--muted); transition: border-color 0.15s, color 0.15s, background 0.15s; user-select: none; }
+  .model-cb-label:hover { border-color: var(--accent); color: var(--text); }
+  .model-cb-label.checked { background: rgba(217,119,87,0.12); border-color: var(--accent); color: var(--text); }
+  .model-cb-label input { display: none; }
+  .filter-btn { padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; white-space: nowrap; }
+  .filter-btn:hover { border-color: var(--accent); color: var(--text); }
+  .range-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
+  .range-btn { padding: 4px 13px; background: transparent; border: none; border-right: 1px solid var(--border); color: var(--muted); font-size: 12px; cursor: pointer; transition: background 0.15s, color 0.15s; }
+  .range-btn:last-child { border-right: none; }
+  .range-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+  .range-btn.active { background: rgba(217,119,87,0.15); color: var(--accent); font-weight: 600; }
+
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+  .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .stat-card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+  .stat-card .value { font-size: 22px; font-weight: 700; }
+  .stat-card .sub { color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+  .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+  .chart-card.wide { grid-column: 1 / -1; }
+  .chart-card h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 16px; }
+  .chart-wrap { position: relative; height: 240px; }
+  .chart-wrap.tall { height: 300px; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .model-tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; background: rgba(79,142,247,0.15); color: var(--blue); }
+  .cost { color: var(--green); font-family: monospace; }
+  .cost-na { color: var(--muted); font-family: monospace; font-size: 11px; }
+  .num { font-family: monospace; }
+  .muted { color: var(--muted); }
+  .section-title { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+  .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
+
+  @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } }
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;align-items:center">
+    <a href="/" class="back-link">&larr; Dashboard</a>
+    <h1 id="project-title">Project Details</h1>
+  </div>
+  <div class="meta" id="meta">Loading...</div>
+</header>
+
+<div id="filter-bar">
+  <div class="filter-label">Models</div>
+  <div id="model-checkboxes"></div>
+  <button class="filter-btn" onclick="selectAllModels()">All</button>
+  <button class="filter-btn" onclick="clearAllModels()">None</button>
+  <div class="filter-sep"></div>
+  <div class="filter-label">Range</div>
+  <div class="range-group">
+    <button class="range-btn" data-range="7d"  onclick="setRange('7d')">7d</button>
+    <button class="range-btn" data-range="30d" onclick="setRange('30d')">30d</button>
+    <button class="range-btn" data-range="90d" onclick="setRange('90d')">90d</button>
+    <button class="range-btn" data-range="all" onclick="setRange('all')">All</button>
+  </div>
+</div>
+
+<div class="container">
+  <div class="stats-row" id="stats-row"></div>
+  <div class="charts-grid">
+    <div class="chart-card wide">
+      <h2 id="daily-chart-title">Daily Cost</h2>
+      <div class="chart-wrap tall"><canvas id="chart-daily-cost"></canvas></div>
+    </div>
+    <div class="chart-card wide">
+      <h2 id="daily-tokens-title">Daily Token Usage</h2>
+      <div class="chart-wrap tall"><canvas id="chart-daily"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h2>Cost by Model</h2>
+      <div class="chart-wrap"><canvas id="chart-model"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h2>Tokens by Model</h2>
+      <div class="chart-wrap"><canvas id="chart-model-tokens"></canvas></div>
+    </div>
+  </div>
+  <div class="table-card">
+    <div class="section-title">Sessions</div>
+    <table>
+      <thead><tr>
+        <th>Session</th><th>Last Active</th><th>Duration</th>
+        <th>Model</th><th>Turns</th><th>Input</th><th>Output</th><th>Est. Cost</th>
+      </tr></thead>
+      <tbody id="sessions-body"></tbody>
+    </table>
+  </div>
+  <div class="table-card">
+    <div class="section-title">Cost by Model</div>
+    <table>
+      <thead><tr>
+        <th>Model</th><th>Turns</th><th>Input</th><th>Output</th>
+        <th>Cache Read</th><th>Cache Creation</th><th>Est. Cost</th>
+      </tr></thead>
+      <tbody id="model-cost-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let rawData = null;
+let selectedModels = new Set();
+let selectedRange = '30d';
+let charts = {};
+
+const PRICING = {
+  'claude-opus-4-6':   { input: 6.15,  output: 30.75, cache_write: 7.69, cache_read: 0.61 },
+  'claude-opus-4-5':   { input: 6.15,  output: 30.75, cache_write: 7.69, cache_read: 0.61 },
+  'claude-sonnet-4-6': { input: 3.69,  output: 18.45, cache_write: 4.61, cache_read: 0.37 },
+  'claude-sonnet-4-5': { input: 3.69,  output: 18.45, cache_write: 4.61, cache_read: 0.37 },
+  'claude-haiku-4-5':  { input: 1.23,  output:  6.15, cache_write: 1.54, cache_read: 0.12 },
+  'claude-haiku-4-6':  { input: 1.23,  output:  6.15, cache_write: 1.54, cache_read: 0.12 },
+};
+
+function isBillable(model) {
+  if (!model) return false;
+  const m = model.toLowerCase();
+  return m.includes('opus') || m.includes('sonnet') || m.includes('haiku');
+}
+
+function getPricing(model) {
+  if (!model) return null;
+  if (PRICING[model]) return PRICING[model];
+  for (const key of Object.keys(PRICING)) {
+    if (model.startsWith(key)) return PRICING[key];
+  }
+  const m = model.toLowerCase();
+  if (m.includes('opus'))   return PRICING['claude-opus-4-6'];
+  if (m.includes('sonnet')) return PRICING['claude-sonnet-4-6'];
+  if (m.includes('haiku'))  return PRICING['claude-haiku-4-5'];
+  return null;
+}
+
+function calcCost(model, inp, out, cacheRead, cacheCreation) {
+  if (!isBillable(model)) return 0;
+  const p = getPricing(model);
+  if (!p) return 0;
+  return (
+    inp           * p.input       / 1e6 +
+    out           * p.output      / 1e6 +
+    cacheRead     * p.cache_read  / 1e6 +
+    cacheCreation * p.cache_write / 1e6
+  );
+}
+
+function fmt(n) {
+  if (n >= 1e9) return (n/1e9).toFixed(2)+'B';
+  if (n >= 1e6) return (n/1e6).toFixed(2)+'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1)+'K';
+  return n.toLocaleString();
+}
+function fmtCost(c)    { return '$' + c.toFixed(4); }
+function fmtCostBig(c) { return '$' + c.toFixed(2); }
+
+const TOKEN_COLORS = {
+  input:          'rgba(79,142,247,0.8)',
+  output:         'rgba(167,139,250,0.8)',
+  cache_read:     'rgba(74,222,128,0.6)',
+  cache_creation: 'rgba(251,191,36,0.6)',
+};
+const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
+
+const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
+const RANGE_TICKS  = { '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+
+function getRangeCutoff(range) {
+  if (range === 'all') return null;
+  const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+function getProjectName() {
+  return new URLSearchParams(window.location.search).get('name') || '';
+}
+
+function readURLRange() {
+  const p = new URLSearchParams(window.location.search).get('range');
+  return ['7d', '30d', '90d', 'all'].includes(p) ? p : '30d';
+}
+
+function setRange(range) {
+  selectedRange = range;
+  document.querySelectorAll('.range-btn').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.range === range)
+  );
+  updateURL();
+  applyFilter();
+}
+
+function modelPriority(m) {
+  const ml = m.toLowerCase();
+  if (ml.includes('opus'))   return 0;
+  if (ml.includes('sonnet')) return 1;
+  if (ml.includes('haiku'))  return 2;
+  return 3;
+}
+
+function readURLModels(allModels) {
+  const param = new URLSearchParams(window.location.search).get('models');
+  if (!param) return new Set(allModels.filter(m => isBillable(m)));
+  const fromURL = new Set(param.split(',').map(s => s.trim()).filter(Boolean));
+  return new Set(allModels.filter(m => fromURL.has(m)));
+}
+
+function isDefaultModelSelection(allModels) {
+  const billable = allModels.filter(m => isBillable(m));
+  if (selectedModels.size !== billable.length) return false;
+  return billable.every(m => selectedModels.has(m));
+}
+
+function buildFilterUI(allModels) {
+  const sorted = [...allModels].sort((a, b) => {
+    const pa = modelPriority(a), pb = modelPriority(b);
+    return pa !== pb ? pa - pb : a.localeCompare(b);
+  });
+  selectedModels = readURLModels(allModels);
+  const container = document.getElementById('model-checkboxes');
+  container.innerHTML = sorted.map(m => {
+    const checked = selectedModels.has(m);
+    return `<label class="model-cb-label ${checked ? 'checked' : ''}" data-model="${m}">
+      <input type="checkbox" value="${m}" ${checked ? 'checked' : ''} onchange="onModelToggle(this)">
+      ${m}
+    </label>`;
+  }).join('');
+}
+
+function onModelToggle(cb) {
+  const label = cb.closest('label');
+  if (cb.checked) { selectedModels.add(cb.value);    label.classList.add('checked'); }
+  else            { selectedModels.delete(cb.value); label.classList.remove('checked'); }
+  updateURL();
+  applyFilter();
+}
+
+function selectAllModels() {
+  document.querySelectorAll('#model-checkboxes input').forEach(cb => {
+    cb.checked = true; selectedModels.add(cb.value); cb.closest('label').classList.add('checked');
+  });
+  updateURL(); applyFilter();
+}
+
+function clearAllModels() {
+  document.querySelectorAll('#model-checkboxes input').forEach(cb => {
+    cb.checked = false; selectedModels.delete(cb.value); cb.closest('label').classList.remove('checked');
+  });
+  updateURL(); applyFilter();
+}
+
+function updateURL() {
+  const allModels = Array.from(document.querySelectorAll('#model-checkboxes input')).map(cb => cb.value);
+  const params = new URLSearchParams(window.location.search);
+  if (selectedRange !== '30d') params.set('range', selectedRange); else params.delete('range');
+  if (!isDefaultModelSelection(allModels)) params.set('models', Array.from(selectedModels).join(',')); else params.delete('models');
+  const search = params.toString() ? '?' + params.toString() : '';
+  history.replaceState(null, '', window.location.pathname + search);
+}
+
+function applyFilter() {
+  if (!rawData) return;
+
+  const cutoff = getRangeCutoff(selectedRange);
+
+  const filteredDaily = rawData.daily_by_model.filter(r =>
+    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+  );
+
+  // Daily tokens aggregated by day
+  const dailyMap = {};
+  for (const r of filteredDaily) {
+    if (!dailyMap[r.day]) dailyMap[r.day] = { day: r.day, input: 0, output: 0, cache_read: 0, cache_creation: 0, cost: 0 };
+    const d = dailyMap[r.day];
+    d.input          += r.input;
+    d.output         += r.output;
+    d.cache_read     += r.cache_read;
+    d.cache_creation += r.cache_creation;
+    d.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation);
+  }
+  const daily = Object.values(dailyMap).sort((a, b) => a.day.localeCompare(b.day));
+
+  // By model
+  const modelMap = {};
+  for (const r of filteredDaily) {
+    if (!modelMap[r.model]) modelMap[r.model] = { model: r.model, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0, sessions: 0 };
+    const m = modelMap[r.model];
+    m.input          += r.input;
+    m.output         += r.output;
+    m.cache_read     += r.cache_read;
+    m.cache_creation += r.cache_creation;
+    m.turns          += r.turns;
+  }
+
+  const filteredSessions = rawData.sessions_all.filter(s =>
+    selectedModels.has(s.model) && (!cutoff || s.last_date >= cutoff)
+  );
+
+  for (const s of filteredSessions) {
+    if (modelMap[s.model]) modelMap[s.model].sessions++;
+  }
+
+  const byModel = Object.values(modelMap).sort((a, b) => (b.input + b.output) - (a.input + a.output));
+
+  const totals = {
+    sessions:       filteredSessions.length,
+    turns:          byModel.reduce((s, m) => s + m.turns, 0),
+    input:          byModel.reduce((s, m) => s + m.input, 0),
+    output:         byModel.reduce((s, m) => s + m.output, 0),
+    cache_read:     byModel.reduce((s, m) => s + m.cache_read, 0),
+    cache_creation: byModel.reduce((s, m) => s + m.cache_creation, 0),
+    cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0),
+  };
+
+  document.getElementById('daily-chart-title').textContent = 'Daily Cost \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('daily-tokens-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
+
+  renderStats(totals);
+  renderDailyCostChart(daily);
+  renderDailyTokenChart(daily);
+  renderModelCostChart(byModel);
+  renderModelTokenChart(byModel);
+  renderSessionsTable(filteredSessions);
+  renderModelCostTable(byModel);
+}
+
+function renderStats(t) {
+  const rangeLabel = RANGE_LABELS[selectedRange].toLowerCase();
+  const stats = [
+    { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing', color: '#4ade80' },
+    { label: 'Sessions',       value: t.sessions.toLocaleString(), sub: rangeLabel },
+    { label: 'Turns',          value: fmt(t.turns),                sub: rangeLabel },
+    { label: 'Input Tokens',   value: fmt(t.input),                sub: rangeLabel },
+    { label: 'Output Tokens',  value: fmt(t.output),               sub: rangeLabel },
+    { label: 'Cache Read',     value: fmt(t.cache_read),           sub: 'from prompt cache' },
+    { label: 'Cache Creation', value: fmt(t.cache_creation),       sub: 'writes to prompt cache' },
+  ];
+  document.getElementById('stats-row').innerHTML = stats.map(s => `
+    <div class="stat-card">
+      <div class="label">${s.label}</div>
+      <div class="value" style="${s.color ? 'color:' + s.color : ''}">${s.value}</div>
+      ${s.sub ? `<div class="sub">${s.sub}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+function renderDailyCostChart(daily) {
+  const ctx = document.getElementById('chart-daily-cost').getContext('2d');
+  if (charts.dailyCost) charts.dailyCost.destroy();
+  charts.dailyCost = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: daily.map(d => d.day),
+      datasets: [{
+        label: 'Est. Cost',
+        data: daily.map(d => d.cost),
+        backgroundColor: 'rgba(74,222,128,0.7)',
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
+      scales: {
+        x: { ticks: { color: '#8892a4', maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: '#2a2d3a' } },
+        y: { ticks: { color: '#8892a4', callback: v => '$' + v.toFixed(2) }, grid: { color: '#2a2d3a' } },
+      }
+    }
+  });
+}
+
+function renderDailyTokenChart(daily) {
+  const ctx = document.getElementById('chart-daily').getContext('2d');
+  if (charts.daily) charts.daily.destroy();
+  charts.daily = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: daily.map(d => d.day),
+      datasets: [
+        { label: 'Input',          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens' },
+        { label: 'Output',         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens' },
+        { label: 'Cache Read',     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens' },
+        { label: 'Cache Creation', data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens' },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
+      scales: {
+        x: { ticks: { color: '#8892a4', maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: '#2a2d3a' } },
+        y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
+      }
+    }
+  });
+}
+
+function renderModelCostChart(byModel) {
+  const ctx = document.getElementById('chart-model').getContext('2d');
+  if (charts.model) charts.model.destroy();
+  if (!byModel.length) { charts.model = null; return; }
+  charts.model = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: byModel.map(m => m.model),
+      datasets: [{ data: byModel.map(m => calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation)), backgroundColor: MODEL_COLORS, borderWidth: 2, borderColor: '#1a1d27' }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#8892a4', boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.label}: $${ctx.raw.toFixed(4)}` } }
+      }
+    }
+  });
+}
+
+function renderModelTokenChart(byModel) {
+  const ctx = document.getElementById('chart-model-tokens').getContext('2d');
+  if (charts.modelTokens) charts.modelTokens.destroy();
+  if (!byModel.length) { charts.modelTokens = null; return; }
+  charts.modelTokens = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: byModel.map(m => m.model),
+      datasets: [{ data: byModel.map(m => m.input + m.output), backgroundColor: MODEL_COLORS, borderWidth: 2, borderColor: '#1a1d27' }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#8892a4', boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${fmt(ctx.raw)} tokens` } }
+      }
+    }
+  });
+}
+
+function renderSessionsTable(sessions) {
+  document.getElementById('sessions-body').innerHTML = sessions.map(s => {
+    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    const costCell = isBillable(s.model)
+      ? `<td class="cost">${fmtCost(cost)}</td>`
+      : `<td class="cost-na">n/a</td>`;
+    return `<tr>
+      <td class="muted" style="font-family:monospace">${s.session_id}&hellip;</td>
+      <td class="muted">${s.last}</td>
+      <td class="muted">${s.duration_min}m</td>
+      <td><span class="model-tag">${s.model}</span></td>
+      <td class="num">${s.turns}</td>
+      <td class="num">${fmt(s.input)}</td>
+      <td class="num">${fmt(s.output)}</td>
+      ${costCell}
+    </tr>`;
+  }).join('');
+}
+
+function renderModelCostTable(byModel) {
+  document.getElementById('model-cost-body').innerHTML = byModel.map(m => {
+    const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation);
+    const costCell = isBillable(m.model)
+      ? `<td class="cost">${fmtCost(cost)}</td>`
+      : `<td class="cost-na">n/a</td>`;
+    return `<tr>
+      <td><span class="model-tag">${m.model}</span></td>
+      <td class="num">${fmt(m.turns)}</td>
+      <td class="num">${fmt(m.input)}</td>
+      <td class="num">${fmt(m.output)}</td>
+      <td class="num">${fmt(m.cache_read)}</td>
+      <td class="num">${fmt(m.cache_creation)}</td>
+      ${costCell}
+    </tr>`;
+  }).join('');
+}
+
+async function loadData() {
+  const projectName = getProjectName();
+  if (!projectName) {
+    document.body.innerHTML = '<div style="padding:40px;color:#f87171">No project specified.</div>';
+    return;
+  }
+  document.getElementById('project-title').textContent = projectName;
+
+  try {
+    const resp = await fetch('/api/project?name=' + encodeURIComponent(projectName));
+    const d = await resp.json();
+    if (d.error) {
+      document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + d.error + '</div>';
+      return;
+    }
+    document.getElementById('meta').textContent = 'Updated: ' + d.generated_at;
+
+    const isFirstLoad = rawData === null;
+    rawData = d;
+
+    if (isFirstLoad) {
+      selectedRange = readURLRange();
+      document.querySelectorAll('.range-btn').forEach(btn =>
+        btn.classList.toggle('active', btn.dataset.range === selectedRange)
+      );
+      buildFilterUI(d.all_models);
+    }
+
+    applyFilter();
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+loadData();
+setInterval(loadData, 30000);
+</script>
+</body>
+</html>
+"""
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        from urllib.parse import urlparse, parse_qs
+
+        parsed = urlparse(self.path)
+        path = parsed.path
+        params = parse_qs(parsed.query)
+
+        if path in ("/", "/index.html"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
 
-        elif self.path == "/api/data":
+        elif path == "/project":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(PROJECT_TEMPLATE.encode("utf-8"))
+
+        elif path == "/api/data":
             data = get_dashboard_data()
             body = json.dumps(data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif path == "/api/project":
+            project_name = params.get("name", [""])[0]
+            if not project_name:
+                body = json.dumps({"error": "Missing project name"}).encode("utf-8")
+            else:
+                data = get_project_data(project_name)
+                body = json.dumps(data).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
