@@ -161,6 +161,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .muted { color: var(--muted); }
   .section-title { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
   .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--text); }
+  th.sortable .sort-arrow { font-size: 10px; margin-left: 4px; }
 
   footer { border-top: 1px solid var(--border); padding: 20px 24px; margin-top: 8px; }
   .footer-content { max-width: 1400px; margin: 0 auto; }
@@ -210,6 +213,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </div>
   <div class="table-card">
+    <div class="section-title">Top Projects by Cost</div>
+    <table>
+      <thead><tr>
+        <th class="sortable" data-sort="project" onclick="sortProjectsCost('project')">Project <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="sessions" onclick="sortProjectsCost('sessions')">Sessions <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="turns" onclick="sortProjectsCost('turns')">Turns <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="input" onclick="sortProjectsCost('input')">Input <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="output" onclick="sortProjectsCost('output')">Output <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort="cost" onclick="sortProjectsCost('cost')">Est. Cost <span class="sort-arrow"></span></th>
+      </tr></thead>
+      <tbody id="projects-cost-body"></tbody>
+    </table>
+  </div>
+  <div class="table-card">
     <div class="section-title">Recent Sessions</div>
     <table>
       <thead><tr>
@@ -250,6 +267,8 @@ let rawData = null;
 let selectedModels = new Set();
 let selectedRange = '30d';
 let charts = {};
+let projectsSort = { key: 'cost', dir: 'desc' };
+let projectsByCostData = [];
 
 // ── Pricing (Anthropic API, April 2026) ────────────────────────────────────
 const PRICING = {
@@ -464,6 +483,21 @@ function applyFilter() {
   }
   const byProject = Object.values(projMap).sort((a, b) => (b.input + b.output) - (a.input + a.output));
 
+  // By project: aggregate cost
+  const projCostMap = {};
+  for (const s of filteredSessions) {
+    if (!projCostMap[s.project]) projCostMap[s.project] = { project: s.project, sessions: 0, turns: 0, input: 0, output: 0, cache_read: 0, cache_creation: 0, cost: 0 };
+    const p = projCostMap[s.project];
+    p.sessions++;
+    p.turns        += s.turns;
+    p.input        += s.input;
+    p.output       += s.output;
+    p.cache_read   += s.cache_read;
+    p.cache_creation += s.cache_creation;
+    p.cost         += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+  }
+  projectsByCostData = Object.values(projCostMap).sort((a, b) => b.cost - a.cost).slice(0, 15);
+
   // Totals
   const totals = {
     sessions:       filteredSessions.length,
@@ -482,6 +516,7 @@ function applyFilter() {
   renderDailyChart(daily);
   renderModelChart(byModel);
   renderProjectChart(byProject);
+  renderProjectsByCost();
   renderSessionsTable(filteredSessions.slice(0, 20));
   renderModelCostTable(byModel);
 }
@@ -595,6 +630,42 @@ function renderSessionsTable(sessions) {
       ${costCell}
     </tr>`;
   }).join('');
+}
+
+function renderProjectsByCost() {
+  const sorted = [...projectsByCostData].sort((a, b) => {
+    const key = projectsSort.key;
+    const dir = projectsSort.dir === 'asc' ? 1 : -1;
+    if (key === 'project') return dir * a.project.localeCompare(b.project);
+    return dir * (a[key] - b[key]);
+  });
+  // Update sort arrows
+  document.getElementById('projects-cost-body').closest('table').querySelectorAll('th.sortable').forEach(th => {
+    const arrow = th.querySelector('.sort-arrow');
+    if (th.dataset.sort === projectsSort.key) {
+      arrow.textContent = projectsSort.dir === 'asc' ? '\u25B2' : '\u25BC';
+    } else {
+      arrow.textContent = '';
+    }
+  });
+  document.getElementById('projects-cost-body').innerHTML = sorted.map(p => `<tr>
+    <td>${p.project}</td>
+    <td class="num">${p.sessions}</td>
+    <td class="num">${fmt(p.turns)}</td>
+    <td class="num">${fmt(p.input)}</td>
+    <td class="num">${fmt(p.output)}</td>
+    <td class="cost">${fmtCostBig(p.cost)}</td>
+  </tr>`).join('');
+}
+
+function sortProjectsCost(key) {
+  if (projectsSort.key === key) {
+    projectsSort.dir = projectsSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    projectsSort.key = key;
+    projectsSort.dir = key === 'project' ? 'asc' : 'desc';
+  }
+  renderProjectsByCost();
 }
 
 function renderModelCostTable(byModel) {
