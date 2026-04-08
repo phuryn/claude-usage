@@ -1,0 +1,9 @@
+version: '3.8'
+services:
+  claude-usage:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ${HOME}/.claude:/home/appuser/.claude:ro
+    command: dashboard --host 0.0.0.0 --port 8080
