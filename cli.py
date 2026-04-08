@@ -8,6 +8,7 @@ Commands:
   dashboard - Scan + open browser + start dashboard server
 """
 
+import os
 import sys
 import sqlite3
 from pathlib import Path
@@ -255,13 +256,16 @@ def cmd_dashboard():
     print("\nStarting dashboard server...")
     from dashboard import serve
 
+    host = os.environ.get("HOST", "localhost")
+    port = int(os.environ.get("PORT", "8080"))
+
     def open_browser():
         time.sleep(1.0)
-        webbrowser.open("http://localhost:8080")
+        webbrowser.open(f"http://{host}:{port}")
 
     t = threading.Thread(target=open_browser, daemon=True)
     t.start()
-    serve(port=8080)
+    serve(host=host, port=port)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

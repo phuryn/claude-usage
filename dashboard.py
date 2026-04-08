@@ -3,6 +3,7 @@ dashboard.py - Local web dashboard served on localhost:8080.
 """
 
 import json
+import os
 import sqlite3
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -678,9 +679,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
-def serve(port=8080):
-    server = HTTPServer(("localhost", port), DashboardHandler)
-    print(f"Dashboard running at http://localhost:{port}")
+def serve(host=None, port=None):
+    host = host or os.environ.get("HOST", "localhost")
+    port = port or int(os.environ.get("PORT", "8080"))
+    server = HTTPServer((host, port), DashboardHandler)
+    print(f"Dashboard running at http://{host}:{port}")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
