@@ -678,14 +678,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
-def serve(port=8080):
-    server = HTTPServer(("localhost", port), DashboardHandler)
-    print(f"Dashboard running at http://localhost:{port}")
-    print("Press Ctrl+C to stop.")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nStopped.")
+def serve(host="localhost", port=8080):
+  server = HTTPServer((host, port), DashboardHandler)
+  display_host = "localhost" if host == "0.0.0.0" else host
+  print(f"Dashboard running at http://{display_host}:{port}")
+  print("Press Ctrl+C to stop.")
+  try:
+    server.serve_forever()
+  except KeyboardInterrupt:
+    print("\nStopped.")
 
 
 if __name__ == "__main__":

@@ -1,31 +1,27 @@
 services:
-  # Service dashboard (constant)
   dashboard:
     build: .
     container_name: claude-usage-dashboard
     ports:
       - "8080:8080"
     volumes:
-      - ${HOME}/.claude:/home/appuser/.claude:ro
+      - ${HOME}/.claude:/home/appuser/.claude
     environment:
       - HOME=/home/appuser
-    command: dashboard --host 0.0.0.0 --port 8080
+      - DASHBOARD_HOST=0.0.0.0
+      - DASHBOARD_PORT=8080
+      - NO_BROWSER=1
+    command: ["dashboard"]
     restart: unless-stopped
 
-  # Service scanner (périodique)
   scanner:
     build: .
     container_name: claude-usage-scanner
     volumes:
-      - ${HOME}/.claude:/home/appuser/.claude:ro
+      - ${HOME}/.claude:/home/appuser/.claude
     environment:
       - HOME=/home/appuser
-    command: >
-      sh -c "
-        while true; do
-          python cli.py scan;
-          sleep 300;
-        done
-      "
+    entrypoint: ["sh", "-c"]
+    command:
+      - "while true; do python cli.py scan; echo '--- Scan completed, waiting 5 minutes ---'; sleep 300; done"
     restart: unless-stopped
-    # Pas de ports exposés pour le scanner

@@ -10,6 +10,7 @@ Commands:
 
 import sys
 import sqlite3
+import os
 from pathlib import Path
 from datetime import datetime, date
 
@@ -255,13 +256,19 @@ def cmd_dashboard():
     print("\nStarting dashboard server...")
     from dashboard import serve
 
+    host = os.getenv("DASHBOARD_HOST", "localhost")
+    port = int(os.getenv("DASHBOARD_PORT", "8080"))
+    no_browser = os.getenv("NO_BROWSER", "0") == "1"
+
     def open_browser():
         time.sleep(1.0)
-        webbrowser.open("http://localhost:8080")
+        webbrowser.open(f"http://localhost:{port}")
 
-    t = threading.Thread(target=open_browser, daemon=True)
-    t.start()
-    serve(port=8080)
+    if not no_browser:
+        t = threading.Thread(target=open_browser, daemon=True)
+        t.start()
+
+    serve(host=host, port=port)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
