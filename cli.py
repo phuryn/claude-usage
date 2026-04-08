@@ -34,6 +34,14 @@ def get_pricing(model):
     for key in PRICING:
         if key != "default" and model.startswith(key):
             return PRICING[key]
+    # Substring fallback: match model family by keyword
+    m = model.lower()
+    if "opus" in m:
+        return PRICING["claude-opus-4-6"]
+    if "sonnet" in m:
+        return PRICING["claude-sonnet-4-6"]
+    if "haiku" in m:
+        return PRICING["claude-haiku-4-5"]
     return PRICING["default"]
 
 def calc_cost(model, inp, out, cache_read, cache_creation):

@@ -269,6 +269,8 @@ const PRICING = {
   'claude-haiku-4-6':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
 };
 
+const DEFAULT_PRICING = { input: 3.00, output: 15.00, cache_write: 3.75, cache_read: 0.30 };
+
 function isBillable(model) {
   if (!model) return false;
   const m = model.toLowerCase();
@@ -276,7 +278,7 @@ function isBillable(model) {
 }
 
 function getPricing(model) {
-  if (!model) return null;
+  if (!model) return DEFAULT_PRICING;
   if (PRICING[model]) return PRICING[model];
   for (const key of Object.keys(PRICING)) {
     if (model.startsWith(key)) return PRICING[key];
@@ -285,7 +287,7 @@ function getPricing(model) {
   if (m.includes('opus'))   return PRICING['claude-opus-4-6'];
   if (m.includes('sonnet')) return PRICING['claude-sonnet-4-6'];
   if (m.includes('haiku'))  return PRICING['claude-haiku-4-5'];
-  return null;
+  return DEFAULT_PRICING;
 }
 
 function calcCost(model, inp, out, cacheRead, cacheCreation) {

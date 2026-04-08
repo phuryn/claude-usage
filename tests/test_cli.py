@@ -24,6 +24,31 @@ class TestGetPricing(unittest.TestCase):
         self.assertEqual(p["input"], 3.00)
         self.assertEqual(p["output"], 15.00)
 
+    def test_substring_match_opus(self):
+        p = get_pricing("new-opus-5-model")
+        self.assertEqual(p["input"], 5.00)
+        self.assertEqual(p["output"], 25.00)
+
+    def test_substring_match_sonnet(self):
+        p = get_pricing("custom-sonnet-variant")
+        self.assertEqual(p["input"], 3.00)
+        self.assertEqual(p["output"], 15.00)
+
+    def test_substring_match_haiku(self):
+        p = get_pricing("experimental-haiku-fast")
+        self.assertEqual(p["input"], 1.00)
+        self.assertEqual(p["output"], 5.00)
+
+    def test_substring_match_case_insensitive(self):
+        p = get_pricing("Claude-Opus-Next")
+        self.assertEqual(p["input"], 5.00)
+
+    def test_prefix_takes_precedence_over_substring(self):
+        # Exact prefix match should win over substring fallback
+        p = get_pricing("claude-opus-4-6-preview")
+        self.assertEqual(p["input"], 5.00)
+        self.assertEqual(p["output"], 25.00)
+
     def test_unknown_model_returns_default(self):
         p = get_pricing("some-unknown-model")
         self.assertEqual(p, PRICING["default"])

@@ -143,6 +143,55 @@ class TestHTMLTemplate(unittest.TestCase):
     def test_template_has_chart_js(self):
         self.assertIn("chart.js", HTML_TEMPLATE.lower())
 
+    def test_template_has_substring_matching(self):
+        """Verify getPricing falls back to substring match for unknown models."""
+        self.assertIn("m.includes('opus')", HTML_TEMPLATE)
+        self.assertIn("m.includes('sonnet')", HTML_TEMPLATE)
+        self.assertIn("m.includes('haiku')", HTML_TEMPLATE)
+
+    def test_template_has_default_pricing(self):
+        """Verify dashboard has DEFAULT_PRICING for unknown non-billable models."""
+        self.assertIn("DEFAULT_PRICING", HTML_TEMPLATE)
+
+
+class TestPricingParity(unittest.TestCase):
+    """Verify CLI and dashboard pricing tables stay in sync."""
+
+    def _extract_js_pricing(self):
+        """Extract pricing values from the dashboard JS PRICING object."""
+        import re
+        prices = {}
+        for match in re.finditer(
+            r"'(claude-[^']+)':\s*\{\s*input:\s*([\d.]+),\s*output:\s*([\d.]+)",
+            HTML_TEMPLATE
+        ):
+            model, inp, out = match.group(1), float(match.group(2)), float(match.group(3))
+            prices[model] = {"input": inp, "output": out}
+        return prices
+
+    def test_all_cli_models_in_dashboard(self):
+        from cli import PRICING as CLI_PRICING
+        js_prices = self._extract_js_pricing()
+        for model in CLI_PRICING:
+            if model == "default":
+                continue
+            self.assertIn(model, js_prices, f"{model} missing from dashboard JS")
+
+    def test_prices_match(self):
+        from cli import PRICING as CLI_PRICING
+        js_prices = self._extract_js_pricing()
+        for model in CLI_PRICING:
+            if model == "default":
+                continue
+            self.assertAlmostEqual(
+                CLI_PRICING[model]["input"], js_prices[model]["input"],
+                msg=f"{model} input price mismatch"
+            )
+            self.assertAlmostEqual(
+                CLI_PRICING[model]["output"], js_prices[model]["output"],
+                msg=f"{model} output price mismatch"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
