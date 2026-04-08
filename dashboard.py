@@ -245,6 +245,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </footer>
 
 <script>
+// ── Helpers ────────────────────────────────────────────────────────────────
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
 let rawData = null;
 let selectedModels = new Set();
@@ -368,9 +375,9 @@ function buildFilterUI(allModels) {
   const container = document.getElementById('model-checkboxes');
   container.innerHTML = sorted.map(m => {
     const checked = selectedModels.has(m);
-    return `<label class="model-cb-label ${checked ? 'checked' : ''}" data-model="${m}">
-      <input type="checkbox" value="${m}" ${checked ? 'checked' : ''} onchange="onModelToggle(this)">
-      ${m}
+    return `<label class="model-cb-label ${checked ? 'checked' : ''}" data-model="${esc(m)}">
+      <input type="checkbox" value="${esc(m)}" ${checked ? 'checked' : ''} onchange="onModelToggle(this)">
+      ${esc(m)}
     </label>`;
   }).join('');
 }
@@ -501,8 +508,8 @@ function renderStats(t) {
   document.getElementById('stats-row').innerHTML = stats.map(s => `
     <div class="stat-card">
       <div class="label">${s.label}</div>
-      <div class="value" style="${s.color ? 'color:' + s.color : ''}">${s.value}</div>
-      ${s.sub ? `<div class="sub">${s.sub}</div>` : ''}
+      <div class="value" style="${s.color ? 'color:' + s.color : ''}">${esc(s.value)}</div>
+      ${s.sub ? `<div class="sub">${esc(s.sub)}</div>` : ''}
     </div>
   `).join('');
 }
@@ -584,11 +591,11 @@ function renderSessionsTable(sessions) {
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
     return `<tr>
-      <td class="muted" style="font-family:monospace">${s.session_id}&hellip;</td>
-      <td>${s.project}</td>
-      <td class="muted">${s.last}</td>
-      <td class="muted">${s.duration_min}m</td>
-      <td><span class="model-tag">${s.model}</span></td>
+      <td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>
+      <td>${esc(s.project)}</td>
+      <td class="muted">${esc(s.last)}</td>
+      <td class="muted">${esc(s.duration_min)}m</td>
+      <td><span class="model-tag">${esc(s.model)}</span></td>
       <td class="num">${s.turns}</td>
       <td class="num">${fmt(s.input)}</td>
       <td class="num">${fmt(s.output)}</td>
@@ -604,7 +611,7 @@ function renderModelCostTable(byModel) {
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
     return `<tr>
-      <td><span class="model-tag">${m.model}</span></td>
+      <td><span class="model-tag">${esc(m.model)}</span></td>
       <td class="num">${fmt(m.turns)}</td>
       <td class="num">${fmt(m.input)}</td>
       <td class="num">${fmt(m.output)}</td>
@@ -621,7 +628,7 @@ async function loadData() {
     const resp = await fetch('/api/data');
     const d = await resp.json();
     if (d.error) {
-      document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + d.error + '</div>';
+      document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + esc(d.error) + '</div>';
       return;
     }
     document.getElementById('meta').textContent = 'Updated: ' + d.generated_at + ' \u00b7 Auto-refresh in 30s';
