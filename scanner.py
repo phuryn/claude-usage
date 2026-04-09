@@ -15,6 +15,28 @@ DB_PATH = Path.home() / ".claude" / "usage.db"
 DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
 
 
+def discover_claude_dirs():
+    """Find all ~/.claude* directories that contain a projects/ subfolder.
+    Returns list of (label, projects_dir, db_path) tuples.
+    """
+    home = Path.home()
+    results = []
+    for d in sorted(home.glob(".claude*")):
+        if not d.is_dir():
+            continue
+        projects = d / "projects"
+        if projects.is_dir():
+            name = d.name
+            if name == ".claude":
+                label = "claude"
+            elif name.startswith(".claude-"):
+                label = name[len(".claude-"):]
+            else:
+                label = name.lstrip(".")
+            results.append((label, projects, d / "usage.db"))
+    return results
+
+
 def get_db(db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row

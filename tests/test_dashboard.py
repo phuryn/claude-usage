@@ -119,8 +119,13 @@ class TestDashboardHTTP(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             self.assertIn("application/json", resp.headers["Content-Type"])
             data = json.loads(resp.read())
-            # Should have expected keys (or error if no DB)
-            self.assertTrue("all_models" in data or "error" in data)
+            # Multi-account envelope: {accounts: [{label, all_models, ...}, ...]}
+            self.assertIn("accounts", data)
+            self.assertIsInstance(data["accounts"], list)
+            if data["accounts"]:
+                account = data["accounts"][0]
+                self.assertIn("label", account)
+                self.assertTrue("all_models" in account or "error" in account)
 
     def test_api_rescan_returns_json(self):
         url = f"http://127.0.0.1:{self.port}/api/rescan"
@@ -129,9 +134,13 @@ class TestDashboardHTTP(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             self.assertIn("application/json", resp.headers["Content-Type"])
             data = json.loads(resp.read())
-            self.assertIn("new", data)
-            self.assertIn("updated", data)
-            self.assertIn("skipped", data)
+            # Multi-account: returns list of {label, new, updated, skipped, ...}
+            self.assertIsInstance(data, list)
+            if data:
+                self.assertIn("label", data[0])
+                self.assertIn("new", data[0])
+                self.assertIn("updated", data[0])
+                self.assertIn("skipped", data[0])
 
     def test_404_for_unknown_path(self):
         url = f"http://127.0.0.1:{self.port}/nonexistent"

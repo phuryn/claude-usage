@@ -11,6 +11,23 @@ from datetime import datetime
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
+_accounts = None
+
+
+def get_all_accounts_data():
+    """Return data for all discovered accounts."""
+    from scanner import discover_claude_dirs
+    accounts = _accounts or discover_claude_dirs()
+    if not accounts:
+        accounts = [("claude", None, DB_PATH)]
+    result = []
+    for label, _, db_path in accounts:
+        data = get_dashboard_data(db_path)
+        if "error" not in data:
+            data["label"] = label
+            result.append(data)
+    return {"accounts": result}
+
 
 def get_dashboard_data(db_path=DB_PATH):
     if not db_path.exists():
@@ -123,6 +140,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
   #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+  #account-tabs { background: var(--card); border-bottom: 1px solid var(--border); padding: 0 24px; display: flex; gap: 0; }
+  .account-tab { padding: 10px 20px; border: none; background: transparent; color: var(--muted); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; transition: color 0.15s, border-color 0.15s; }
+  .account-tab:hover { color: var(--text); }
+  .account-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
   #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
   .filter-sep { width: 1px; height: 22px; background: var(--border); flex-shrink: 0; }
@@ -189,6 +211,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="meta" id="meta">Loading...</div>
   <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
 </header>
+
+<div id="account-tabs"></div>
 
 <div id="filter-bar">
   <div class="filter-label">Models</div>
@@ -291,6 +315,8 @@ function esc(s) {
 }
 
 // ── State ──────────────────────────────────────────────────────────────────
+let allAccounts = [];
+let selectedAccount = null;
 let rawData = null;
 let selectedModels = new Set();
 let selectedRange = '30d';
@@ -451,9 +477,14 @@ function clearAllModels() {
 }
 
 // ── URL persistence ────────────────────────────────────────────────────────
+function readURLAccount() {
+  return new URLSearchParams(window.location.search).get('account') || null;
+}
+
 function updateURL() {
   const allModels = Array.from(document.querySelectorAll('#model-checkboxes input')).map(cb => cb.value);
   const params = new URLSearchParams();
+  if (selectedAccount && allAccounts.length > 1) params.set('account', selectedAccount);
   if (selectedRange !== '30d') params.set('range', selectedRange);
   if (!isDefaultModelSelection(allModels)) params.set('models', Array.from(selectedModels).join(','));
   const search = params.toString() ? '?' + params.toString() : '';
@@ -839,14 +870,48 @@ async function triggerRescan() {
   btn.textContent = '\u21bb Scanning...';
   try {
     const resp = await fetch('/api/rescan', { method: 'POST' });
-    const d = await resp.json();
-    btn.textContent = '\u21bb Rescan (' + d.new + ' new, ' + d.updated + ' updated)';
+    const results = await resp.json();
+    const totNew = results.reduce((s, r) => s + (r.new || 0), 0);
+    const totUpd = results.reduce((s, r) => s + (r.updated || 0), 0);
+    btn.textContent = '\u21bb Rescan (' + totNew + ' new, ' + totUpd + ' updated)';
     await loadData();
   } catch(e) {
     btn.textContent = '\u21bb Rescan (error)';
     console.error(e);
   }
   setTimeout(() => { btn.textContent = '\u21bb Rescan'; btn.disabled = false; }, 3000);
+}
+
+// ── Account tabs ──────────────────────────────────────────────────────────
+function buildAccountTabs() {
+  const container = document.getElementById('account-tabs');
+  if (allAccounts.length <= 1) {
+    container.style.display = 'none';
+    return;
+  }
+  container.style.display = 'flex';
+  container.innerHTML = '';
+  allAccounts.forEach(a => {
+    const btn = document.createElement('button');
+    btn.className = 'account-tab' + (a.label === selectedAccount ? ' active' : '');
+    btn.dataset.account = a.label;
+    btn.textContent = a.label;
+    btn.addEventListener('click', () => switchAccount(a.label));
+    container.appendChild(btn);
+  });
+}
+
+function switchAccount(label) {
+  selectedAccount = label;
+  const account = allAccounts.find(a => a.label === label);
+  if (!account) return;
+  rawData = account;
+  document.querySelectorAll('.account-tab').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.account === label)
+  );
+  buildFilterUI(rawData.all_models);
+  updateURL();
+  applyFilter();
 }
 
 // ── Data loading ───────────────────────────────────────────────────────────
@@ -858,19 +923,33 @@ async function loadData() {
       document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + esc(d.error) + '</div>';
       return;
     }
-    document.getElementById('meta').textContent = 'Updated: ' + d.generated_at + ' \u00b7 Auto-refresh in 30s';
 
-    const isFirstLoad = rawData === null;
-    rawData = d;
+    const isFirstLoad = allAccounts.length === 0;
+    allAccounts = d.accounts || [];
+
+    if (!allAccounts.length) {
+      document.body.innerHTML = '<div style="padding:40px;color:#f87171">No accounts found.</div>';
+      return;
+    }
 
     if (isFirstLoad) {
-      // Restore range from URL, mark active button
+      const urlAccount = readURLAccount();
+      selectedAccount = allAccounts.find(a => a.label === urlAccount) ? urlAccount : allAccounts[0].label;
+      buildAccountTabs();
+
       selectedRange = readURLRange();
       document.querySelectorAll('.range-btn').forEach(btn =>
         btn.classList.toggle('active', btn.dataset.range === selectedRange)
       );
-      // Build model filter (reads URL for model selection too)
-      buildFilterUI(d.all_models);
+    }
+
+    const account = allAccounts.find(a => a.label === selectedAccount) || allAccounts[0];
+    rawData = account;
+
+    document.getElementById('meta').textContent = 'Updated: ' + account.generated_at + ' \u00b7 Auto-refresh in 30s';
+
+    if (isFirstLoad) {
+      buildFilterUI(rawData.all_models);
       updateSortIcons();
       updateModelSortIcons();
       updateProjectSortIcons();
@@ -902,7 +981,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
 
         elif self.path == "/api/data":
-            data = get_dashboard_data()
+            data = get_all_accounts_data()
             body = json.dumps(data).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -916,12 +995,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/rescan":
-            # Full rebuild: delete DB and rescan from scratch
-            if DB_PATH.exists():
-                DB_PATH.unlink()
-            from scanner import scan
-            result = scan(verbose=False)
-            body = json.dumps(result).encode("utf-8")
+            from scanner import scan, discover_claude_dirs
+            accounts = _accounts or discover_claude_dirs()
+            results = []
+            for label, projects_dir, db_path in accounts:
+                if db_path.exists():
+                    db_path.unlink()
+                result = scan(projects_dir=projects_dir, db_path=db_path, verbose=False)
+                results.append({"label": label, **result})
+            body = json.dumps(results).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -932,7 +1014,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
-def serve(host=None, port=None):
+def serve(host=None, port=None, accounts=None):
+    global _accounts
+    _accounts = accounts
     host = host or os.environ.get("HOST", "localhost")
     port = port or int(os.environ.get("PORT", "8080"))
     server = HTTPServer((host, port), DashboardHandler)
@@ -945,4 +1029,5 @@ def serve(host=None, port=None):
 
 
 if __name__ == "__main__":
-    serve()
+    from scanner import discover_claude_dirs
+    serve(accounts=discover_claude_dirs())
