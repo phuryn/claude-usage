@@ -573,7 +573,7 @@ function applyFilter() {
   renderProjectChart(byProject);
   renderSessionsTable(sortSessions(filteredSessions).slice(0, 20));
   renderModelCostTable(byModel);
-  renderProjectCostTable(byProject);
+  renderProjectCostTable(byProject.slice(0, 20));
 }
 
 // ── Renderers ──────────────────────────────────────────────────────────────
