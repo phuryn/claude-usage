@@ -47,7 +47,8 @@ def init_db(conn):
             cache_read_tokens       INTEGER DEFAULT 0,
             cache_creation_tokens   INTEGER DEFAULT 0,
             tool_name               TEXT,
-            cwd                     TEXT
+            cwd                     TEXT,
+            message_id              TEXT
         );
 
         CREATE TABLE IF NOT EXISTS processed_files (
@@ -59,6 +60,16 @@ def init_db(conn):
         CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
         CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
         CREATE INDEX IF NOT EXISTS idx_sessions_first ON sessions(first_timestamp);
+    """)
+    # Add message_id column if upgrading from older schema
+    try:
+        conn.execute("SELECT message_id FROM turns LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE turns ADD COLUMN message_id TEXT")
+    # Conditional unique index: only dedup non-null message IDs
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_message_id
+        ON turns(message_id) WHERE message_id IS NOT NULL AND message_id != ''
     """)
     conn.commit()
 
@@ -75,9 +86,15 @@ def project_name_from_cwd(cwd):
 
 
 def parse_jsonl_file(filepath):
-    """Parse a JSONL file and return (session_metas, turns, line_count)."""
-    turns = []
-    session_meta = {}  # session_id -> dict
+    """Parse a JSONL file and return (session_metas, turns, line_count).
+
+    Deduplicates streaming events by message.id — Claude Code logs multiple
+    JSONL records per API response, all sharing the same message.id. Only the
+    last record per message_id is kept (it has the final usage tallies).
+    """
+    seen_messages = {}  # message_id -> turn dict (dedup streaming records)
+    turns_no_id = []    # turns without a message_id (kept as-is)
+    session_meta = {}   # session_id -> dict
     line_count = 0
 
     try:
@@ -126,6 +143,7 @@ def parse_jsonl_file(filepath):
                     msg = record.get("message", {})
                     usage = msg.get("usage", {})
                     model = msg.get("model", "")
+                    message_id = msg.get("id", "")
 
                     input_tokens = usage.get("input_tokens", 0) or 0
                     output_tokens = usage.get("output_tokens", 0) or 0
@@ -146,7 +164,7 @@ def parse_jsonl_file(filepath):
                     if model:
                         session_meta[session_id]["model"] = model
 
-                    turns.append({
+                    turn = {
                         "session_id": session_id,
                         "timestamp": timestamp,
                         "model": model,
@@ -156,11 +174,19 @@ def parse_jsonl_file(filepath):
                         "cache_creation_tokens": cache_creation,
                         "tool_name": tool_name,
                         "cwd": cwd,
-                    })
+                        "message_id": message_id,
+                    }
+
+                    # Dedup: last record per message_id wins (final usage tallies)
+                    if message_id:
+                        seen_messages[message_id] = turn
+                    else:
+                        turns_no_id.append(turn)
 
     except Exception as e:
         print(f"  Warning: error reading {filepath}: {e}")
 
+    turns = turns_no_id + list(seen_messages.values())
     return list(session_meta.values()), turns, line_count
 
 
@@ -242,15 +268,15 @@ def upsert_sessions(conn, sessions):
 
 def insert_turns(conn, turns):
     conn.executemany("""
-        INSERT INTO turns
+        INSERT OR IGNORE INTO turns
             (session_id, timestamp, model, input_tokens, output_tokens,
-             cache_read_tokens, cache_creation_tokens, tool_name, cwd)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             cache_read_tokens, cache_creation_tokens, tool_name, cwd, message_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
         (t["session_id"], t["timestamp"], t["model"],
          t["input_tokens"], t["output_tokens"],
          t["cache_read_tokens"], t["cache_creation_tokens"],
-         t["tool_name"], t["cwd"])
+         t["tool_name"], t["cwd"], t.get("message_id", ""))
         for t in turns
     ])
 
@@ -317,7 +343,8 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         else:
             # Updated file: read once, process only new lines
             old_lines = row["lines"] if row else 0
-            new_turns = []
+            seen_messages = {}  # message_id -> turn (dedup streaming)
+            turns_no_id = []
             new_session_metas = {}
             line_count = 0
 
@@ -364,6 +391,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                             msg = record.get("message", {})
                             usage = msg.get("usage", {})
                             model = msg.get("model", "")
+                            message_id = msg.get("id", "")
 
                             input_tokens = usage.get("input_tokens", 0) or 0
                             output_tokens = usage.get("output_tokens", 0) or 0
@@ -382,7 +410,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                             if model:
                                 new_session_metas[session_id]["model"] = model
 
-                            new_turns.append({
+                            turn = {
                                 "session_id": session_id,
                                 "timestamp": timestamp,
                                 "model": model,
@@ -392,7 +420,13 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                                 "cache_creation_tokens": cache_creation,
                                 "tool_name": tool_name,
                                 "cwd": cwd,
-                            })
+                                "message_id": message_id,
+                            }
+
+                            if message_id:
+                                seen_messages[message_id] = turn
+                            else:
+                                turns_no_id.append(turn)
             except Exception as e:
                 print(f"  Warning: {e}")
 
@@ -403,6 +437,8 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                 conn.commit()
                 skipped_files += 1
                 continue
+
+            new_turns = turns_no_id + list(seen_messages.values())
 
             if new_turns or new_session_metas:
                 sessions = aggregate_sessions(list(new_session_metas.values()), new_turns)

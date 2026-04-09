@@ -40,22 +40,26 @@ def _make_assistant_record(session_id="sess-1", model="claude-sonnet-4-6",
                            input_tokens=100, output_tokens=50,
                            cache_read=10, cache_creation=5,
                            timestamp="2026-04-08T10:00:00Z",
-                           cwd="/home/user/project"):
+                           cwd="/home/user/project",
+                           message_id=""):
+    msg = {
+        "model": model,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_creation,
+        },
+        "content": [],
+    }
+    if message_id:
+        msg["id"] = message_id
     return json.dumps({
         "type": "assistant",
         "sessionId": session_id,
         "timestamp": timestamp,
         "cwd": cwd,
-        "message": {
-            "model": model,
-            "usage": {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cache_read_input_tokens": cache_read,
-                "cache_creation_input_tokens": cache_creation,
-            },
-            "content": [],
-        },
+        "message": msg,
     })
 
 
@@ -159,6 +163,167 @@ class TestParseJsonlFile(unittest.TestCase):
         path = self._write_jsonl("test.jsonl", [record])
         _, turns, _ = parse_jsonl_file(path)
         self.assertEqual(turns[0]["tool_name"], "Read")
+
+
+class TestMessageIdDedup(unittest.TestCase):
+    """Test deduplication of streaming events by message.id."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def _write_jsonl(self, filename, lines):
+        path = os.path.join(self.tmpdir, filename)
+        with open(path, "w") as f:
+            for line in lines:
+                f.write(line + "\n")
+        return path
+
+    def test_streaming_events_deduped(self):
+        """Multiple records with same message.id should produce one turn."""
+        path = self._write_jsonl("test.jsonl", [
+            # Streaming event 1: partial usage
+            _make_assistant_record(message_id="msg-abc", input_tokens=50, output_tokens=10),
+            # Streaming event 2: more usage (same message)
+            _make_assistant_record(message_id="msg-abc", input_tokens=100, output_tokens=50),
+            # Streaming event 3: final usage (same message)
+            _make_assistant_record(message_id="msg-abc", input_tokens=150, output_tokens=80),
+        ])
+        _, turns, _ = parse_jsonl_file(path)
+        self.assertEqual(len(turns), 1)
+        # Last record wins (has final tallies)
+        self.assertEqual(turns[0]["input_tokens"], 150)
+        self.assertEqual(turns[0]["output_tokens"], 80)
+        self.assertEqual(turns[0]["message_id"], "msg-abc")
+
+    def test_different_message_ids_kept(self):
+        """Records with different message.id are separate turns."""
+        path = self._write_jsonl("test.jsonl", [
+            _make_assistant_record(message_id="msg-1", input_tokens=100),
+            _make_assistant_record(message_id="msg-2", input_tokens=200),
+        ])
+        _, turns, _ = parse_jsonl_file(path)
+        self.assertEqual(len(turns), 2)
+
+    def test_records_without_message_id_kept(self):
+        """Records without message.id are kept as-is (no dedup)."""
+        path = self._write_jsonl("test.jsonl", [
+            _make_assistant_record(input_tokens=100),
+            _make_assistant_record(input_tokens=200),
+        ])
+        _, turns, _ = parse_jsonl_file(path)
+        self.assertEqual(len(turns), 2)
+
+    def test_mixed_with_and_without_ids(self):
+        """Mix of records with and without message.id."""
+        path = self._write_jsonl("test.jsonl", [
+            _make_assistant_record(message_id="msg-1", input_tokens=50),
+            _make_assistant_record(message_id="msg-1", input_tokens=100),  # deduped
+            _make_assistant_record(input_tokens=200),  # no id, kept
+        ])
+        _, turns, _ = parse_jsonl_file(path)
+        self.assertEqual(len(turns), 2)  # 1 deduped + 1 without id
+        token_sums = sorted([t["input_tokens"] for t in turns])
+        self.assertEqual(token_sums, [100, 200])
+
+
+class TestMessageIdDedupIntegration(unittest.TestCase):
+    """Integration test: dedup across scan cycles."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.projects_dir = Path(self.tmpdir) / "projects" / "user" / "proj"
+        self.projects_dir.mkdir(parents=True)
+        self.db_path = Path(self.tmpdir) / "usage.db"
+        self.filepath = self.projects_dir / "sess-1.jsonl"
+
+    def test_streaming_dedup_reduces_turn_count(self):
+        """3 streaming events for 2 messages should produce 2 turns."""
+        with open(self.filepath, "w") as f:
+            f.write(_make_user_record(session_id="sess-1") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1",
+                                           message_id="msg-1",
+                                           input_tokens=50, output_tokens=20) + "\n")
+            f.write(_make_assistant_record(session_id="sess-1",
+                                           message_id="msg-1",
+                                           input_tokens=100, output_tokens=50) + "\n")
+            f.write(_make_assistant_record(session_id="sess-1",
+                                           message_id="msg-2",
+                                           input_tokens=200, output_tokens=100) + "\n")
+
+        result = scan(projects_dir=self.projects_dir.parent.parent,
+                      db_path=self.db_path, verbose=False)
+        self.assertEqual(result["turns"], 2)
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        turns = conn.execute("SELECT * FROM turns ORDER BY input_tokens").fetchall()
+        self.assertEqual(len(turns), 2)
+        # msg-1: last record wins (100/50), msg-2: 200/100
+        self.assertEqual(turns[0]["input_tokens"], 100)
+        self.assertEqual(turns[1]["input_tokens"], 200)
+        # Session totals should reflect deduped values
+        session = conn.execute("SELECT * FROM sessions").fetchone()
+        self.assertEqual(session["total_input_tokens"], 300)  # 100 + 200
+        conn.close()
+
+    def test_cross_file_dedup_via_unique_index(self):
+        """Re-scanning a file shouldn't create duplicate turns for same message_id."""
+        with open(self.filepath, "w") as f:
+            f.write(_make_user_record(session_id="sess-1") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1",
+                                           message_id="msg-1",
+                                           input_tokens=100, output_tokens=50) + "\n")
+
+        scan(projects_dir=self.projects_dir.parent.parent,
+             db_path=self.db_path, verbose=False)
+
+        conn = sqlite3.connect(self.db_path)
+        count1 = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+        self.assertEqual(count1, 1)
+
+        # Delete processed_files to force re-scan
+        conn.execute("DELETE FROM processed_files")
+        conn.commit()
+        conn.close()
+
+        scan(projects_dir=self.projects_dir.parent.parent,
+             db_path=self.db_path, verbose=False)
+
+        conn = sqlite3.connect(self.db_path)
+        count2 = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+        conn.close()
+        # Should still be 1 turn (UNIQUE index prevents duplicate)
+        self.assertEqual(count2, 1)
+
+    def test_schema_migration_adds_message_id(self):
+        """Existing DBs without message_id column should be upgraded."""
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript("""
+            CREATE TABLE turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                timestamp TEXT,
+                model TEXT,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                tool_name TEXT,
+                cwd TEXT
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        # init_db should add message_id column
+        from scanner import get_db, init_db
+        conn = get_db(self.db_path)
+        init_db(conn)
+        # Verify column exists
+        row = conn.execute("PRAGMA table_info(turns)").fetchall()
+        col_names = [r["name"] for r in row]
+        self.assertIn("message_id", col_names)
+        conn.close()
 
 
 class TestAggregateSessions(unittest.TestCase):
