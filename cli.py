@@ -265,7 +265,12 @@ def cmd_dashboard(projects_dir=None):
     from dashboard import serve
 
     host = os.environ.get("HOST", "localhost")
-    port = int(os.environ.get("PORT", "8080"))
+    default_port = os.environ.get("PORT", "8080")
+    try:
+        raw = input(f"Port to use [{default_port}]: ").strip()
+        port = int(raw) if raw else int(default_port)
+    except (ValueError, EOFError):
+        port = int(default_port)
 
     def open_browser():
         time.sleep(1.0)
