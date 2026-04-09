@@ -167,6 +167,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .num { font-family: monospace; }
   .muted { color: var(--muted); }
   .section-title { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+  .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .section-header .section-title { margin-bottom: 0; }
+  .export-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 3px 10px; border-radius: 5px; cursor: pointer; font-size: 11px; }
+  .export-btn:hover { color: var(--text); border-color: var(--accent); }
   .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
 
   footer { border-top: 1px solid var(--border); padding: 20px 24px; margin-top: 8px; }
@@ -218,7 +222,22 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </div>
   <div class="table-card">
-    <div class="section-title">Recent Sessions</div>
+    <div class="section-title">Cost by Model</div>
+    <table>
+      <thead><tr>
+        <th>Model</th>
+        <th class="sortable" onclick="setModelSort('turns')">Turns <span class="sort-icon" id="msort-turns"></span></th>
+        <th class="sortable" onclick="setModelSort('input')">Input <span class="sort-icon" id="msort-input"></span></th>
+        <th class="sortable" onclick="setModelSort('output')">Output <span class="sort-icon" id="msort-output"></span></th>
+        <th class="sortable" onclick="setModelSort('cache_read')">Cache Read <span class="sort-icon" id="msort-cache_read"></span></th>
+        <th class="sortable" onclick="setModelSort('cache_creation')">Cache Creation <span class="sort-icon" id="msort-cache_creation"></span></th>
+        <th class="sortable" onclick="setModelSort('cost')">Est. Cost <span class="sort-icon" id="msort-cost"></span></th>
+      </tr></thead>
+      <tbody id="model-cost-body"></tbody>
+    </table>
+  </div>
+  <div class="table-card">
+    <div class="section-header"><div class="section-title">Recent Sessions</div><button class="export-btn" onclick="exportSessionsCSV()" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
         <th>Session</th>
@@ -235,22 +254,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </table>
   </div>
   <div class="table-card">
-    <div class="section-title">Cost by Model</div>
-    <table>
-      <thead><tr>
-        <th>Model</th>
-        <th class="sortable" onclick="setModelSort('turns')">Turns <span class="sort-icon" id="msort-turns"></span></th>
-        <th class="sortable" onclick="setModelSort('input')">Input <span class="sort-icon" id="msort-input"></span></th>
-        <th class="sortable" onclick="setModelSort('output')">Output <span class="sort-icon" id="msort-output"></span></th>
-        <th class="sortable" onclick="setModelSort('cache_read')">Cache Read <span class="sort-icon" id="msort-cache_read"></span></th>
-        <th class="sortable" onclick="setModelSort('cache_creation')">Cache Creation <span class="sort-icon" id="msort-cache_creation"></span></th>
-        <th class="sortable" onclick="setModelSort('cost')">Est. Cost <span class="sort-icon" id="msort-cost"></span></th>
-      </tr></thead>
-      <tbody id="model-cost-body"></tbody>
-    </table>
-  </div>
-  <div class="table-card">
-    <div class="section-title">Cost by Project</div>
+    <div class="section-header"><div class="section-title">Cost by Project</div><button class="export-btn" onclick="exportProjectsCSV()" title="Export all projects to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
         <th>Project</th>
@@ -296,6 +300,8 @@ let modelSortCol = 'cost';
 let modelSortDir = 'desc';
 let projectSortCol = 'cost';
 let projectSortDir = 'desc';
+let lastFilteredSessions = [];
+let lastByProject = [];
 let sessionSortDir = 'desc';
 
 // ── Pricing (Anthropic API, April 2026) ────────────────────────────────────
@@ -571,9 +577,11 @@ function applyFilter() {
   renderDailyChart(daily);
   renderModelChart(byModel);
   renderProjectChart(byProject);
-  renderSessionsTable(sortSessions(filteredSessions).slice(0, 20));
+  lastFilteredSessions = sortSessions(filteredSessions);
+  lastByProject = sortProjects(byProject);
+  renderSessionsTable(lastFilteredSessions.slice(0, 20));
   renderModelCostTable(byModel);
-  renderProjectCostTable(byProject.slice(0, 20));
+  renderProjectCostTable(lastByProject.slice(0, 20));
 }
 
 // ── Renderers ──────────────────────────────────────────────────────────────
@@ -777,6 +785,51 @@ function renderProjectCostTable(byProject) {
       <td class="cost">${fmtCost(p.cost)}</td>
     </tr>`;
   }).join('');
+}
+
+// ── CSV Export ────────────────────────────────────────────────────────────
+function csvField(val) {
+  const s = String(val);
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+function csvTimestamp() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0')
+    + '_' + String(d.getHours()).padStart(2,'0') + String(d.getMinutes()).padStart(2,'0');
+}
+
+function downloadCSV(reportType, header, rows) {
+  const lines = [header.map(csvField).join(',')];
+  for (const row of rows) {
+    lines.push(row.map(csvField).join(','));
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = reportType + '_' + csvTimestamp() + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function exportSessionsCSV() {
+  const header = ['Session', 'Project', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
+  const rows = lastFilteredSessions.map(s => {
+    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    return [s.session_id, s.project, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
+  });
+  downloadCSV('sessions', header, rows);
+}
+
+function exportProjectsCSV() {
+  const header = ['Project', 'Sessions', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
+  const rows = lastByProject.map(p => {
+    return [p.project, p.sessions, p.turns, p.input, p.output, p.cache_read, p.cache_creation, p.cost.toFixed(4)];
+  });
+  downloadCSV('projects', header, rows);
 }
 
 // ── Rescan ────────────────────────────────────────────────────────────────
