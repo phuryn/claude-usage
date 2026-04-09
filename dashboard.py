@@ -249,6 +249,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <tbody id="model-cost-body"></tbody>
     </table>
   </div>
+  <div class="table-card">
+    <div class="section-title">Cost by Project</div>
+    <table>
+      <thead><tr>
+        <th>Project</th>
+        <th class="sortable" onclick="setProjectSort('sessions')">Sessions <span class="sort-icon" id="psort-sessions"></span></th>
+        <th class="sortable" onclick="setProjectSort('turns')">Turns <span class="sort-icon" id="psort-turns"></span></th>
+        <th class="sortable" onclick="setProjectSort('input')">Input <span class="sort-icon" id="psort-input"></span></th>
+        <th class="sortable" onclick="setProjectSort('output')">Output <span class="sort-icon" id="psort-output"></span></th>
+        <th class="sortable" onclick="setProjectSort('cost')">Est. Cost <span class="sort-icon" id="psort-cost"></span></th>
+      </tr></thead>
+      <tbody id="project-cost-body"></tbody>
+    </table>
+  </div>
 </div>
 
 <footer>
@@ -280,6 +294,8 @@ let charts = {};
 let sessionSortCol = 'last';
 let modelSortCol = 'cost';
 let modelSortDir = 'desc';
+let projectSortCol = 'cost';
+let projectSortDir = 'desc';
 let sessionSortDir = 'desc';
 
 // ── Pricing (Anthropic API, April 2026) ────────────────────────────────────
@@ -525,10 +541,15 @@ function applyFilter() {
   // By project: aggregate from filtered sessions
   const projMap = {};
   for (const s of filteredSessions) {
-    if (!projMap[s.project]) projMap[s.project] = { project: s.project, input: 0, output: 0, turns: 0 };
-    projMap[s.project].input  += s.input;
-    projMap[s.project].output += s.output;
-    projMap[s.project].turns  += s.turns;
+    if (!projMap[s.project]) projMap[s.project] = { project: s.project, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0, sessions: 0, cost: 0 };
+    const p = projMap[s.project];
+    p.input          += s.input;
+    p.output         += s.output;
+    p.cache_read     += s.cache_read;
+    p.cache_creation += s.cache_creation;
+    p.turns          += s.turns;
+    p.sessions++;
+    p.cost += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
   }
   const byProject = Object.values(projMap).sort((a, b) => (b.input + b.output) - (a.input + a.output));
 
@@ -552,6 +573,7 @@ function applyFilter() {
   renderProjectChart(byProject);
   renderSessionsTable(sortSessions(filteredSessions).slice(0, 20));
   renderModelCostTable(byModel);
+  renderProjectCostTable(byProject);
 }
 
 // ── Renderers ──────────────────────────────────────────────────────────────
@@ -716,6 +738,47 @@ function renderModelCostTable(byModel) {
   }).join('');
 }
 
+// ── Project cost table sorting ────────────────────────────────────────────
+function setProjectSort(col) {
+  if (projectSortCol === col) {
+    projectSortDir = projectSortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    projectSortCol = col;
+    projectSortDir = 'desc';
+  }
+  updateProjectSortIcons();
+  applyFilter();
+}
+
+function updateProjectSortIcons() {
+  document.querySelectorAll('[id^="psort-"]').forEach(el => el.textContent = '');
+  const icon = document.getElementById('psort-' + projectSortCol);
+  if (icon) icon.textContent = projectSortDir === 'desc' ? ' \u25bc' : ' \u25b2';
+}
+
+function sortProjects(byProject) {
+  return [...byProject].sort((a, b) => {
+    const av = a[projectSortCol] ?? 0;
+    const bv = b[projectSortCol] ?? 0;
+    if (av < bv) return projectSortDir === 'desc' ? 1 : -1;
+    if (av > bv) return projectSortDir === 'desc' ? -1 : 1;
+    return 0;
+  });
+}
+
+function renderProjectCostTable(byProject) {
+  document.getElementById('project-cost-body').innerHTML = sortProjects(byProject).map(p => {
+    return `<tr>
+      <td>${esc(p.project)}</td>
+      <td class="num">${p.sessions}</td>
+      <td class="num">${fmt(p.turns)}</td>
+      <td class="num">${fmt(p.input)}</td>
+      <td class="num">${fmt(p.output)}</td>
+      <td class="cost">${fmtCost(p.cost)}</td>
+    </tr>`;
+  }).join('');
+}
+
 // ── Rescan ────────────────────────────────────────────────────────────────
 async function triggerRescan() {
   const btn = document.getElementById('rescan-btn');
@@ -757,6 +820,7 @@ async function loadData() {
       buildFilterUI(d.all_models);
       updateSortIcons();
       updateModelSortIcons();
+      updateProjectSortIcons();
     }
 
     applyFilter();
