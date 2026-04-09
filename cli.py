@@ -80,6 +80,17 @@ def cmd_scan(projects_dir=None):
     from scanner import scan
     scan(projects_dir=Path(projects_dir) if projects_dir else None)
 
+    # Snapshot context-window budgets for every known project (PR: context window)
+    try:
+        from context_scanner import snapshot_all_known
+        conn = sqlite3.connect(DB_PATH)
+        n = snapshot_all_known(conn)
+        conn.close()
+        if n:
+            print(f"Context snapshots: {n} project(s)")
+    except Exception as e:
+        print(f"  Warning: context snapshot failed: {e}")
+
 
 def cmd_today():
     conn = require_db()
