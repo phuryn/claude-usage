@@ -315,5 +315,106 @@ class TestScanIntegration(unittest.TestCase):
         self.assertEqual(result["sessions"], 2)
 
 
+class TestScanIncrementalUpdate(unittest.TestCase):
+    """Tests for the incremental (updated file) scan path.
+
+    These guard against:
+    - Double-counting turns when a file is read twice (the original bug)
+    - new_session_metas not being populated (unused new_metas bug)
+    - Race condition where line count differs between two reads
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.projects_dir = Path(self.tmpdir) / "projects"
+        self.projects_dir.mkdir()
+        self.db_path = Path(self.tmpdir) / "usage.db"
+        project_dir = self.projects_dir / "user" / "proj"
+        project_dir.mkdir(parents=True)
+        self.jsonl_path = project_dir / "sess-1.jsonl"
+
+    def _append_turn(self, session_id="sess-1", input_tokens=100,
+                     output_tokens=50, timestamp="2026-04-08T10:00:00Z"):
+        with open(self.jsonl_path, "a") as f:
+            f.write(_make_assistant_record(
+                session_id=session_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                timestamp=timestamp,
+            ) + "\n")
+
+    def _db_turn_count(self):
+        conn = get_db(self.db_path)
+        n = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+        conn.close()
+        return n
+
+    def _db_session(self, session_id="sess-1"):
+        conn = get_db(self.db_path)
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def test_no_duplicate_turns_on_update(self):
+        """Growing a file must add only new turns, not re-insert old ones."""
+        self._append_turn(input_tokens=100, timestamp="2026-04-08T10:00:00Z")
+        scan(projects_dir=self.projects_dir, db_path=self.db_path, verbose=False)
+        self.assertEqual(self._db_turn_count(), 1)
+
+        self._append_turn(input_tokens=200, timestamp="2026-04-08T10:01:00Z")
+        scan(projects_dir=self.projects_dir, db_path=self.db_path, verbose=False)
+        # Must be 2, not 3 (which would happen if the first turn were re-inserted)
+        self.assertEqual(self._db_turn_count(), 2)
+
+    def test_token_counts_accumulate_without_double_counting(self):
+        """Session token totals must be the sum of all turns, not doubled."""
+        self._append_turn(input_tokens=100, output_tokens=50,
+                          timestamp="2026-04-08T10:00:00Z")
+        scan(projects_dir=self.projects_dir, db_path=self.db_path, verbose=False)
+
+        self._append_turn(input_tokens=300, output_tokens=150,
+                          timestamp="2026-04-08T10:01:00Z")
+        scan(projects_dir=self.projects_dir, db_path=self.db_path, verbose=False)
+
+        s = self._db_session()
+        self.assertEqual(s["total_input_tokens"], 400)   # 100 + 300, not 200 + 300
+        self.assertEqual(s["total_output_tokens"], 200)  # 50 + 150
+        self.assertEqual(s["turn_count"], 2)
+
+    def test_session_last_timestamp_updated(self):
+        """last_timestamp must advance to reflect turns added in subsequent scans."""
+        self._append_turn(timestamp="2026-04-08T10:00:00Z")
+        scan(projects_dir=self.projects_dir, db_path=self.db_path, verbose=False)
+        self.assertIn("10:00:00", self._db_session()["last_timestamp"])
+
+        self._append_turn(timestamp="2026-04-08T11:00:00Z")
+        scan(projects_dir=self.projects_dir, db_path=self.db_path, verbose=False)
+        self.assertIn("11:00:00", self._db_session()["last_timestamp"])
+
+    def test_result_counts_updated_not_new(self):
+        """scan() must report updated_files, not new_files, for a grown file."""
+        self._append_turn(timestamp="2026-04-08T10:00:00Z")
+        scan(projects_dir=self.projects_dir, db_path=self.db_path, verbose=False)
+
+        self._append_turn(timestamp="2026-04-08T10:01:00Z")
+        result = scan(projects_dir=self.projects_dir, db_path=self.db_path, verbose=False)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["new"], 0)
+        self.assertEqual(result["turns"], 1)
+
+    def test_unchanged_line_count_skipped_even_if_mtime_differs(self):
+        """If line count hasn't grown, file must be skipped and DB unchanged."""
+        self._append_turn(timestamp="2026-04-08T10:00:00Z")
+        scan(projects_dir=self.projects_dir, db_path=self.db_path, verbose=False)
+
+        # Touch the file (changes mtime) without adding content
+        os.utime(self.jsonl_path, None)
+        result = scan(projects_dir=self.projects_dir, db_path=self.db_path, verbose=False)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(self._db_turn_count(), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
