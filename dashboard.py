@@ -238,8 +238,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="section-title">Cost by Model</div>
     <table>
       <thead><tr>
-        <th>Model</th><th>Turns</th><th>Input</th><th>Output</th>
-        <th>Cache Read</th><th>Cache Creation</th><th>Est. Cost</th>
+        <th>Model</th>
+        <th class="sortable" onclick="setModelSort('turns')">Turns <span class="sort-icon" id="msort-turns"></span></th>
+        <th class="sortable" onclick="setModelSort('input')">Input <span class="sort-icon" id="msort-input"></span></th>
+        <th class="sortable" onclick="setModelSort('output')">Output <span class="sort-icon" id="msort-output"></span></th>
+        <th class="sortable" onclick="setModelSort('cache_read')">Cache Read <span class="sort-icon" id="msort-cache_read"></span></th>
+        <th class="sortable" onclick="setModelSort('cache_creation')">Cache Creation <span class="sort-icon" id="msort-cache_creation"></span></th>
+        <th class="sortable" onclick="setModelSort('cost')">Est. Cost <span class="sort-icon" id="msort-cost"></span></th>
       </tr></thead>
       <tbody id="model-cost-body"></tbody>
     </table>
@@ -273,6 +278,8 @@ let selectedModels = new Set();
 let selectedRange = '30d';
 let charts = {};
 let sessionSortCol = 'last';
+let modelSortCol = 'cost';
+let modelSortDir = 'desc';
 let sessionSortDir = 'desc';
 
 // ── Pricing (Anthropic API, April 2026) ────────────────────────────────────
@@ -658,8 +665,41 @@ function renderSessionsTable(sessions) {
   }).join('');
 }
 
+function setModelSort(col) {
+  if (modelSortCol === col) {
+    modelSortDir = modelSortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    modelSortCol = col;
+    modelSortDir = 'desc';
+  }
+  updateModelSortIcons();
+  applyFilter();
+}
+
+function updateModelSortIcons() {
+  document.querySelectorAll('[id^="msort-"]').forEach(el => el.textContent = '');
+  const icon = document.getElementById('msort-' + modelSortCol);
+  if (icon) icon.textContent = modelSortDir === 'desc' ? ' \u25bc' : ' \u25b2';
+}
+
+function sortModels(byModel) {
+  return [...byModel].sort((a, b) => {
+    let av, bv;
+    if (modelSortCol === 'cost') {
+      av = calcCost(a.model, a.input, a.output, a.cache_read, a.cache_creation);
+      bv = calcCost(b.model, b.input, b.output, b.cache_read, b.cache_creation);
+    } else {
+      av = a[modelSortCol] ?? 0;
+      bv = b[modelSortCol] ?? 0;
+    }
+    if (av < bv) return modelSortDir === 'desc' ? 1 : -1;
+    if (av > bv) return modelSortDir === 'desc' ? -1 : 1;
+    return 0;
+  });
+}
+
 function renderModelCostTable(byModel) {
-  document.getElementById('model-cost-body').innerHTML = byModel.map(m => {
+  document.getElementById('model-cost-body').innerHTML = sortModels(byModel).map(m => {
     const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation);
     const costCell = isBillable(m.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
@@ -716,6 +756,7 @@ async function loadData() {
       // Build model filter (reads URL for model selection too)
       buildFilterUI(d.all_models);
       updateSortIcons();
+      updateModelSortIcons();
     }
 
     applyFilter();
