@@ -302,6 +302,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
 
         if is_new:
             session_metas, turns = parse_jsonl_file(filepath)
+            line_count = sum(1 for _ in open(filepath, encoding="utf-8", errors="replace"))
             if turns or session_metas:
                 sessions = aggregate_sessions(session_metas, turns)
                 upsert_sessions(conn, sessions)
@@ -312,7 +313,8 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                 new_files += 1
         else:
             old_lines = row["lines"]
-            current_lines = sum(1 for _ in open(filepath, encoding="utf-8", errors="replace"))
+            line_count = sum(1 for _ in open(filepath, encoding="utf-8", errors="replace"))
+            current_lines = line_count
 
             if current_lines <= old_lines:
                 conn.execute("UPDATE processed_files SET mtime = ? WHERE path = ?",
@@ -408,7 +410,6 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                 updated_files += 1
 
         # Record file as processed
-        line_count = sum(1 for _ in open(filepath, encoding="utf-8", errors="replace"))
         conn.execute("""
             INSERT OR REPLACE INTO processed_files (path, mtime, lines)
             VALUES (?, ?, ?)
