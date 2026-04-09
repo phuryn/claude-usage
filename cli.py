@@ -144,45 +144,52 @@ def cmd_stats():
     conn = require_db()
     conn.row_factory = sqlite3.Row
 
-    # All-time totals
-    totals = conn.execute("""
+    # Session-level info (count, date range)
+    session_info = conn.execute("""
         SELECT
-            SUM(total_input_tokens)   as inp,
-            SUM(total_output_tokens)  as out,
-            SUM(total_cache_read)     as cr,
-            SUM(total_cache_creation) as cc,
-            SUM(turn_count)           as turns,
             COUNT(*)                  as sessions,
             MIN(first_timestamp)      as first,
             MAX(last_timestamp)       as last
         FROM sessions
     """).fetchone()
 
-    # By model
+    # All-time totals from turns (more accurate — per-turn model attribution)
+    totals = conn.execute("""
+        SELECT
+            SUM(input_tokens)             as inp,
+            SUM(output_tokens)            as out,
+            SUM(cache_read_tokens)        as cr,
+            SUM(cache_creation_tokens)    as cc,
+            COUNT(*)                      as turns
+        FROM turns
+    """).fetchone()
+
+    # By model from turns (each turn has the actual model used)
     by_model = conn.execute("""
         SELECT
             COALESCE(model, 'unknown') as model,
-            SUM(total_input_tokens)    as inp,
-            SUM(total_output_tokens)   as out,
-            SUM(total_cache_read)      as cr,
-            SUM(total_cache_creation)  as cc,
-            SUM(turn_count)            as turns,
-            COUNT(*)                   as sessions
-        FROM sessions
+            SUM(input_tokens)          as inp,
+            SUM(output_tokens)         as out,
+            SUM(cache_read_tokens)     as cr,
+            SUM(cache_creation_tokens) as cc,
+            COUNT(*)                   as turns,
+            COUNT(DISTINCT session_id) as sessions
+        FROM turns
         GROUP BY model
         ORDER BY inp + out DESC
     """).fetchall()
 
-    # Top 5 projects
+    # Top 5 projects from turns (join with sessions for project name)
     top_projects = conn.execute("""
         SELECT
-            project_name,
-            SUM(total_input_tokens)  as inp,
-            SUM(total_output_tokens) as out,
-            SUM(turn_count)          as turns,
-            COUNT(*)                 as sessions
-        FROM sessions
-        GROUP BY project_name
+            COALESCE(s.project_name, 'unknown') as project_name,
+            SUM(t.input_tokens)  as inp,
+            SUM(t.output_tokens) as out,
+            COUNT(*)             as turns,
+            COUNT(DISTINCT t.session_id) as sessions
+        FROM turns t
+        LEFT JOIN sessions s ON t.session_id = s.session_id
+        GROUP BY s.project_name
         ORDER BY inp + out DESC
         LIMIT 5
     """).fetchall()
@@ -216,10 +223,10 @@ def cmd_stats():
     print("  Claude Code Usage - All-Time Statistics")
     hr("=")
 
-    first_date = (totals["first"] or "")[:10]
-    last_date = (totals["last"] or "")[:10]
+    first_date = (session_info["first"] or "")[:10]
+    last_date = (session_info["last"] or "")[:10]
     print(f"  Period:           {first_date} to {last_date}")
-    print(f"  Total sessions:   {totals['sessions'] or 0:,}")
+    print(f"  Total sessions:   {session_info['sessions'] or 0:,}")
     print(f"  Total turns:      {fmt(totals['turns'] or 0)}")
     print()
     print(f"  Input tokens:     {fmt(totals['inp'] or 0):<12}  (raw prompt tokens)")
