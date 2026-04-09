@@ -187,7 +187,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <header>
   <h1>Claude Code Usage Dashboard</h1>
   <div class="meta" id="meta">Loading...</div>
-  <button id="rescan-btn" onclick="triggerRescan()" title="Re-scan JSONL files from disk and rebuild the database. Use after deleting usage.db or if data looks stale.">&#x21bb; Rescan</button>
+  <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
 </header>
 
 <div id="filter-bar">
@@ -916,6 +916,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/rescan":
+            # Full rebuild: delete DB and rescan from scratch
+            if DB_PATH.exists():
+                DB_PATH.unlink()
             from scanner import scan
             result = scan(verbose=False)
             body = json.dumps(result).encode("utf-8")

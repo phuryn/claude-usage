@@ -575,6 +575,53 @@ class TestScanIncrementalUpdate(unittest.TestCase):
         self.assertEqual(result["turns"], 0)
 
 
+class TestCrossFileSessionTotals(unittest.TestCase):
+    """Test that session totals are correct when the same session spans multiple files."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.projects_dir = Path(self.tmpdir) / "projects" / "user" / "proj"
+        self.projects_dir.mkdir(parents=True)
+        self.db_path = Path(self.tmpdir) / "usage.db"
+
+    def test_session_across_files_not_inflated(self):
+        """Same session in 2 files with duplicate message_ids should not inflate totals."""
+        # File 1: message msg-1 with 100 input
+        f1 = self.projects_dir / "file1.jsonl"
+        with open(f1, "w") as f:
+            f.write(_make_user_record(session_id="sess-1") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-1",
+                                           input_tokens=100, output_tokens=50,
+                                           cache_read=0, cache_creation=0) + "\n")
+
+        # File 2: same message msg-1 (duplicate) + new message msg-2
+        f2 = self.projects_dir / "file2.jsonl"
+        with open(f2, "w") as f:
+            f.write(_make_user_record(session_id="sess-1") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-1",
+                                           input_tokens=100, output_tokens=50,
+                                           cache_read=0, cache_creation=0) + "\n")
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-2",
+                                           input_tokens=200, output_tokens=100,
+                                           cache_read=0, cache_creation=0) + "\n")
+
+        scan(projects_dir=self.projects_dir.parent.parent, db_path=self.db_path, verbose=False)
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+
+        # Turns table should have 2 turns (msg-1 deduped across files)
+        turns = conn.execute("SELECT COUNT(*) as c FROM turns").fetchone()["c"]
+        self.assertEqual(turns, 2)
+
+        # Session totals should match turns table, not be inflated
+        session = conn.execute("SELECT * FROM sessions WHERE session_id = 'sess-1'").fetchone()
+        self.assertEqual(session["total_input_tokens"], 300)  # 100 + 200
+        self.assertEqual(session["total_output_tokens"], 150)  # 50 + 100
+        self.assertEqual(session["turn_count"], 2)
+        conn.close()
+
+
 class TestParseJsonlFileLineCount(unittest.TestCase):
     """Test that parse_jsonl_file returns correct line count."""
 

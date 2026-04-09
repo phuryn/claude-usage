@@ -456,6 +456,20 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         """, (filepath, mtime, line_count))
         conn.commit()
 
+    # Recompute session totals from actual turns in DB.
+    # This ensures correctness when INSERT OR IGNORE skips duplicate turns
+    # but upsert_sessions had already added their tokens additively.
+    if new_files or updated_files:
+        conn.execute("""
+            UPDATE sessions SET
+                total_input_tokens = COALESCE((SELECT SUM(input_tokens) FROM turns WHERE turns.session_id = sessions.session_id), 0),
+                total_output_tokens = COALESCE((SELECT SUM(output_tokens) FROM turns WHERE turns.session_id = sessions.session_id), 0),
+                total_cache_read = COALESCE((SELECT SUM(cache_read_tokens) FROM turns WHERE turns.session_id = sessions.session_id), 0),
+                total_cache_creation = COALESCE((SELECT SUM(cache_creation_tokens) FROM turns WHERE turns.session_id = sessions.session_id), 0),
+                turn_count = COALESCE((SELECT COUNT(*) FROM turns WHERE turns.session_id = sessions.session_id), 0)
+        """)
+        conn.commit()
+
     if verbose:
         print(f"\nScan complete:")
         print(f"  New files:     {new_files}")
