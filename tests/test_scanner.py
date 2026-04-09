@@ -85,19 +85,20 @@ class TestParseJsonlFile(unittest.TestCase):
             _make_user_record(),
             _make_assistant_record(),
         ])
-        metas, turns = parse_jsonl_file(path)
+        metas, turns, line_count = parse_jsonl_file(path)
         self.assertEqual(len(metas), 1)
         self.assertEqual(len(turns), 1)
         self.assertEqual(metas[0]["session_id"], "sess-1")
         self.assertEqual(turns[0]["input_tokens"], 100)
         self.assertEqual(turns[0]["output_tokens"], 50)
+        self.assertEqual(line_count, 2)
 
     def test_skips_zero_token_records(self):
         path = self._write_jsonl("test.jsonl", [
             _make_assistant_record(input_tokens=0, output_tokens=0,
                                    cache_read=0, cache_creation=0),
         ])
-        _, turns = parse_jsonl_file(path)
+        _, turns, _ = parse_jsonl_file(path)
         self.assertEqual(len(turns), 0)
 
     def test_skips_non_assistant_user_types(self):
@@ -105,7 +106,7 @@ class TestParseJsonlFile(unittest.TestCase):
             json.dumps({"type": "system", "sessionId": "s1"}),
             _make_assistant_record(session_id="s1"),
         ])
-        metas, turns = parse_jsonl_file(path)
+        metas, turns, _ = parse_jsonl_file(path)
         self.assertEqual(len(turns), 1)
 
     def test_handles_malformed_json(self):
@@ -113,12 +114,12 @@ class TestParseJsonlFile(unittest.TestCase):
             "not valid json",
             _make_assistant_record(),
         ])
-        _, turns = parse_jsonl_file(path)
+        _, turns, _ = parse_jsonl_file(path)
         self.assertEqual(len(turns), 1)
 
     def test_handles_empty_file(self):
         path = self._write_jsonl("test.jsonl", [])
-        metas, turns = parse_jsonl_file(path)
+        metas, turns, _ = parse_jsonl_file(path)
         self.assertEqual(len(metas), 0)
         self.assertEqual(len(turns), 0)
 
@@ -127,7 +128,7 @@ class TestParseJsonlFile(unittest.TestCase):
             _make_assistant_record(session_id="s1"),
             _make_assistant_record(session_id="s2"),
         ])
-        metas, turns = parse_jsonl_file(path)
+        metas, turns, _ = parse_jsonl_file(path)
         self.assertEqual(len(metas), 2)
         self.assertEqual(len(turns), 2)
 
@@ -137,7 +138,7 @@ class TestParseJsonlFile(unittest.TestCase):
             _make_assistant_record(timestamp="2026-04-08T09:05:00Z"),
             _make_assistant_record(timestamp="2026-04-08T09:10:00Z"),
         ])
-        metas, _ = parse_jsonl_file(path)
+        metas, _, _ = parse_jsonl_file(path)
         self.assertEqual(metas[0]["first_timestamp"], "2026-04-08T09:00:00Z")
         self.assertEqual(metas[0]["last_timestamp"], "2026-04-08T09:10:00Z")
 
@@ -156,7 +157,7 @@ class TestParseJsonlFile(unittest.TestCase):
             },
         })
         path = self._write_jsonl("test.jsonl", [record])
-        _, turns = parse_jsonl_file(path)
+        _, turns, _ = parse_jsonl_file(path)
         self.assertEqual(turns[0]["tool_name"], "Read")
 
 
@@ -313,6 +314,123 @@ class TestScanIntegration(unittest.TestCase):
         self.assertEqual(result["new"], 2)
         self.assertEqual(result["turns"], 6)
         self.assertEqual(result["sessions"], 2)
+
+
+class TestScanIncrementalUpdate(unittest.TestCase):
+    """Test that updating a file only processes new lines (no double reads)."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.projects_dir = Path(self.tmpdir) / "projects" / "user" / "proj"
+        self.projects_dir.mkdir(parents=True)
+        self.db_path = Path(self.tmpdir) / "usage.db"
+        self.filepath = self.projects_dir / "sess-1.jsonl"
+
+    def _write_initial(self):
+        with open(self.filepath, "w") as f:
+            f.write(_make_user_record(session_id="sess-1",
+                                      timestamp="2026-04-08T09:00:00Z") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1",
+                                           timestamp="2026-04-08T09:01:00Z",
+                                           input_tokens=100, output_tokens=50) + "\n")
+
+    def _append_turns(self):
+        # Ensure mtime visibly changes (filesystem resolution can be ~10ms)
+        import time
+        time.sleep(0.05)
+        with open(self.filepath, "a") as f:
+            f.write(_make_assistant_record(session_id="sess-1",
+                                           timestamp="2026-04-08T09:05:00Z",
+                                           input_tokens=200, output_tokens=100) + "\n")
+            f.write(_make_assistant_record(session_id="sess-1",
+                                           timestamp="2026-04-08T09:10:00Z",
+                                           input_tokens=300, output_tokens=150) + "\n")
+
+    def test_no_duplicate_turns_on_update(self):
+        """Growing a file must add only new turns, not re-insert old ones."""
+        self._write_initial()
+        scan(projects_dir=self.projects_dir.parent.parent, db_path=self.db_path, verbose=False)
+
+        self._append_turns()
+        result = scan(projects_dir=self.projects_dir.parent.parent, db_path=self.db_path, verbose=False)
+
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["turns"], 2)  # only the 2 new turns
+
+        conn = sqlite3.connect(self.db_path)
+        total_turns = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+        conn.close()
+        self.assertEqual(total_turns, 3)  # 1 original + 2 new
+
+    def test_token_counts_accumulate_correctly(self):
+        """Session totals should reflect all turns, not double-count."""
+        self._write_initial()
+        scan(projects_dir=self.projects_dir.parent.parent, db_path=self.db_path, verbose=False)
+
+        self._append_turns()
+        scan(projects_dir=self.projects_dir.parent.parent, db_path=self.db_path, verbose=False)
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        session = conn.execute("SELECT * FROM sessions WHERE session_id = 'sess-1'").fetchone()
+        conn.close()
+        # 100 + 200 + 300 = 600
+        self.assertEqual(session["total_input_tokens"], 600)
+        # 50 + 100 + 150 = 300
+        self.assertEqual(session["total_output_tokens"], 300)
+        self.assertEqual(session["turn_count"], 3)
+
+    def test_session_timestamp_updated(self):
+        """Last timestamp should advance after file grows."""
+        self._write_initial()
+        scan(projects_dir=self.projects_dir.parent.parent, db_path=self.db_path, verbose=False)
+
+        self._append_turns()
+        scan(projects_dir=self.projects_dir.parent.parent, db_path=self.db_path, verbose=False)
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        session = conn.execute("SELECT * FROM sessions WHERE session_id = 'sess-1'").fetchone()
+        conn.close()
+        self.assertEqual(session["last_timestamp"], "2026-04-08T09:10:00Z")
+
+    def test_mtime_change_without_growth_skipped(self):
+        """If mtime changes but line count doesn't grow, skip the file."""
+        self._write_initial()
+        scan(projects_dir=self.projects_dir.parent.parent, db_path=self.db_path, verbose=False)
+
+        # Touch the file (change mtime) without adding content
+        import time
+        time.sleep(0.05)
+        os.utime(self.filepath, None)
+
+        result = scan(projects_dir=self.projects_dir.parent.parent, db_path=self.db_path, verbose=False)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["turns"], 0)
+
+
+class TestParseJsonlFileLineCount(unittest.TestCase):
+    """Test that parse_jsonl_file returns correct line count."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def test_line_count_matches_file(self):
+        path = os.path.join(self.tmpdir, "test.jsonl")
+        with open(path, "w") as f:
+            f.write(_make_user_record() + "\n")
+            f.write(_make_assistant_record() + "\n")
+            f.write(_make_assistant_record(timestamp="2026-04-08T10:01:00Z") + "\n")
+        _, _, line_count = parse_jsonl_file(path)
+        self.assertEqual(line_count, 3)
+
+    def test_empty_file_returns_zero(self):
+        path = os.path.join(self.tmpdir, "empty.jsonl")
+        with open(path, "w") as f:
+            pass
+        _, _, line_count = parse_jsonl_file(path)
+        self.assertEqual(line_count, 0)
 
 
 if __name__ == "__main__":
