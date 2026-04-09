@@ -122,6 +122,17 @@ class TestDashboardHTTP(unittest.TestCase):
             # Should have expected keys (or error if no DB)
             self.assertTrue("all_models" in data or "error" in data)
 
+    def test_api_rescan_returns_json(self):
+        url = f"http://127.0.0.1:{self.port}/api/rescan"
+        req = urllib.request.Request(url, method="POST")
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("application/json", resp.headers["Content-Type"])
+            data = json.loads(resp.read())
+            self.assertIn("new", data)
+            self.assertIn("updated", data)
+            self.assertIn("skipped", data)
+
     def test_404_for_unknown_path(self):
         url = f"http://127.0.0.1:{self.port}/nonexistent"
         try:

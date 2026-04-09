@@ -119,6 +119,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
   header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
   header .meta { color: var(--muted); font-size: 12px; }
+  #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
+  #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
+  #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
   #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
@@ -180,6 +183,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <header>
   <h1>Claude Code Usage Dashboard</h1>
   <div class="meta" id="meta">Loading...</div>
+  <button id="rescan-btn" onclick="triggerRescan()" title="Re-scan JSONL files from disk and rebuild the database. Use after deleting usage.db or if data looks stale.">&#x21bb; Rescan</button>
 </header>
 
 <div id="filter-bar">
@@ -672,6 +676,23 @@ function renderModelCostTable(byModel) {
   }).join('');
 }
 
+// ── Rescan ────────────────────────────────────────────────────────────────
+async function triggerRescan() {
+  const btn = document.getElementById('rescan-btn');
+  btn.disabled = true;
+  btn.textContent = '\u21bb Scanning...';
+  try {
+    const resp = await fetch('/api/rescan', { method: 'POST' });
+    const d = await resp.json();
+    btn.textContent = '\u21bb Rescan (' + d.new + ' new, ' + d.updated + ' updated)';
+    await loadData();
+  } catch(e) {
+    btn.textContent = '\u21bb Rescan (error)';
+    console.error(e);
+  }
+  setTimeout(() => { btn.textContent = '\u21bb Rescan'; btn.disabled = false; }, 3000);
+}
+
 // ── Data loading ───────────────────────────────────────────────────────────
 async function loadData() {
   try {
@@ -731,6 +752,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
 
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == "/api/rescan":
+            from scanner import scan
+            result = scan(verbose=False)
+            body = json.dumps(result).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_response(404)
             self.end_headers()
