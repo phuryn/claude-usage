@@ -272,7 +272,12 @@ def cmd_dashboard(projects_dir=None):
     from dashboard import serve
 
     host = os.environ.get("HOST", "localhost")
-    port = int(os.environ.get("PORT", "8080"))
+    while True:
+        try:
+            port = int(input("Port: ").strip())
+            break
+        except (ValueError, EOFError):
+            print("Please enter a valid port number.")
 
     def open_browser():
         time.sleep(1.0)
