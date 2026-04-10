@@ -4,6 +4,8 @@ dashboard.py - Local web dashboard served on localhost:8080.
 
 import json
 import os
+import re
+import sys
 import sqlite3
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -61,7 +63,9 @@ def to_local_hour(iso_utc):
         return ("", 0)
 
 
-REQUIRED_BAND_FIELDS = ("timezone", "days", "start", "end")
+_REQUIRED_BAND_FIELDS = ("timezone", "days", "start", "end")
+_VALID_DAYS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+_HH_MM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 PEAK_HOURS_PATH = Path(__file__).parent / "peak-hours.json"
 
 
@@ -70,15 +74,17 @@ def load_peak_bands(path=PEAK_HOURS_PATH):
 
     Silently returns [] on missing file, malformed JSON, or missing
     top-level 'bands' key, logging a single warning to stderr. Individual
-    bands that fail validation are dropped from the returned list.
+    bands that fail validation are dropped from the returned list with a
+    warning naming the reason.
 
     Validation rules:
       - Required fields: timezone, days, start, end
       - timezone must be a valid IANA zone (resolvable by ZoneInfo)
-      - days must be a list
-      - start and end must be 'HH:MM' strings with start < end
+      - days must be a non-empty list of recognized day tokens
+        (Mon, Tue, Wed, Thu, Fri, Sat, Sun — case-insensitive)
+      - start and end must be 'HH:MM' strings (24-hour, zero-padded)
+        with start < end
     """
-    import sys
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -96,19 +102,32 @@ def load_peak_bands(path=PEAK_HOURS_PATH):
     valid = []
     for i, band in enumerate(data["bands"]):
         if not isinstance(band, dict):
+            print(f"warning: peak band #{i} is not a dict; dropped", file=sys.stderr)
             continue
-        if any(band.get(k) is None for k in REQUIRED_BAND_FIELDS):
+        if any(band.get(k) is None for k in _REQUIRED_BAND_FIELDS):
             print(f"warning: peak band #{i} missing required field; dropped", file=sys.stderr)
             continue
-        if not isinstance(band["days"], list):
+        if not isinstance(band["days"], list) or not band["days"]:
+            print(f"warning: peak band #{i} 'days' must be a non-empty list; dropped",
+                  file=sys.stderr)
+            continue
+        if not all(isinstance(d, str) and d.lower()[:3] in _VALID_DAYS for d in band["days"]):
+            print(f"warning: peak band #{i} 'days' contains invalid tokens; dropped",
+                  file=sys.stderr)
             continue
         try:
             ZoneInfo(band["timezone"])
-        except Exception:
+        except (KeyError, TypeError, ValueError):
             print(f"warning: peak band #{i} has invalid timezone {band['timezone']!r}; dropped",
                   file=sys.stderr)
             continue
         if not (isinstance(band["start"], str) and isinstance(band["end"], str)):
+            print(f"warning: peak band #{i} 'start'/'end' must be strings; dropped",
+                  file=sys.stderr)
+            continue
+        if not (_HH_MM_RE.match(band["start"]) and _HH_MM_RE.match(band["end"])):
+            print(f"warning: peak band #{i} 'start'/'end' must be HH:MM format; dropped",
+                  file=sys.stderr)
             continue
         if band["start"] >= band["end"]:
             print(f"warning: peak band #{i} has start >= end; dropped", file=sys.stderr)

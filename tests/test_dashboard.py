@@ -308,6 +308,37 @@ class TestLoadPeakBands(unittest.TestCase):
         bands = load_peak_bands(p)
         self.assertEqual(bands, [])
 
+    def test_hh_mm_format_is_validated(self):
+        """Non HH:MM strings should be rejected even if they pass isinstance(str)."""
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "America/Los_Angeles", "days": ["Mon"],
+                 "start": "banana", "end": "carrot"}
+            ]
+        })
+        self.assertEqual(load_peak_bands(p), [])
+
+    def test_empty_days_list_is_rejected(self):
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "America/Los_Angeles", "days": [],
+                 "start": "05:00", "end": "11:00"}
+            ]
+        })
+        self.assertEqual(load_peak_bands(p), [])
+
+    def test_start_after_end_is_rejected(self):
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "America/Los_Angeles", "days": ["Mon"],
+                 "start": "11:00", "end": "05:00"}
+            ]
+        })
+        self.assertEqual(load_peak_bands(p), [])
+
 
 if __name__ == "__main__":
     unittest.main()
