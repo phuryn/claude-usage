@@ -12,8 +12,28 @@ from zoneinfo import ZoneInfo
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
-CHICAGO = ZoneInfo("America/Chicago")
-UTC = ZoneInfo("UTC")
+# Timezone constants — lazily initialized so dashboard.py remains importable
+# on Windows systems without the tzdata package installed. The actual ZoneInfo
+# lookups happen inside _get_chicago_tz(), which raises a clear error on first
+# use if IANA timezone data is unavailable.
+_CHICAGO_TZ = None
+_UTC_TZ = None
+
+
+def _get_chicago_tz():
+    """Lazy accessor for the America/Chicago ZoneInfo. Raises a clear,
+    actionable error on first use if Windows tzdata is missing."""
+    global _CHICAGO_TZ, _UTC_TZ
+    if _CHICAGO_TZ is None:
+        try:
+            _CHICAGO_TZ = ZoneInfo("America/Chicago")
+            _UTC_TZ = ZoneInfo("UTC")
+        except Exception as e:
+            raise RuntimeError(
+                "IANA timezone data for America/Chicago is not available. "
+                "On Windows, install it with: pip install tzdata"
+            ) from e
+    return _CHICAGO_TZ, _UTC_TZ
 
 
 def to_local_hour(iso_utc):
@@ -22,16 +42,20 @@ def to_local_hour(iso_utc):
 
     Handles the 'Z' suffix and timezone-aware inputs. DST transitions are
     handled deterministically by zoneinfo.
+
+    Raises RuntimeError on first call if IANA timezone data is unavailable
+    (Windows without tzdata). All parse errors return ('', 0) as before.
     """
     if not iso_utc or not isinstance(iso_utc, str):
         return ("", 0)
+    chicago, utc = _get_chicago_tz()
     try:
         # Normalize trailing Z to +00:00 for fromisoformat
         normalized = iso_utc.replace("Z", "+00:00")
         dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        local = dt.astimezone(CHICAGO)
+            dt = dt.replace(tzinfo=utc)
+        local = dt.astimezone(chicago)
         return (local.strftime("%Y-%m-%d"), local.hour)
     except (ValueError, TypeError):
         return ("", 0)
