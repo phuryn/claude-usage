@@ -694,5 +694,65 @@ class TestSchemaEvolution(unittest.TestCase):
         conn.close()
 
 
+class TestReadDesktopMetadata(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_json(self, relpath, data):
+        f = self.tmp / relpath
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(data), encoding="utf-8")
+        return f
+
+    def test_reads_valid_metadata_file(self):
+        from scanner import read_desktop_metadata
+        self._write_json("account-a/install-b/local_abc.json", {
+            "cliSessionId": "cli-session-123",
+            "title": "Hourly checkin",
+            "cwd": "C:\\users\\scott",
+            "model": "claude-opus-4-6[1m]",
+            "createdAt": 1775855438582,
+            "lastActivityAt": 1775856409298,
+        })
+        result = read_desktop_metadata(self.tmp)
+        self.assertIn("cli-session-123", result)
+        self.assertEqual(result["cli-session-123"]["title"], "Hourly checkin")
+        self.assertEqual(result["cli-session-123"]["original_cwd"], "C:\\users\\scott")
+        self.assertEqual(result["cli-session-123"]["model"], "claude-opus-4-6[1m]")
+        self.assertEqual(result["cli-session-123"]["created_at_ms"], 1775855438582)
+        self.assertEqual(result["cli-session-123"]["last_activity_at_ms"], 1775856409298)
+
+    def test_malformed_json_is_skipped(self):
+        from scanner import read_desktop_metadata
+        # One valid file
+        self._write_json("a/b/local_good.json", {
+            "cliSessionId": "good", "title": "Good", "cwd": "/home",
+        })
+        # One malformed file
+        bad = self.tmp / "a/b/local_bad.json"
+        bad.write_text("{this is not valid json", encoding="utf-8")
+        result = read_desktop_metadata(self.tmp)
+        self.assertIn("good", result)
+        self.assertEqual(len(result), 1)  # bad file silently dropped
+
+    def test_missing_directory_returns_empty(self):
+        from scanner import read_desktop_metadata
+        nonexistent = self.tmp / "does" / "not" / "exist"
+        result = read_desktop_metadata(nonexistent)
+        self.assertEqual(result, {})
+
+    def test_missing_cli_session_id_is_skipped(self):
+        from scanner import read_desktop_metadata
+        self._write_json("a/b/local_no_id.json", {
+            "title": "No ID", "cwd": "/home",
+            # cliSessionId missing
+        })
+        result = read_desktop_metadata(self.tmp)
+        self.assertEqual(result, {})
+
+
 if __name__ == "__main__":
     unittest.main()

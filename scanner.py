@@ -13,6 +13,7 @@ PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
 DB_PATH = Path.home() / ".claude" / "usage.db"
 DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
+DESKTOP_METADATA_DIR = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude-code-sessions"
 
 
 def get_db(db_path=DB_PATH):
@@ -95,6 +96,49 @@ def project_name_from_cwd(cwd):
     if len(parts) >= 2:
         return "/".join(parts[-2:])
     return parts[-1] if parts else "unknown"
+
+
+def read_desktop_metadata(desktop_dir=DESKTOP_METADATA_DIR):
+    """Walk the Windows Claude Desktop session metadata directory and return
+    a dict keyed by cliSessionId.
+
+    Silently returns {} if the directory doesn't exist. Individual files
+    that are malformed, missing cliSessionId, or unreadable are dropped
+    without raising.
+
+    Returns:
+        dict: {cli_session_id: {
+            "title": str | None,
+            "original_cwd": str | None,
+            "model": str | None,
+            "created_at_ms": int | None,
+            "last_activity_at_ms": int | None,
+        }}
+    """
+    result = {}
+    desktop_dir = Path(desktop_dir)
+    if not desktop_dir.exists():
+        return result
+
+    for f in desktop_dir.rglob("local_*.json"):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        cli_id = data.get("cliSessionId")
+        if not cli_id:
+            continue
+        result[cli_id] = {
+            "title": data.get("title"),
+            "original_cwd": data.get("cwd"),
+            "model": data.get("model"),
+            "created_at_ms": data.get("createdAt"),
+            "last_activity_at_ms": data.get("lastActivityAt"),
+        }
+    return result
 
 
 def parse_jsonl_file(filepath):
