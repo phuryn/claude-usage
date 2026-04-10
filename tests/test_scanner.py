@@ -753,6 +753,13 @@ class TestReadDesktopMetadata(unittest.TestCase):
         result = read_desktop_metadata(self.tmp)
         self.assertEqual(result, {})
 
+    def test_none_desktop_dir_returns_empty(self):
+        """When APPDATA is unset on non-Windows platforms, DESKTOP_METADATA_DIR
+        is None and the function should return {} without raising."""
+        from scanner import read_desktop_metadata
+        result = read_desktop_metadata(None)
+        self.assertEqual(result, {})
+
 
 if __name__ == "__main__":
     unittest.main()

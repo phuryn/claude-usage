@@ -13,7 +13,8 @@ PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
 DB_PATH = Path.home() / ".claude" / "usage.db"
 DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
-DESKTOP_METADATA_DIR = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude-code-sessions"
+_APPDATA = os.environ.get("APPDATA")
+DESKTOP_METADATA_DIR = Path(_APPDATA) / "Claude" / "claude-code-sessions" if _APPDATA else None
 
 
 def get_db(db_path=DB_PATH):
@@ -116,8 +117,10 @@ def read_desktop_metadata(desktop_dir=DESKTOP_METADATA_DIR):
         }}
     """
     result = {}
+    if desktop_dir is None:
+        return result
     desktop_dir = Path(desktop_dir)
-    if not desktop_dir.exists():
+    if not desktop_dir.is_dir():
         return result
 
     for f in desktop_dir.rglob("local_*.json"):
