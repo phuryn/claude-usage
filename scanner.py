@@ -34,7 +34,9 @@ def init_db(conn):
             total_cache_read        INTEGER DEFAULT 0,
             total_cache_creation    INTEGER DEFAULT 0,
             model           TEXT,
-            turn_count      INTEGER DEFAULT 0
+            turn_count      INTEGER DEFAULT 0,
+            title           TEXT,
+            original_cwd    TEXT
         );
 
         CREATE TABLE IF NOT EXISTS turns (
@@ -66,6 +68,16 @@ def init_db(conn):
         conn.execute("SELECT message_id FROM turns LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE turns ADD COLUMN message_id TEXT")
+    # Add title column if upgrading from older schema
+    try:
+        conn.execute("SELECT title FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+    # Add original_cwd column if upgrading from older schema
+    try:
+        conn.execute("SELECT original_cwd FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE sessions ADD COLUMN original_cwd TEXT")
     # Conditional unique index: only dedup non-null message IDs
     conn.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_message_id

@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -643,6 +644,54 @@ class TestParseJsonlFileLineCount(unittest.TestCase):
             pass
         _, _, line_count = parse_jsonl_file(path)
         self.assertEqual(line_count, 0)
+
+
+class TestSchemaEvolution(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db_path = Path(self.tmp) / "test.db"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_title_and_original_cwd_columns_exist_after_init(self):
+        from scanner import get_db, init_db
+        conn = get_db(self.db_path)
+        init_db(conn)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+        self.assertIn("title", cols)
+        self.assertIn("original_cwd", cols)
+        conn.close()
+
+    def test_schema_evolution_from_old_sessions_table(self):
+        """Simulate upgrading from a DB that predates the new columns."""
+        from scanner import get_db, init_db
+        conn = get_db(self.db_path)
+        # Create an old-schema sessions table (no title, no original_cwd)
+        conn.execute("""
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                project_name TEXT,
+                first_timestamp TEXT,
+                last_timestamp TEXT,
+                git_branch TEXT,
+                total_input_tokens INTEGER DEFAULT 0,
+                total_output_tokens INTEGER DEFAULT 0,
+                total_cache_read INTEGER DEFAULT 0,
+                total_cache_creation INTEGER DEFAULT 0,
+                model TEXT,
+                turn_count INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute("INSERT INTO sessions (session_id) VALUES ('old-session')")
+        conn.commit()
+        # Re-run init_db — should add new columns without losing data
+        init_db(conn)
+        row = conn.execute("SELECT session_id, title, original_cwd FROM sessions").fetchone()
+        self.assertEqual(row[0], "old-session")
+        self.assertIsNone(row[1])
+        self.assertIsNone(row[2])
+        conn.close()
 
 
 if __name__ == "__main__":
