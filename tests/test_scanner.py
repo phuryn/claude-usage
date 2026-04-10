@@ -844,5 +844,84 @@ class TestEnrichSessionsWithDesktopMetadata(unittest.TestCase):
         self.assertEqual(row["original_cwd"], "/existing/cwd")
 
 
+class TestScanIntegrationWithDesktopMetadata(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.projects_dir = self.tmp / "projects"
+        self.desktop_dir = self.tmp / "desktop-metadata"
+        self.db_path = self.tmp / "test.db"
+        self.projects_dir.mkdir()
+        self.desktop_dir.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_full_scan_enriches_from_desktop_dir(self):
+        """After scan(), sessions should have title and original_cwd populated
+        from the desktop metadata, while token totals remain correct."""
+        # Write a fixture JSONL with one assistant turn
+        session_id = "test-session-abc"
+        jsonl_path = self.projects_dir / "test-project" / f"{session_id}.jsonl"
+        jsonl_path.parent.mkdir(parents=True)
+        records = [
+            {
+                "type": "assistant",
+                "sessionId": session_id,
+                "timestamp": "2026-04-10T14:00:00Z",
+                "cwd": "/some/cwd",
+                "gitBranch": "main",
+                "message": {
+                    "id": "msg-1",
+                    "model": "claude-opus-4-6",
+                    "usage": {
+                        "input_tokens": 1000,
+                        "output_tokens": 500,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    },
+                    "content": [],
+                },
+            }
+        ]
+        with open(jsonl_path, "w", encoding="utf-8") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+
+        # Write matching desktop metadata
+        meta_path = self.desktop_dir / "account" / "install" / "local_xyz.json"
+        meta_path.parent.mkdir(parents=True)
+        meta_path.write_text(json.dumps({
+            "cliSessionId": session_id,
+            "title": "My enriched title",
+            "cwd": "C:\\real\\cwd",
+            "model": "claude-opus-4-6[1m]",
+            "createdAt": 1775855438582,
+            "lastActivityAt": 1775856409298,
+        }), encoding="utf-8")
+
+        # Patch DESKTOP_METADATA_DIR to point at our fixture dir
+        import scanner
+        original_dir = scanner.DESKTOP_METADATA_DIR
+        try:
+            scanner.DESKTOP_METADATA_DIR = self.desktop_dir
+            scanner.scan(projects_dir=self.projects_dir, db_path=self.db_path, verbose=False)
+        finally:
+            scanner.DESKTOP_METADATA_DIR = original_dir
+
+        # Verify title and original_cwd are populated
+        from scanner import get_db
+        conn = get_db(self.db_path)
+        row = conn.execute(
+            "SELECT title, original_cwd, total_input_tokens, total_output_tokens "
+            "FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        self.assertEqual(row["title"], "My enriched title")
+        self.assertEqual(row["original_cwd"], "C:\\real\\cwd")
+        # Token counts must not be affected by enrichment
+        self.assertEqual(row["total_input_tokens"], 1000)
+        self.assertEqual(row["total_output_tokens"], 500)
+        conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

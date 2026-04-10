@@ -559,6 +559,13 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         """)
         conn.commit()
 
+    # Enrich sessions with desktop app metadata (Windows only; no-op elsewhere)
+    desktop_metadata = read_desktop_metadata(desktop_dir=DESKTOP_METADATA_DIR)
+    if desktop_metadata:
+        enrich_sessions_with_desktop_metadata(conn, desktop_metadata)
+        if verbose:
+            print(f"  Desktop metadata: {len(desktop_metadata)} sessions enriched")
+
     if verbose:
         print(f"\nScan complete:")
         print(f"  New files:     {new_files}")
