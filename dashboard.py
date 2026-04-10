@@ -177,6 +177,37 @@ def get_dashboard_data(db_path=DB_PATH):
         "turns":          r["turns"] or 0,
     } for r in daily_rows]
 
+    # ── Hourly bucketing in viewer's local time (America/Chicago) ─────────────
+    hourly_rows = conn.execute("""
+        SELECT timestamp, COALESCE(model, 'unknown') as model,
+               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+        FROM turns
+    """).fetchall()
+
+    hourly_map = {}  # (day_local, hour_local, model) -> counters
+    for r in hourly_rows:
+        day_local, hour_local = to_local_hour(r["timestamp"])
+        if not day_local:
+            continue
+        key = (day_local, hour_local, r["model"])
+        if key not in hourly_map:
+            hourly_map[key] = {
+                "input": 0, "output": 0,
+                "cache_read": 0, "cache_creation": 0,
+                "turns": 0,
+            }
+        bucket = hourly_map[key]
+        bucket["input"] += r["input_tokens"] or 0
+        bucket["output"] += r["output_tokens"] or 0
+        bucket["cache_read"] += r["cache_read_tokens"] or 0
+        bucket["cache_creation"] += r["cache_creation_tokens"] or 0
+        bucket["turns"] += 1
+
+    turns_by_hour_local = [
+        {"day_local": k[0], "hour_local": k[1], "model": k[2], **v}
+        for k, v in hourly_map.items()
+    ]
+
     # ── All sessions (client filters by range and model) ──────────────────────
     session_rows = conn.execute("""
         SELECT
@@ -215,6 +246,9 @@ def get_dashboard_data(db_path=DB_PATH):
         "all_models":     all_models,
         "daily_by_model": daily_by_model,
         "sessions_all":   sessions_all,
+        "turns_by_hour_local": turns_by_hour_local,
+        "peak_bands":     load_peak_bands(),
+        "viewer_timezone": "America/Chicago",
         "generated_at":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 

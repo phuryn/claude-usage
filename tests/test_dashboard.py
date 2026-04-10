@@ -340,5 +340,68 @@ class TestLoadPeakBands(unittest.TestCase):
         self.assertEqual(load_peak_bands(p), [])
 
 
+class TestHourlyAggregation(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db_path = self.tmp / "test.db"
+        from scanner import get_db, init_db
+        conn = get_db(self.db_path)
+        init_db(conn)
+        # Seed: two turns in the same local hour, one turn in a different hour
+        conn.execute("""
+            INSERT INTO sessions (session_id, project_name, first_timestamp,
+                last_timestamp, total_input_tokens, total_output_tokens,
+                total_cache_read, total_cache_creation, model, turn_count)
+            VALUES ('s1', 'proj', '2026-04-10T14:00:00Z', '2026-04-10T14:45:00Z',
+                    300, 150, 0, 0, 'claude-opus-4-6', 2)
+        """)
+        conn.executemany("""
+            INSERT INTO turns (session_id, timestamp, model, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, tool_name, cwd, message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            # 2026-04-10T14:15:00Z = 2026-04-10 09:15 Chicago (CDT, UTC-5)
+            ("s1", "2026-04-10T14:15:00Z", "claude-opus-4-6", 100, 50, 0, 0, None, "/cwd", "m1"),
+            # 2026-04-10T14:45:00Z = 2026-04-10 09:45 Chicago
+            ("s1", "2026-04-10T14:45:00Z", "claude-opus-4-6", 200, 100, 0, 0, None, "/cwd", "m2"),
+            # 2026-04-10T20:00:00Z = 2026-04-10 15:00 Chicago
+            ("s1", "2026-04-10T20:00:00Z", "claude-opus-4-6",  50,  25, 0, 0, None, "/cwd", "m3"),
+        ])
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_single_turn_lands_in_correct_hour_bucket(self):
+        from dashboard import get_dashboard_data
+        data = get_dashboard_data(self.db_path)
+        hourly = data["turns_by_hour_local"]
+        # Find the 15:00 bucket (Chicago) — should have one turn, 50 input
+        h15 = [h for h in hourly if h["hour_local"] == 15]
+        self.assertEqual(len(h15), 1)
+        self.assertEqual(h15[0]["input"], 50)
+        self.assertEqual(h15[0]["turns"], 1)
+        self.assertEqual(h15[0]["day_local"], "2026-04-10")
+
+    def test_multiple_turns_same_hour_sum_correctly(self):
+        from dashboard import get_dashboard_data
+        data = get_dashboard_data(self.db_path)
+        hourly = data["turns_by_hour_local"]
+        h9 = [h for h in hourly if h["hour_local"] == 9]
+        self.assertEqual(len(h9), 1)
+        self.assertEqual(h9[0]["input"], 300)  # 100 + 200
+        self.assertEqual(h9[0]["output"], 150)  # 50 + 100
+        self.assertEqual(h9[0]["turns"], 2)
+
+    def test_response_includes_peak_bands_and_timezone(self):
+        from dashboard import get_dashboard_data
+        data = get_dashboard_data(self.db_path)
+        self.assertIn("peak_bands", data)
+        self.assertIn("viewer_timezone", data)
+        self.assertEqual(data["viewer_timezone"], "America/Chicago")
+        self.assertIsInstance(data["peak_bands"], list)
+
+
 if __name__ == "__main__":
     unittest.main()
