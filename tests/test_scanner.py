@@ -826,6 +826,23 @@ class TestEnrichSessionsWithDesktopMetadata(unittest.TestCase):
         self.assertEqual(row_b["title"], "B's title")
         self.assertEqual(row_b["original_cwd"], "/b/cwd")
 
+    def test_null_field_in_metadata_preserves_existing(self):
+        """When metadata entry exists but a field is None, the existing
+        column value is preserved (COALESCE behavior)."""
+        from scanner import enrich_sessions_with_desktop_metadata
+        self._insert_session("abc-123", title="Existing title", original_cwd="/existing/cwd")
+        metadata = {
+            "abc-123": {
+                "title": None,  # explicit None — must not clobber
+                "original_cwd": None,
+                "model": None, "created_at_ms": None, "last_activity_at_ms": None,
+            }
+        }
+        enrich_sessions_with_desktop_metadata(self.conn, metadata)
+        row = self._get_session("abc-123")
+        self.assertEqual(row["title"], "Existing title")
+        self.assertEqual(row["original_cwd"], "/existing/cwd")
+
 
 if __name__ == "__main__":
     unittest.main()

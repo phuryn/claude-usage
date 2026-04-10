@@ -346,19 +346,27 @@ def enrich_sessions_with_desktop_metadata(conn, metadata):
 
     Only updates rows where session_id matches a key in metadata. Never
     clears existing values: if a session was previously enriched and its
-    metadata is now absent, the old values are preserved (because this
-    function simply doesn't touch unmatched sessions).
+    metadata is now absent (whole entry missing OR entry present with
+    None field), the old values are preserved. This is enforced by
+    COALESCE in the UPDATE — only non-None metadata values overwrite
+    existing columns.
 
     Args:
         conn: sqlite3 Connection
         metadata: dict {cli_session_id: {title, original_cwd, ...}}
     """
-    for cli_id, meta in metadata.items():
-        conn.execute("""
-            UPDATE sessions
-            SET title = ?, original_cwd = ?
-            WHERE session_id = ?
-        """, (meta.get("title"), meta.get("original_cwd"), cli_id))
+    rows = [
+        (meta.get("title"), meta.get("original_cwd"), cli_id)
+        for cli_id, meta in metadata.items()
+    ]
+    if not rows:
+        return
+    conn.executemany("""
+        UPDATE sessions
+        SET title = COALESCE(?, title),
+            original_cwd = COALESCE(?, original_cwd)
+        WHERE session_id = ?
+    """, rows)
     conn.commit()
 
 
