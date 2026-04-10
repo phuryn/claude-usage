@@ -403,5 +403,57 @@ class TestHourlyAggregation(unittest.TestCase):
         self.assertIsInstance(data["peak_bands"], list)
 
 
+class TestSessionTitleFallback(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db_path = self.tmp / "test.db"
+        from scanner import get_db, init_db
+        conn = get_db(self.db_path)
+        init_db(conn)
+        # Session A: has title
+        conn.execute("""
+            INSERT INTO sessions (session_id, project_name, first_timestamp,
+                last_timestamp, total_input_tokens, total_output_tokens,
+                total_cache_read, total_cache_creation, model, turn_count,
+                title, original_cwd)
+            VALUES ('sess-a', 'Users/scott', '2026-04-10T14:00:00Z',
+                    '2026-04-10T14:30:00Z', 100, 50, 0, 0,
+                    'claude-opus-4-6', 1, 'Hourly checkin', 'C:\\users\\scott')
+        """)
+        # Session B: no title
+        conn.execute("""
+            INSERT INTO sessions (session_id, project_name, first_timestamp,
+                last_timestamp, total_input_tokens, total_output_tokens,
+                total_cache_read, total_cache_creation, model, turn_count)
+            VALUES ('sess-b', 'my/project', '2026-04-10T15:00:00Z',
+                    '2026-04-10T15:30:00Z', 200, 100, 0, 0,
+                    'claude-opus-4-6', 1)
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_titled_session_shows_title_as_project(self):
+        from dashboard import get_dashboard_data
+        data = get_dashboard_data(self.db_path)
+        # session_id in response is truncated to first 8 chars
+        sess_a = next(s for s in data["sessions_all"] if s["session_id"] == "sess-a"[:8])
+        self.assertEqual(sess_a["project"], "Hourly checkin")
+        self.assertEqual(sess_a["project_raw"], "Users/scott")
+        self.assertEqual(sess_a["title"], "Hourly checkin")
+        self.assertEqual(sess_a["original_cwd"], "C:\\users\\scott")
+
+    def test_untitled_session_falls_back_to_project_name(self):
+        from dashboard import get_dashboard_data
+        data = get_dashboard_data(self.db_path)
+        sess_b = next(s for s in data["sessions_all"] if s["session_id"] == "sess-b"[:8])
+        self.assertEqual(sess_b["project"], "my/project")
+        self.assertEqual(sess_b["project_raw"], "my/project")
+        self.assertIsNone(sess_b["title"])
+        self.assertIsNone(sess_b["original_cwd"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -213,7 +213,8 @@ def get_dashboard_data(db_path=DB_PATH):
         SELECT
             session_id, project_name, first_timestamp, last_timestamp,
             total_input_tokens, total_output_tokens,
-            total_cache_read, total_cache_creation, model, turn_count
+            total_cache_read, total_cache_creation, model, turn_count,
+            title, original_cwd
         FROM sessions
         ORDER BY last_timestamp DESC
     """).fetchall()
@@ -226,9 +227,14 @@ def get_dashboard_data(db_path=DB_PATH):
             duration_min = round((t2 - t1).total_seconds() / 60, 1)
         except Exception:
             duration_min = 0
+        project_name = r["project_name"] or "unknown"
+        title = r["title"]
         sessions_all.append({
             "session_id":    r["session_id"][:8],
-            "project":       r["project_name"] or "unknown",
+            "project":       title or project_name,
+            "project_raw":   project_name,
+            "title":         title,
+            "original_cwd":  r["original_cwd"],
             "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
             "last_date":     (r["last_timestamp"] or "")[:10],
             "duration_min":  duration_min,
