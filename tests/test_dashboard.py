@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -242,6 +243,70 @@ class TestTimezoneBucketing(unittest.TestCase):
         day, hour = to_local_hour(None)
         self.assertEqual(day, "")
         self.assertEqual(hour, 0)
+
+
+class TestLoadPeakBands(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_config(self, data):
+        p = self.tmp / "peak-hours.json"
+        p.write_text(json.dumps(data), encoding="utf-8")
+        return p
+
+    def test_valid_file_loads(self):
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "America/Los_Angeles", "days": ["Mon", "Tue"],
+                 "start": "05:00", "end": "11:00", "label": "Test"}
+            ]
+        })
+        bands = load_peak_bands(p)
+        self.assertEqual(len(bands), 1)
+        self.assertEqual(bands[0]["timezone"], "America/Los_Angeles")
+        self.assertEqual(bands[0]["start"], "05:00")
+
+    def test_missing_file_returns_empty(self):
+        from dashboard import load_peak_bands
+        bands = load_peak_bands(self.tmp / "nonexistent.json")
+        self.assertEqual(bands, [])
+
+    def test_malformed_json_returns_empty(self):
+        from dashboard import load_peak_bands
+        p = self.tmp / "peak-hours.json"
+        p.write_text("{not valid json", encoding="utf-8")
+        bands = load_peak_bands(p)
+        self.assertEqual(bands, [])
+
+    def test_invalid_band_is_dropped(self):
+        """One valid + one missing required field → only valid returned."""
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "America/Los_Angeles", "days": ["Mon"],
+                 "start": "05:00", "end": "11:00"},  # valid
+                {"timezone": "America/Los_Angeles", "days": ["Tue"],
+                 "start": "05:00"},  # missing 'end'
+            ]
+        })
+        bands = load_peak_bands(p)
+        self.assertEqual(len(bands), 1)
+        self.assertEqual(bands[0]["days"], ["Mon"])
+
+    def test_bad_timezone_is_dropped(self):
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "Not/AReal_Zone", "days": ["Mon"],
+                 "start": "05:00", "end": "11:00"}
+            ]
+        })
+        bands = load_peak_bands(p)
+        self.assertEqual(bands, [])
 
 
 if __name__ == "__main__":

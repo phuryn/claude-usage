@@ -61,6 +61,62 @@ def to_local_hour(iso_utc):
         return ("", 0)
 
 
+REQUIRED_BAND_FIELDS = ("timezone", "days", "start", "end")
+PEAK_HOURS_PATH = Path(__file__).parent / "peak-hours.json"
+
+
+def load_peak_bands(path=PEAK_HOURS_PATH):
+    """Load peak-hours.json and return a list of validated band dicts.
+
+    Silently returns [] on missing file, malformed JSON, or missing
+    top-level 'bands' key, logging a single warning to stderr. Individual
+    bands that fail validation are dropped from the returned list.
+
+    Validation rules:
+      - Required fields: timezone, days, start, end
+      - timezone must be a valid IANA zone (resolvable by ZoneInfo)
+      - days must be a list
+      - start and end must be 'HH:MM' strings with start < end
+    """
+    import sys
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"warning: peak-hours.json not found at {path}; overlay disabled", file=sys.stderr)
+        return []
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"warning: peak-hours.json could not be parsed: {e}", file=sys.stderr)
+        return []
+
+    if not isinstance(data, dict) or not isinstance(data.get("bands"), list):
+        print("warning: peak-hours.json missing 'bands' list; overlay disabled", file=sys.stderr)
+        return []
+
+    valid = []
+    for i, band in enumerate(data["bands"]):
+        if not isinstance(band, dict):
+            continue
+        if any(band.get(k) is None for k in REQUIRED_BAND_FIELDS):
+            print(f"warning: peak band #{i} missing required field; dropped", file=sys.stderr)
+            continue
+        if not isinstance(band["days"], list):
+            continue
+        try:
+            ZoneInfo(band["timezone"])
+        except Exception:
+            print(f"warning: peak band #{i} has invalid timezone {band['timezone']!r}; dropped",
+                  file=sys.stderr)
+            continue
+        if not (isinstance(band["start"], str) and isinstance(band["end"], str)):
+            continue
+        if band["start"] >= band["end"]:
+            print(f"warning: peak band #{i} has start >= end; dropped", file=sys.stderr)
+            continue
+        valid.append(band)
+    return valid
+
+
 def get_dashboard_data(db_path=DB_PATH):
     if not db_path.exists():
         return {"error": "Database not found. Run: python cli.py scan"}

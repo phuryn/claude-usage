@@ -1,0 +1,13 @@
+{
+  "source": "Reddit community synthesis, 2026-03-26 (Thariq Shihipar update)",
+  "note": "Peak times are stored in their native Pacific timezone and converted to the viewer's timezone at render time. Edit this file and refresh the dashboard to change the overlay.",
+  "bands": [
+    {
+      "timezone": "America/Los_Angeles",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+      "start": "05:00",
+      "end": "11:00",
+      "label": "Anthropic peak"
+    }
+  ]
+}
