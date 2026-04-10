@@ -200,5 +200,49 @@ class TestPricingParity(unittest.TestCase):
             )
 
 
+class TestTimezoneBucketing(unittest.TestCase):
+    def test_utc_midnight_converts_to_chicago_6pm_previous_day_standard_time(self):
+        """January timestamp → CST (UTC-6)."""
+        from dashboard import to_local_hour
+        # 2026-01-15 00:00 UTC = 2026-01-14 18:00 CST
+        day, hour = to_local_hour("2026-01-15T00:00:00Z")
+        self.assertEqual(day, "2026-01-14")
+        self.assertEqual(hour, 18)
+
+    def test_utc_midnight_converts_to_chicago_7pm_previous_day_dst(self):
+        """July timestamp → CDT (UTC-5)."""
+        from dashboard import to_local_hour
+        # 2026-07-15 00:00 UTC = 2026-07-14 19:00 CDT
+        day, hour = to_local_hour("2026-07-15T00:00:00Z")
+        self.assertEqual(day, "2026-07-14")
+        self.assertEqual(hour, 19)
+
+    def test_dst_spring_forward_boundary(self):
+        """2026-03-08 08:00 UTC = 03:00 CDT (after spring forward)."""
+        from dashboard import to_local_hour
+        day, hour = to_local_hour("2026-03-08T08:00:00Z")
+        self.assertEqual(day, "2026-03-08")
+        self.assertEqual(hour, 3)
+
+    def test_dst_fall_back_boundary(self):
+        """2026-11-01 07:00 UTC = 01:00 CST (after fall back)."""
+        from dashboard import to_local_hour
+        day, hour = to_local_hour("2026-11-01T07:00:00Z")
+        self.assertEqual(day, "2026-11-01")
+        self.assertEqual(hour, 1)
+
+    def test_unparseable_timestamp_returns_empty(self):
+        from dashboard import to_local_hour
+        day, hour = to_local_hour("not a timestamp")
+        self.assertEqual(day, "")
+        self.assertEqual(hour, 0)
+
+    def test_none_timestamp_returns_empty(self):
+        from dashboard import to_local_hour
+        day, hour = to_local_hour(None)
+        self.assertEqual(day, "")
+        self.assertEqual(hour, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,8 +8,33 @@ import sqlite3
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
+
+CHICAGO = ZoneInfo("America/Chicago")
+UTC = ZoneInfo("UTC")
+
+
+def to_local_hour(iso_utc):
+    """Convert a UTC ISO timestamp string to (local_date_str, local_hour_int)
+    in America/Chicago. Returns ('', 0) for unparseable input.
+
+    Handles the 'Z' suffix and timezone-aware inputs. DST transitions are
+    handled deterministically by zoneinfo.
+    """
+    if not iso_utc or not isinstance(iso_utc, str):
+        return ("", 0)
+    try:
+        # Normalize trailing Z to +00:00 for fromisoformat
+        normalized = iso_utc.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        local = dt.astimezone(CHICAGO)
+        return (local.strftime("%Y-%m-%d"), local.hour)
+    except (ValueError, TypeError):
+        return ("", 0)
 
 
 def get_dashboard_data(db_path=DB_PATH):
