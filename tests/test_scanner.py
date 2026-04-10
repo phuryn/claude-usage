@@ -761,5 +761,71 @@ class TestReadDesktopMetadata(unittest.TestCase):
         self.assertEqual(result, {})
 
 
+class TestEnrichSessionsWithDesktopMetadata(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db_path = Path(self.tmp) / "test.db"
+        from scanner import get_db, init_db
+        self.conn = get_db(self.db_path)
+        init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _insert_session(self, session_id, title=None, original_cwd=None):
+        self.conn.execute("""
+            INSERT INTO sessions (session_id, project_name, title, original_cwd)
+            VALUES (?, ?, ?, ?)
+        """, (session_id, "some/project", title, original_cwd))
+        self.conn.commit()
+
+    def _get_session(self, session_id):
+        return self.conn.execute("""
+            SELECT session_id, title, original_cwd FROM sessions WHERE session_id = ?
+        """, (session_id,)).fetchone()
+
+    def test_updates_matching_sessions(self):
+        from scanner import enrich_sessions_with_desktop_metadata
+        self._insert_session("abc-123")
+        metadata = {
+            "abc-123": {
+                "title": "Hourly checkin",
+                "original_cwd": "C:\\users\\scott",
+                "model": None, "created_at_ms": None, "last_activity_at_ms": None,
+            }
+        }
+        enrich_sessions_with_desktop_metadata(self.conn, metadata)
+        row = self._get_session("abc-123")
+        self.assertEqual(row["title"], "Hourly checkin")
+        self.assertEqual(row["original_cwd"], "C:\\users\\scott")
+
+    def test_preserves_existing_title_when_metadata_absent(self):
+        from scanner import enrich_sessions_with_desktop_metadata
+        self._insert_session("abc-123", title="Previously set", original_cwd="/old/path")
+        enrich_sessions_with_desktop_metadata(self.conn, {})  # empty metadata
+        row = self._get_session("abc-123")
+        self.assertEqual(row["title"], "Previously set")
+        self.assertEqual(row["original_cwd"], "/old/path")
+
+    def test_does_not_affect_unmatched_sessions(self):
+        from scanner import enrich_sessions_with_desktop_metadata
+        self._insert_session("session-a")
+        self._insert_session("session-b")
+        metadata = {
+            "session-b": {
+                "title": "B's title", "original_cwd": "/b/cwd",
+                "model": None, "created_at_ms": None, "last_activity_at_ms": None,
+            }
+        }
+        enrich_sessions_with_desktop_metadata(self.conn, metadata)
+        row_a = self._get_session("session-a")
+        row_b = self._get_session("session-b")
+        self.assertIsNone(row_a["title"])
+        self.assertIsNone(row_a["original_cwd"])
+        self.assertEqual(row_b["title"], "B's title")
+        self.assertEqual(row_b["original_cwd"], "/b/cwd")
+
+
 if __name__ == "__main__":
     unittest.main()

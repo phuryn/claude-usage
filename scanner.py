@@ -340,6 +340,28 @@ def insert_turns(conn, turns):
     ])
 
 
+def enrich_sessions_with_desktop_metadata(conn, metadata):
+    """Update sessions.title and sessions.original_cwd from a desktop
+    metadata dict (as returned by read_desktop_metadata).
+
+    Only updates rows where session_id matches a key in metadata. Never
+    clears existing values: if a session was previously enriched and its
+    metadata is now absent, the old values are preserved (because this
+    function simply doesn't touch unmatched sessions).
+
+    Args:
+        conn: sqlite3 Connection
+        metadata: dict {cli_session_id: {title, original_cwd, ...}}
+    """
+    for cli_id, meta in metadata.items():
+        conn.execute("""
+            UPDATE sessions
+            SET title = ?, original_cwd = ?
+            WHERE session_id = ?
+        """, (meta.get("title"), meta.get("original_cwd"), cli_id))
+    conn.commit()
+
+
 def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
     conn = get_db(db_path)
     init_db(conn)
