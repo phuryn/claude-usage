@@ -302,6 +302,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .range-btn:last-child { border-right: none; }
   .range-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
   .range-btn.active { background: rgba(217,119,87,0.15); color: var(--accent); font-weight: 600; }
+  .date-input { background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 3px 8px; border-radius: 4px; font-size: 12px; font-family: inherit; }
+  .date-input::-webkit-calendar-picker-indicator { filter: invert(0.7); cursor: pointer; }
+  .range-btn.inactive { opacity: 0.4; }
+  #clear-custom { padding: 3px 8px; }
 
   .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
   .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
@@ -367,6 +371,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button class="range-btn" data-range="90d" onclick="setRange('90d')">90d</button>
     <button class="range-btn" data-range="all" onclick="setRange('all')">All</button>
   </div>
+  <div class="filter-sep"></div>
+  <div class="filter-label">Custom</div>
+  <input type="date" id="from-date" class="date-input" onchange="onCustomDateChange()">
+  <span class="muted">–</span>
+  <input type="date" id="to-date" class="date-input" onchange="onCustomDateChange()">
+  <button class="filter-btn" id="clear-custom" onclick="clearCustomDates()" title="Clear custom dates">×</button>
 </div>
 
 <div class="container">
@@ -458,6 +468,8 @@ function esc(s) {
 let rawData = null;
 let selectedModels = new Set();
 let selectedRange = '30d';
+let customFrom = null;  // 'YYYY-MM-DD' or null
+let customTo   = null;
 let charts = {};
 let sessionSortCol = 'last';
 let modelSortCol = 'cost';
@@ -545,11 +557,54 @@ function readURLRange() {
   return ['7d', '30d', '90d', 'all'].includes(p) ? p : '30d';
 }
 
+function readURLCustomDates() {
+  const p = new URLSearchParams(window.location.search);
+  return {
+    from: p.get('from'),
+    to:   p.get('to'),
+  };
+}
+
 function setRange(range) {
   selectedRange = range;
-  document.querySelectorAll('.range-btn').forEach(btn =>
-    btn.classList.toggle('active', btn.dataset.range === range)
-  );
+  customFrom = null;
+  customTo = null;
+  document.getElementById('from-date').value = '';
+  document.getElementById('to-date').value = '';
+  document.querySelectorAll('.range-btn').forEach(btn => {
+    btn.classList.remove('inactive');
+    btn.classList.toggle('active', btn.dataset.range === range);
+  });
+  updateURL();
+  applyFilter();
+}
+
+function onCustomDateChange() {
+  const fromEl = document.getElementById('from-date');
+  const toEl   = document.getElementById('to-date');
+  customFrom = fromEl.value || null;
+  customTo   = toEl.value || null;
+  // If either is set, deactivate preset buttons
+  const anyCustom = customFrom || customTo;
+  document.querySelectorAll('.range-btn').forEach(btn => {
+    btn.classList.toggle('inactive', !!anyCustom);
+    btn.classList.toggle('active', !anyCustom && btn.dataset.range === selectedRange);
+  });
+  if (anyCustom) selectedRange = 'custom';
+  updateURL();
+  applyFilter();
+}
+
+function clearCustomDates() {
+  document.getElementById('from-date').value = '';
+  document.getElementById('to-date').value = '';
+  customFrom = null;
+  customTo = null;
+  selectedRange = '30d';
+  document.querySelectorAll('.range-btn').forEach(btn => {
+    btn.classList.remove('inactive');
+    btn.classList.toggle('active', btn.dataset.range === '30d');
+  });
   updateURL();
   applyFilter();
 }
@@ -618,7 +673,12 @@ function clearAllModels() {
 function updateURL() {
   const allModels = Array.from(document.querySelectorAll('#model-checkboxes input')).map(cb => cb.value);
   const params = new URLSearchParams();
-  if (selectedRange !== '30d') params.set('range', selectedRange);
+  if (customFrom || customTo) {
+    if (customFrom) params.set('from', customFrom);
+    if (customTo)   params.set('to', customTo);
+  } else if (selectedRange !== '30d') {
+    params.set('range', selectedRange);
+  }
   if (!isDefaultModelSelection(allModels)) params.set('models', Array.from(selectedModels).join(','));
   const search = params.toString() ? '?' + params.toString() : '';
   history.replaceState(null, '', window.location.pathname + search);
@@ -665,11 +725,20 @@ function sortSessions(sessions) {
 function applyFilter() {
   if (!rawData) return;
 
-  const cutoff = getRangeCutoff(selectedRange);
+  // Compute date range: custom overrides preset
+  const isCustom = customFrom || customTo;
+  const rangeFrom = isCustom ? customFrom : getRangeCutoff(selectedRange);
+  const rangeTo = isCustom ? customTo : null;
+
+  const inRange = (day) => {
+    if (rangeFrom && day < rangeFrom) return false;
+    if (rangeTo && day > rangeTo) return false;
+    return true;
+  };
 
   // Filter daily rows by model + date range
   const filteredDaily = rawData.daily_by_model.filter(r =>
-    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+    selectedModels.has(r.model) && inRange(r.day)
   );
 
   // Daily chart: aggregate by day
@@ -698,7 +767,7 @@ function applyFilter() {
 
   // Filter sessions by model + date range
   const filteredSessions = rawData.sessions_all.filter(s =>
-    selectedModels.has(s.model) && (!cutoff || s.last_date >= cutoff)
+    selectedModels.has(s.model) && inRange(s.last_date)
   );
 
   // Add session counts into modelMap
@@ -1033,6 +1102,19 @@ async function loadData() {
       document.querySelectorAll('.range-btn').forEach(btn =>
         btn.classList.toggle('active', btn.dataset.range === selectedRange)
       );
+      // Restore custom date range from URL if present
+      const urlCustom = readURLCustomDates();
+      if (urlCustom.from || urlCustom.to) {
+        customFrom = urlCustom.from;
+        customTo = urlCustom.to;
+        if (customFrom) document.getElementById('from-date').value = customFrom;
+        if (customTo)   document.getElementById('to-date').value = customTo;
+        selectedRange = 'custom';
+        document.querySelectorAll('.range-btn').forEach(btn => {
+          btn.classList.add('inactive');
+          btn.classList.remove('active');
+        });
+      }
       // Build model filter (reads URL for model selection too)
       buildFilterUI(d.all_models);
       updateSortIcons();
