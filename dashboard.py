@@ -386,6 +386,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <h2 id="daily-chart-title">Daily Token Usage</h2>
       <div class="chart-wrap tall"><canvas id="chart-daily"></canvas></div>
     </div>
+    <div class="chart-card wide">
+      <h2 id="hour-histogram-title">Usage by Hour of Day — America/Chicago (averaged)</h2>
+      <div class="chart-wrap"><canvas id="chart-hour-histogram"></canvas></div>
+    </div>
+    <div class="chart-card wide">
+      <h2 id="hour-timeline-title">Hourly Timeline — America/Chicago</h2>
+      <div class="chart-wrap tall" style="overflow-x: auto;"><canvas id="chart-hour-timeline"></canvas></div>
+    </div>
     <div class="chart-card">
       <h2>By Model</h2>
       <div class="chart-wrap"><canvas id="chart-model"></canvas></div>
@@ -788,6 +796,33 @@ function applyFilter() {
 
   const byModel = Object.values(modelMap).sort((a, b) => (b.input + b.output) - (a.input + a.output));
 
+  // ── Hour-of-day histogram: average tokens per hour across distinct days ──
+  const filteredHourly = rawData.turns_by_hour_local.filter(r =>
+    selectedModels.has(r.model) && inRange(r.day_local)
+  );
+  const hourBuckets = Array.from({length: 24}, (_, h) => ({
+    hour: h, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0,
+  }));
+  const daysWithData = new Set();
+  for (const r of filteredHourly) {
+    daysWithData.add(r.day_local);
+    const b = hourBuckets[r.hour_local];
+    b.input          += r.input;
+    b.output         += r.output;
+    b.cache_read     += r.cache_read;
+    b.cache_creation += r.cache_creation;
+    b.turns          += r.turns;
+  }
+  const nDays = Math.max(daysWithData.size, 1);
+  const hourHistogram = hourBuckets.map(b => ({
+    hour:           b.hour,
+    input:          b.input / nDays,
+    output:         b.output / nDays,
+    cache_read:     b.cache_read / nDays,
+    cache_creation: b.cache_creation / nDays,
+    turns:          b.turns / nDays,
+  }));
+
   // By project: aggregate from filtered sessions
   const projMap = {};
   for (const s of filteredSessions) {
@@ -819,6 +854,7 @@ function applyFilter() {
 
   renderStats(totals);
   renderDailyChart(daily);
+  renderHourHistogram(hourHistogram);
   renderModelChart(byModel);
   renderProjectChart(byProject);
   lastFilteredSessions = sortSessions(filteredSessions);
@@ -868,6 +904,31 @@ function renderDailyChart(daily) {
       plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
       scales: {
         x: { ticks: { color: '#8892a4', maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: '#2a2d3a' } },
+        y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
+      }
+    }
+  });
+}
+
+function renderHourHistogram(hourly) {
+  const ctx = document.getElementById('chart-hour-histogram').getContext('2d');
+  if (charts.hourHistogram) charts.hourHistogram.destroy();
+  charts.hourHistogram = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: hourly.map(h => String(h.hour).padStart(2, '0') + ':00'),
+      datasets: [
+        { label: 'Input',          data: hourly.map(h => h.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens' },
+        { label: 'Output',         data: hourly.map(h => h.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens' },
+        { label: 'Cache Read',     data: hourly.map(h => h.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens' },
+        { label: 'Cache Creation', data: hourly.map(h => h.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens' },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
+      scales: {
+        x: { ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } },
         y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
       }
     }
