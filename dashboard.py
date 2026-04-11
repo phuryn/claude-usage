@@ -823,6 +823,25 @@ function applyFilter() {
     turns:          b.turns / nDays,
   }));
 
+  // ── Hourly timeline: one bar per (day, hour) in chronological order ──
+  const timelineMap = {};  // "YYYY-MM-DD HH" -> bucket
+  for (const r of filteredHourly) {
+    const key = r.day_local + ' ' + String(r.hour_local).padStart(2, '0');
+    if (!timelineMap[key]) {
+      timelineMap[key] = {
+        key, day: r.day_local, hour: r.hour_local,
+        input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0,
+      };
+    }
+    const b = timelineMap[key];
+    b.input          += r.input;
+    b.output         += r.output;
+    b.cache_read     += r.cache_read;
+    b.cache_creation += r.cache_creation;
+    b.turns          += r.turns;
+  }
+  const hourTimeline = Object.values(timelineMap).sort((a, b) => a.key.localeCompare(b.key));
+
   // By project: aggregate from filtered sessions
   const projMap = {};
   for (const s of filteredSessions) {
@@ -855,6 +874,7 @@ function applyFilter() {
   renderStats(totals);
   renderDailyChart(daily);
   renderHourHistogram(hourHistogram);
+  renderHourTimeline(hourTimeline);
   renderModelChart(byModel);
   renderProjectChart(byProject);
   lastFilteredSessions = sortSessions(filteredSessions);
@@ -929,6 +949,50 @@ function renderHourHistogram(hourly) {
       plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
       scales: {
         x: { ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } },
+        y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
+      }
+    }
+  });
+}
+
+function renderHourTimeline(timeline) {
+  const ctx = document.getElementById('chart-hour-timeline').getContext('2d');
+  if (charts.hourTimeline) charts.hourTimeline.destroy();
+  if (!timeline.length) { charts.hourTimeline = null; return; }
+  // Compact label: "MM-DD HH" (e.g. "04-10 15")
+  const labels = timeline.map(b => b.day.slice(5) + ' ' + String(b.hour).padStart(2, '0'));
+  // Scale canvas width for many bars (approx 12px per bar)
+  const canvas = document.getElementById('chart-hour-timeline');
+  const minWidth = Math.max(800, timeline.length * 12);
+  canvas.style.width = minWidth + 'px';
+
+  charts.hourTimeline = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Input',          data: timeline.map(b => b.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens' },
+        { label: 'Output',         data: timeline.map(b => b.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens' },
+        { label: 'Cache Read',     data: timeline.map(b => b.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens' },
+        { label: 'Cache Creation', data: timeline.map(b => b.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens' },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#8892a4', boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            title: items => {
+              if (!items.length) return '';
+              const b = timeline[items[0].dataIndex];
+              return b.day + ' ' + String(b.hour).padStart(2, '0') + ':00 CT';
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8892a4', maxRotation: 0, autoSkip: true, autoSkipPadding: 20 }, grid: { color: '#2a2d3a' } },
         y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
       }
     }
