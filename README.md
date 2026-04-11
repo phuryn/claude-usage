@@ -29,9 +29,8 @@ Captures usage from:
 
 ## Requirements
 
-- Python 3.9+
-- No third-party packages on macOS/Linux — uses only the standard library (`sqlite3`, `http.server`, `json`, `pathlib`, `zoneinfo`)
-- **Windows only:** install `tzdata` for timezone support: `pip install tzdata` (Python's `zoneinfo` needs IANA timezone data, which Windows does not ship natively)
+- Python 3.8+
+- No third-party packages — uses only the standard library (`sqlite3`, `http.server`, `json`, `pathlib`)
 
 > Anyone running Claude Code already has Python installed.
 
