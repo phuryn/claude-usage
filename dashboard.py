@@ -143,6 +143,12 @@ def get_dashboard_data(db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
+    # Ensure schema is current (adds new columns if DB predates them).
+    # This makes the dashboard self-healing if run against a DB that hasn't
+    # been touched by a newer scanner yet.
+    from scanner import init_db
+    init_db(conn)
+
     # ── All models (for filter UI) ────────────────────────────────────────────
     model_rows = conn.execute("""
         SELECT COALESCE(model, 'unknown') as model
