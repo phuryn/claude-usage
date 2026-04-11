@@ -614,8 +614,17 @@ const peakBandPlugin = {
 Chart.register(peakBandPlugin);
 
 // ── Time range ─────────────────────────────────────────────────────────────
-const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
-const RANGE_TICKS  = { '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time', 'custom': 'Custom Range' };
+const RANGE_TICKS  = { '7d': 7, '30d': 15, '90d': 13, 'all': 12, 'custom': 15 };
+
+function currentRangeLabel() {
+  if (selectedRange === 'custom') {
+    const from = customFrom || '(start)';
+    const to   = customTo   || '(today)';
+    return from + ' → ' + to;
+  }
+  return RANGE_LABELS[selectedRange] || 'Range';
+}
 
 // Convert a peak band to viewer-local (Chicago) hour range for a given day.
 // Uses Intl.DateTimeFormat for cross-timezone conversion — no external libraries.
@@ -991,7 +1000,7 @@ function applyFilter() {
   };
 
   // Update daily chart title
-  document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + currentRangeLabel();
 
   renderStats(totals);
   renderDailyChart(daily);
@@ -1008,7 +1017,7 @@ function applyFilter() {
 
 // ── Renderers ──────────────────────────────────────────────────────────────
 function renderStats(t) {
-  const rangeLabel = RANGE_LABELS[selectedRange].toLowerCase();
+  const rangeLabel = currentRangeLabel().toLowerCase();
   const stats = [
     { label: 'Sessions',       value: t.sessions.toLocaleString(), sub: rangeLabel },
     { label: 'Turns',          value: fmt(t.turns),                sub: rangeLabel },
