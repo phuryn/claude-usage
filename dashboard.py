@@ -5,11 +5,155 @@ dashboard.py - Local web dashboard served on localhost:8080.
 import json
 import os
 import sqlite3
+import urllib.request
+import ssl
+import time
+import threading
+import hashlib
+import hmac
+import http.cookies
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
+CRED_PATH = Path.home() / ".claude" / ".credentials.json"
+
+# ── Cookie Auth ──────────────────────────────────────────────────────────────
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+DASHBOARD_SECRET = os.environ.get("DASHBOARD_SECRET", "change-me")
+AUTH_COOKIE_NAME = "claude_dash_auth"
+AUTH_COOKIE_MAX_AGE = 90 * 86400  # 90 days
+
+
+def _make_auth_token():
+    """Create HMAC token for auth cookie."""
+    return hmac.new(
+        DASHBOARD_SECRET.encode(), DASHBOARD_PASSWORD.encode(), hashlib.sha256
+    ).hexdigest()
+
+
+def _check_auth_cookie(handler):
+    """Return True if request has valid auth cookie or auth is disabled."""
+    if not DASHBOARD_PASSWORD:
+        return True
+    cookie_header = handler.headers.get("Cookie", "")
+    cookies = http.cookies.SimpleCookie(cookie_header)
+    if AUTH_COOKIE_NAME in cookies:
+        return cookies[AUTH_COOKIE_NAME].value == _make_auth_token()
+    return False
+
+
+def _send_login_page(handler, error=""):
+    """Send the login form."""
+    err_html = f'<div class="error">{error}</div>' if error else ""
+    html = f'''<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Login - Claude Usage</title>
+<style>
+  body {{ background:#0f1117; color:#e2e8f0; font-family:-apple-system,sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; }}
+  .box {{ background:#1a1d27; border:1px solid #2a2d3a; border-radius:12px; padding:32px; width:300px; }}
+  h2 {{ font-size:18px; color:#d97757; margin:0 0 20px; text-align:center; }}
+  input {{ width:100%; padding:10px; border:1px solid #2a2d3a; border-radius:6px; background:#0f1117; color:#e2e8f0; font-size:14px; box-sizing:border-box; }}
+  input:focus {{ outline:none; border-color:#d97757; }}
+  button {{ width:100%; padding:10px; border:none; border-radius:6px; background:#d97757; color:#fff; font-size:14px; cursor:pointer; margin-top:12px; }}
+  button:hover {{ background:#c4663f; }}
+  .error {{ color:#ef4444; font-size:12px; text-align:center; margin-bottom:12px; }}
+</style>
+</head><body>
+<div class="box">
+  <h2>Claude Usage Dashboard</h2>
+  {err_html}
+  <form method="POST" action="/login">
+    <input type="password" name="password" placeholder="Password" autofocus>
+    <button type="submit">Login</button>
+  </form>
+</div>
+</body></html>'''
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.end_headers()
+    handler.wfile.write(html.encode())
+
+# ── Usage Gate: real-time Anthropic Usage API ────────────────────────────────
+_usage_cache = {"data": None, "ts": 0}
+_usage_lock = threading.Lock()
+USAGE_CACHE_TTL = 120  # seconds (avoid 429 rate limits)
+
+
+def _get_oauth_token():
+    """Read OAuth access token from Claude credentials."""
+    for p in [
+        CRED_PATH,
+        Path.home() / ".claude" / "credentials.json",
+        Path.home() / ".config" / "claude" / "credentials.json",
+    ]:
+        try:
+            creds = json.loads(p.read_text())
+            token = creds.get("claudeAiOauth", {}).get("accessToken")
+            if token:
+                return token
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            continue
+    return os.environ.get("ANTHROPIC_ACCESS_TOKEN")
+
+
+HOOK_CACHE_FILE = Path("/tmp/claude-usage-gate-cache.json")
+
+
+def fetch_usage_data():
+    """Fetch usage data: try hook cache first, then API with rate-limit-safe caching."""
+    with _usage_lock:
+        if time.time() - _usage_cache["ts"] < USAGE_CACHE_TTL and _usage_cache["data"]:
+            return _usage_cache["data"]
+
+    # 1) Try reading from usage-tracker.js hook cache (no API call needed)
+    try:
+        if HOOK_CACHE_FILE.exists():
+            hook_data = json.loads(HOOK_CACHE_FILE.read_text())
+            hook_age = time.time() - hook_data.get("cached_at", 0)
+            if hook_age < 300:  # hook cache valid within 5 min
+                if hook_data.get("rate_limited"):
+                    return {"error": "Usage data delayed"}
+                data = {
+                    "five_hour": hook_data.get("five_hour"),
+                    "seven_day": hook_data.get("seven_day"),
+                }
+                with _usage_lock:
+                    _usage_cache["data"] = data
+                    _usage_cache["ts"] = time.time()
+                return data
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    # 2) Fallback: call API directly
+    token = _get_oauth_token()
+    if not token:
+        if _usage_cache["data"]:
+            return _usage_cache["data"]
+        return {"error": "No OAuth token found"}
+
+    try:
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(
+            "https://api.anthropic.com/api/oauth/usage",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "anthropic-beta": "oauth-2025-04-20",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
+            data = json.loads(resp.read().decode())
+            with _usage_lock:
+                _usage_cache["data"] = data
+                _usage_cache["ts"] = time.time()
+            return data
+    except Exception:
+        if _usage_cache["data"]:
+            return _usage_cache["data"]
+        return {"error": "Usage data delayed"}
 
 
 def get_dashboard_data(db_path=DB_PATH):
@@ -180,7 +324,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .footer-content a { color: var(--blue); text-decoration: none; }
   .footer-content a:hover { text-decoration: underline; }
 
-  @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } }
+  /* ── Usage Gate Gauges ─────────────────────────────────────── */
+  #usage-gate { background: var(--card); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+  #usage-gate .gate-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
+  .gauge-group { display: flex; gap: 16px; flex-wrap: wrap; }
+  .gauge { display: flex; align-items: center; gap: 10px; }
+  .gauge-label { font-size: 12px; color: var(--muted); white-space: nowrap; min-width: 36px; }
+  .gauge-bar-bg { width: 120px; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; position: relative; }
+  .gauge-bar { height: 100%; border-radius: 4px; transition: width 0.5s ease, background 0.3s ease; }
+  .gauge-bar.low { background: var(--green); }
+  .gauge-bar.mid { background: #f59e0b; }
+  .gauge-bar.high { background: #ef4444; }
+  .gauge-pct { font-size: 12px; font-family: monospace; min-width: 36px; }
+  .gauge-reset { font-size: 10px; color: var(--muted); }
+  #usage-gate .gate-error { font-size: 12px; color: var(--muted); }
+  #usage-gate-refresh { background: none; border: 1px solid var(--border); color: var(--muted); padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-left: auto; }
+  #usage-gate-refresh:hover { color: var(--text); border-color: var(--accent); }
+
+  @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } .gauge-bar-bg { width: 80px; } }
 </style>
 </head>
 <body>
@@ -189,6 +350,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="meta" id="meta">Loading...</div>
   <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
 </header>
+
+<div id="usage-gate">
+  <div class="gate-title">Usage Gate</div>
+  <div class="gauge-group" id="gauge-group"><span class="gate-error">Loading...</span></div>
+  <button id="usage-gate-refresh" onclick="fetchUsageGate()" title="Refresh usage data">&#x21bb;</button>
+</div>
 
 <div id="filter-bar">
   <div class="filter-label">Models</div>
@@ -849,6 +1016,67 @@ async function triggerRescan() {
   setTimeout(() => { btn.textContent = '\u21bb Rescan'; btn.disabled = false; }, 3000);
 }
 
+// ── Usage Gate ────────────────────────────────────────────────────────────
+function gaugeClass(pct) {
+  if (pct >= 80) return 'high';
+  if (pct >= 50) return 'mid';
+  return 'low';
+}
+
+function formatReset(isoStr) {
+  if (!isoStr) return '';
+  try {
+    const d = new Date(isoStr);
+    const now = new Date();
+    const diffMs = d - now;
+    if (diffMs <= 0) return 'now';
+    const h = Math.floor(diffMs / 3600000);
+    const m = Math.floor((diffMs % 3600000) / 60000);
+    if (h > 24) return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+    if (h > 0) return h + 'h ' + m + 'm';
+    return m + 'm';
+  } catch { return ''; }
+}
+
+function renderGauges(data) {
+  const container = document.getElementById('gauge-group');
+  if (data.error) {
+    container.innerHTML = '<span class="gate-error">' + esc(data.error) + '</span>';
+    return;
+  }
+
+  const items = [];
+  if (data.five_hour) items.push({ label: '5h', pct: data.five_hour.utilization || 0, reset: data.five_hour.resets_at });
+  if (data.seven_day) items.push({ label: '7d', pct: data.seven_day.utilization || 0, reset: data.seven_day.resets_at });
+  if (data.seven_day_sonnet) items.push({ label: '7d Son', pct: data.seven_day_sonnet.utilization || 0, reset: data.seven_day_sonnet.resets_at });
+  if (data.extra_usage && data.extra_usage.is_enabled) {
+    const eu = data.extra_usage;
+    items.push({ label: 'Extra', pct: eu.utilization || 0, reset: null, sub: '$' + (eu.used_credits||0).toFixed(0) + '/$' + (eu.monthly_limit||0) });
+  }
+
+  container.innerHTML = items.map(g => {
+    const cls = gaugeClass(g.pct);
+    const resetStr = g.reset ? ' \u00b7 resets ' + formatReset(g.reset) : '';
+    const subStr = g.sub ? ' \u00b7 ' + g.sub : '';
+    return '<div class="gauge">' +
+      '<span class="gauge-label">' + esc(g.label) + '</span>' +
+      '<div class="gauge-bar-bg"><div class="gauge-bar ' + cls + '" style="width:' + Math.min(g.pct, 100) + '%"></div></div>' +
+      '<span class="gauge-pct" style="color:var(--' + (cls==='low'?'green':cls==='mid'?'text':'accent') + ')">' + g.pct + '%</span>' +
+      '<span class="gauge-reset">' + resetStr + subStr + '</span>' +
+    '</div>';
+  }).join('');
+}
+
+async function fetchUsageGate() {
+  try {
+    const resp = await fetch('/api/usage-gate');
+    const d = await resp.json();
+    renderGauges(d);
+  } catch(e) {
+    document.getElementById('gauge-group').innerHTML = '<span class="gate-error">Failed to fetch</span>';
+  }
+}
+
 // ── Data loading ───────────────────────────────────────────────────────────
 async function loadData() {
   try {
@@ -883,7 +1111,9 @@ async function loadData() {
 }
 
 loadData();
+fetchUsageGate();
 setInterval(loadData, 30000);
+setInterval(fetchUsageGate, 120000);
 </script>
 </body>
 </html>
@@ -894,7 +1124,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def _require_auth(self):
+        """Return True if authorized, False if login page was sent."""
+        if _check_auth_cookie(self):
+            return True
+        if self.path.startswith("/api/"):
+            self.send_response(401)
+            body = json.dumps({"error": "unauthorized"}).encode()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            _send_login_page(self)
+        return False
+
     def do_GET(self):
+        if self.path == "/login":
+            _send_login_page(self)
+            return
+
+        if not self._require_auth():
+            return
+
         if self.path in ("/", "/index.html"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -910,11 +1162,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
 
+        elif self.path == "/api/usage-gate":
+            data = fetch_usage_data()
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
+        if self.path == "/login":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            from urllib.parse import parse_qs
+            params = parse_qs(body)
+            password = params.get("password", [""])[0]
+
+            if password == DASHBOARD_PASSWORD:
+                token = _make_auth_token()
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.send_header(
+                    "Set-Cookie",
+                    f"{AUTH_COOKIE_NAME}={token}; Path=/; Max-Age={AUTH_COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax",
+                )
+                self.end_headers()
+            else:
+                _send_login_page(self, error="Wrong password")
+            return
+
+        if not self._require_auth():
+            return
+
         if self.path == "/api/rescan":
             # Full rebuild: delete DB and rescan from scratch
             if DB_PATH.exists():
