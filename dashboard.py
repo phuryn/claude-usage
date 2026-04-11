@@ -477,6 +477,7 @@ let rawData = null;
 let selectedModels = new Set();
 let selectedRange = '30d';
 let customFrom = null;  // 'YYYY-MM-DD' or null
+let peakBands = [];
 let customTo   = null;
 let charts = {};
 let sessionSortCol = 'last';
@@ -548,9 +549,124 @@ const TOKEN_COLORS = {
 };
 const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
 
+// Chart.js plugin that draws peak-hour bands in the chart area.
+// Each chart that wants bands passes options.plugins.peakBands.mode ('histogram' or 'timeline').
+const peakBandPlugin = {
+  id: 'peakBands',
+  beforeDatasetsDraw(chart, args, pluginOpts) {
+    if (!peakBands.length) return;
+    const mode = pluginOpts && pluginOpts.mode;
+    if (!mode) return;
+    const ctx = chart.ctx;
+    const xAxis = chart.scales.x;
+    const yAxis = chart.scales.y;
+    if (!xAxis || !yAxis) return;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(217,119,87,0.10)';
+
+    if (mode === 'histogram') {
+      // Histogram x-axis is 24 labels "00:00".."23:00". Draw one band per
+      // configured peak, using a recent weekday as the reference day.
+      const refDay = getRecentWeekday();
+      for (const band of peakBands) {
+        const range = convertBandForDay(band, refDay);
+        if (!range) continue;
+        const startLabel = String(Math.floor(range.start)).padStart(2,'0') + ':00';
+        const endLabel   = String(Math.floor(range.end)).padStart(2,'0') + ':00';
+        const xStart = xAxis.getPixelForValue(startLabel);
+        const xEnd   = xAxis.getPixelForValue(endLabel);
+        ctx.fillRect(xStart, yAxis.top, xEnd - xStart, yAxis.bottom - yAxis.top);
+      }
+    } else if (mode === 'timeline') {
+      // Timeline has one label per (day, hour). Shade each bar whose hour falls
+      // inside a band for that bar's day-of-week.
+      const timelineData = pluginOpts.timelineData;
+      if (!timelineData) { ctx.restore(); return; }
+      const labels = chart.data.labels;
+      for (let i = 0; i < labels.length; i++) {
+        const b = timelineData[i];
+        if (!b) continue;
+        for (const band of peakBands) {
+          const range = convertBandForDay(band, b.day);
+          if (!range) continue;
+          const hour = b.hour;
+          if (hour >= Math.floor(range.start) && hour < Math.ceil(range.end)) {
+            const x = xAxis.getPixelForValue(labels[i]);
+            const nextLabel = labels[Math.min(i+1, labels.length-1)];
+            const barWidth = xAxis.getPixelForValue(nextLabel) - x;
+            ctx.fillRect(x - barWidth/2, yAxis.top, barWidth, yAxis.bottom - yAxis.top);
+            break;
+          }
+        }
+      }
+    }
+    ctx.restore();
+  }
+};
+
+Chart.register(peakBandPlugin);
+
 // ── Time range ─────────────────────────────────────────────────────────────
 const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
 const RANGE_TICKS  = { '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+
+// Convert a peak band to viewer-local (Chicago) hour range for a given day.
+// Uses Intl.DateTimeFormat for cross-timezone conversion — no external libraries.
+// Returns {start: float, end: float} in decimal hours (viewer time), or null if
+// the band doesn't apply to the given day-of-week in viewer time.
+function convertBandForDay(band, dayStr) {
+  // dayStr = 'YYYY-MM-DD' interpreted in viewer time.
+  const [y, m, d] = dayStr.split('-').map(Number);
+  // Create a date at noon to safely determine day-of-week without DST edge cases
+  const localNoon = new Date(Date.UTC(y, m-1, d, 18, 0, 0));
+  const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const dowViewer = dayNames[localNoon.getUTCDay()];
+  if (!band.days.map(d => d.slice(0,3)).includes(dowViewer)) return null;
+
+  const [sh, sm] = band.start.split(':').map(Number);
+  const [eh, em] = band.end.split(':').map(Number);
+
+  const bandStartUTC = zonedTimeToUTC(y, m, d, sh, sm, band.timezone);
+  const bandEndUTC   = zonedTimeToUTC(y, m, d, eh, em, band.timezone);
+
+  const startLocal = utcToViewerHour(bandStartUTC, 'America/Chicago');
+  const endLocal   = utcToViewerHour(bandEndUTC,   'America/Chicago');
+  return { start: startLocal, end: endLocal };
+}
+
+// Given Y/M/D and H/M in `tz`, return the corresponding UTC Date.
+// Two-pass technique: assume the wall clock is UTC, measure the offset in tz, correct.
+function zonedTimeToUTC(y, mo, d, h, mi, tz) {
+  const guess = new Date(Date.UTC(y, mo-1, d, h, mi, 0));
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(guess);
+  const p = Object.fromEntries(parts.filter(x => x.type !== 'literal').map(x => [x.type, parseInt(x.value, 10)]));
+  const asUTCOfTZ = Date.UTC(p.year, p.month-1, p.day, p.hour === 24 ? 0 : p.hour, p.minute, p.second);
+  const offsetMs = asUTCOfTZ - guess.getTime();
+  return new Date(guess.getTime() - offsetMs);
+}
+
+// Convert a UTC Date to a decimal hour in viewer tz (e.g. 7.5 for 7:30am).
+function utcToViewerHour(utcDate, tz) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    hour: '2-digit', minute: '2-digit',
+  }).formatToParts(utcDate);
+  const p = Object.fromEntries(parts.filter(x => x.type !== 'literal').map(x => [x.type, parseInt(x.value, 10)]));
+  const hour = p.hour === 24 ? 0 : p.hour;
+  return hour + (p.minute / 60);
+}
+
+// Return a recent weekday (Mon-Fri) in YYYY-MM-DD format for histogram peak band rendering.
+function getRecentWeekday() {
+  const d = new Date();
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
 
 function getRangeCutoff(range) {
   if (range === 'all') return null;
@@ -946,7 +1062,10 @@ function renderHourHistogram(hourly) {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
+      plugins: {
+        legend: { labels: { color: '#8892a4', boxWidth: 12 } },
+        peakBands: { mode: 'histogram' },
+      },
       scales: {
         x: { ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } },
         y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
@@ -981,6 +1100,7 @@ function renderHourTimeline(timeline) {
       responsive: true, maintainAspectRatio: false,
       plugins: {
         legend: { labels: { color: '#8892a4', boxWidth: 12 } },
+        peakBands: { mode: 'timeline', timelineData: timeline },
         tooltip: {
           callbacks: {
             title: items => {
@@ -1231,6 +1351,7 @@ async function loadData() {
 
     const isFirstLoad = rawData === null;
     rawData = d;
+    peakBands = d.peak_bands || [];
 
     if (isFirstLoad) {
       // Restore range from URL, mark active button
