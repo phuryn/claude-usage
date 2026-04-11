@@ -4,12 +4,136 @@ dashboard.py - Local web dashboard served on localhost:8080.
 
 import json
 import os
+import re
+import sys
 import sqlite3
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
+
+# Timezone constants — lazily initialized so dashboard.py remains importable
+# on Windows systems without the tzdata package installed. The actual ZoneInfo
+# lookups happen inside _get_chicago_tz(), which raises a clear error on first
+# use if IANA timezone data is unavailable.
+_CHICAGO_TZ = None
+_UTC_TZ = None
+
+
+def _get_chicago_tz():
+    """Lazy accessor for the America/Chicago ZoneInfo. Raises a clear,
+    actionable error on first use if Windows tzdata is missing."""
+    global _CHICAGO_TZ, _UTC_TZ
+    if _CHICAGO_TZ is None:
+        try:
+            _CHICAGO_TZ = ZoneInfo("America/Chicago")
+            _UTC_TZ = ZoneInfo("UTC")
+        except Exception as e:
+            raise RuntimeError(
+                "IANA timezone data for America/Chicago is not available. "
+                "On Windows, install it with: pip install tzdata"
+            ) from e
+    return _CHICAGO_TZ, _UTC_TZ
+
+
+def to_local_hour(iso_utc):
+    """Convert a UTC ISO timestamp string to (local_date_str, local_hour_int)
+    in America/Chicago. Returns ('', 0) for unparseable input.
+
+    Handles the 'Z' suffix and timezone-aware inputs. DST transitions are
+    handled deterministically by zoneinfo.
+
+    Raises RuntimeError on first call if IANA timezone data is unavailable
+    (Windows without tzdata). All parse errors return ('', 0) as before.
+    """
+    if not iso_utc or not isinstance(iso_utc, str):
+        return ("", 0)
+    chicago, utc = _get_chicago_tz()
+    try:
+        # Normalize trailing Z to +00:00 for fromisoformat
+        normalized = iso_utc.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=utc)
+        local = dt.astimezone(chicago)
+        return (local.strftime("%Y-%m-%d"), local.hour)
+    except (ValueError, TypeError):
+        return ("", 0)
+
+
+_REQUIRED_BAND_FIELDS = ("timezone", "days", "start", "end")
+_VALID_DAYS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+_HH_MM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+PEAK_HOURS_PATH = Path(__file__).parent / "peak-hours.json"
+
+
+def load_peak_bands(path=PEAK_HOURS_PATH):
+    """Load peak-hours.json and return a list of validated band dicts.
+
+    Silently returns [] on missing file, malformed JSON, or missing
+    top-level 'bands' key, logging a single warning to stderr. Individual
+    bands that fail validation are dropped from the returned list with a
+    warning naming the reason.
+
+    Validation rules:
+      - Required fields: timezone, days, start, end
+      - timezone must be a valid IANA zone (resolvable by ZoneInfo)
+      - days must be a non-empty list of recognized day tokens
+        (Mon, Tue, Wed, Thu, Fri, Sat, Sun — case-insensitive)
+      - start and end must be 'HH:MM' strings (24-hour, zero-padded)
+        with start < end
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"warning: peak-hours.json not found at {path}; overlay disabled", file=sys.stderr)
+        return []
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"warning: peak-hours.json could not be parsed: {e}", file=sys.stderr)
+        return []
+
+    if not isinstance(data, dict) or not isinstance(data.get("bands"), list):
+        print("warning: peak-hours.json missing 'bands' list; overlay disabled", file=sys.stderr)
+        return []
+
+    valid = []
+    for i, band in enumerate(data["bands"]):
+        if not isinstance(band, dict):
+            print(f"warning: peak band #{i} is not a dict; dropped", file=sys.stderr)
+            continue
+        if any(band.get(k) is None for k in _REQUIRED_BAND_FIELDS):
+            print(f"warning: peak band #{i} missing required field; dropped", file=sys.stderr)
+            continue
+        if not isinstance(band["days"], list) or not band["days"]:
+            print(f"warning: peak band #{i} 'days' must be a non-empty list; dropped",
+                  file=sys.stderr)
+            continue
+        if not all(isinstance(d, str) and d.lower()[:3] in _VALID_DAYS for d in band["days"]):
+            print(f"warning: peak band #{i} 'days' contains invalid tokens; dropped",
+                  file=sys.stderr)
+            continue
+        try:
+            ZoneInfo(band["timezone"])
+        except (KeyError, TypeError, ValueError):
+            print(f"warning: peak band #{i} has invalid timezone {band['timezone']!r}; dropped",
+                  file=sys.stderr)
+            continue
+        if not (isinstance(band["start"], str) and isinstance(band["end"], str)):
+            print(f"warning: peak band #{i} 'start'/'end' must be strings; dropped",
+                  file=sys.stderr)
+            continue
+        if not (_HH_MM_RE.match(band["start"]) and _HH_MM_RE.match(band["end"])):
+            print(f"warning: peak band #{i} 'start'/'end' must be HH:MM format; dropped",
+                  file=sys.stderr)
+            continue
+        if band["start"] >= band["end"]:
+            print(f"warning: peak band #{i} has start >= end; dropped", file=sys.stderr)
+            continue
+        valid.append(band)
+    return valid
 
 
 def get_dashboard_data(db_path=DB_PATH):
@@ -53,12 +177,44 @@ def get_dashboard_data(db_path=DB_PATH):
         "turns":          r["turns"] or 0,
     } for r in daily_rows]
 
+    # ── Hourly bucketing in viewer's local time (America/Chicago) ─────────────
+    hourly_rows = conn.execute("""
+        SELECT timestamp, COALESCE(model, 'unknown') as model,
+               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+        FROM turns
+    """).fetchall()
+
+    hourly_map = {}  # (day_local, hour_local, model) -> counters
+    for r in hourly_rows:
+        day_local, hour_local = to_local_hour(r["timestamp"])
+        if not day_local:
+            continue
+        key = (day_local, hour_local, r["model"])
+        if key not in hourly_map:
+            hourly_map[key] = {
+                "input": 0, "output": 0,
+                "cache_read": 0, "cache_creation": 0,
+                "turns": 0,
+            }
+        bucket = hourly_map[key]
+        bucket["input"] += r["input_tokens"] or 0
+        bucket["output"] += r["output_tokens"] or 0
+        bucket["cache_read"] += r["cache_read_tokens"] or 0
+        bucket["cache_creation"] += r["cache_creation_tokens"] or 0
+        bucket["turns"] += 1
+
+    turns_by_hour_local = [
+        {"day_local": k[0], "hour_local": k[1], "model": k[2], **v}
+        for k, v in hourly_map.items()
+    ]
+
     # ── All sessions (client filters by range and model) ──────────────────────
     session_rows = conn.execute("""
         SELECT
             session_id, project_name, first_timestamp, last_timestamp,
             total_input_tokens, total_output_tokens,
-            total_cache_read, total_cache_creation, model, turn_count
+            total_cache_read, total_cache_creation, model, turn_count,
+            title, original_cwd
         FROM sessions
         ORDER BY last_timestamp DESC
     """).fetchall()
@@ -71,9 +227,14 @@ def get_dashboard_data(db_path=DB_PATH):
             duration_min = round((t2 - t1).total_seconds() / 60, 1)
         except Exception:
             duration_min = 0
+        project_name = r["project_name"] or "unknown"
+        title = r["title"]
         sessions_all.append({
             "session_id":    r["session_id"][:8],
-            "project":       r["project_name"] or "unknown",
+            "project":       title or project_name,
+            "project_raw":   project_name,
+            "title":         title,
+            "original_cwd":  r["original_cwd"],
             "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
             "last_date":     (r["last_timestamp"] or "")[:10],
             "duration_min":  duration_min,
@@ -91,6 +252,9 @@ def get_dashboard_data(db_path=DB_PATH):
         "all_models":     all_models,
         "daily_by_model": daily_by_model,
         "sessions_all":   sessions_all,
+        "turns_by_hour_local": turns_by_hour_local,
+        "peak_bands":     load_peak_bands(),
+        "viewer_timezone": "America/Chicago",
         "generated_at":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -138,6 +302,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .range-btn:last-child { border-right: none; }
   .range-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
   .range-btn.active { background: rgba(217,119,87,0.15); color: var(--accent); font-weight: 600; }
+  .date-input { background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 3px 8px; border-radius: 4px; font-size: 12px; font-family: inherit; }
+  .date-input::-webkit-calendar-picker-indicator { filter: invert(0.7); cursor: pointer; }
+  .range-btn.inactive { opacity: 0.4; }
+  #clear-custom { padding: 3px 8px; }
 
   .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
   .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
@@ -203,6 +371,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button class="range-btn" data-range="90d" onclick="setRange('90d')">90d</button>
     <button class="range-btn" data-range="all" onclick="setRange('all')">All</button>
   </div>
+  <div class="filter-sep"></div>
+  <div class="filter-label">Custom</div>
+  <input type="date" id="from-date" class="date-input" onchange="onCustomDateChange()">
+  <span class="muted">–</span>
+  <input type="date" id="to-date" class="date-input" onchange="onCustomDateChange()">
+  <button class="filter-btn" id="clear-custom" onclick="clearCustomDates()" title="Clear custom dates">×</button>
 </div>
 
 <div class="container">
@@ -211,6 +385,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="chart-card wide">
       <h2 id="daily-chart-title">Daily Token Usage</h2>
       <div class="chart-wrap tall"><canvas id="chart-daily"></canvas></div>
+    </div>
+    <div class="chart-card wide">
+      <h2 id="hour-histogram-title">Usage by Hour of Day — America/Chicago (averaged)</h2>
+      <div class="chart-wrap"><canvas id="chart-hour-histogram"></canvas></div>
+    </div>
+    <div class="chart-card wide">
+      <h2 id="hour-timeline-title">Hourly Timeline — America/Chicago</h2>
+      <div class="chart-wrap tall" style="overflow-x: auto;"><canvas id="chart-hour-timeline"></canvas></div>
     </div>
     <div class="chart-card">
       <h2>By Model</h2>
@@ -294,6 +476,9 @@ function esc(s) {
 let rawData = null;
 let selectedModels = new Set();
 let selectedRange = '30d';
+let customFrom = null;  // 'YYYY-MM-DD' or null
+let peakBands = [];
+let customTo   = null;
 let charts = {};
 let sessionSortCol = 'last';
 let modelSortCol = 'cost';
@@ -364,9 +549,124 @@ const TOKEN_COLORS = {
 };
 const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
 
+// Chart.js plugin that draws peak-hour bands in the chart area.
+// Each chart that wants bands passes options.plugins.peakBands.mode ('histogram' or 'timeline').
+const peakBandPlugin = {
+  id: 'peakBands',
+  beforeDatasetsDraw(chart, args, pluginOpts) {
+    if (!peakBands.length) return;
+    const mode = pluginOpts && pluginOpts.mode;
+    if (!mode) return;
+    const ctx = chart.ctx;
+    const xAxis = chart.scales.x;
+    const yAxis = chart.scales.y;
+    if (!xAxis || !yAxis) return;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(217,119,87,0.10)';
+
+    if (mode === 'histogram') {
+      // Histogram x-axis is 24 labels "00:00".."23:00". Draw one band per
+      // configured peak, using a recent weekday as the reference day.
+      const refDay = getRecentWeekday();
+      for (const band of peakBands) {
+        const range = convertBandForDay(band, refDay);
+        if (!range) continue;
+        const startLabel = String(Math.floor(range.start)).padStart(2,'0') + ':00';
+        const endLabel   = String(Math.floor(range.end)).padStart(2,'0') + ':00';
+        const xStart = xAxis.getPixelForValue(startLabel);
+        const xEnd   = xAxis.getPixelForValue(endLabel);
+        ctx.fillRect(xStart, yAxis.top, xEnd - xStart, yAxis.bottom - yAxis.top);
+      }
+    } else if (mode === 'timeline') {
+      // Timeline has one label per (day, hour). Shade each bar whose hour falls
+      // inside a band for that bar's day-of-week.
+      const timelineData = pluginOpts.timelineData;
+      if (!timelineData) { ctx.restore(); return; }
+      const labels = chart.data.labels;
+      for (let i = 0; i < labels.length; i++) {
+        const b = timelineData[i];
+        if (!b) continue;
+        for (const band of peakBands) {
+          const range = convertBandForDay(band, b.day);
+          if (!range) continue;
+          const hour = b.hour;
+          if (hour >= Math.floor(range.start) && hour < Math.ceil(range.end)) {
+            const x = xAxis.getPixelForValue(labels[i]);
+            const nextLabel = labels[Math.min(i+1, labels.length-1)];
+            const barWidth = xAxis.getPixelForValue(nextLabel) - x;
+            ctx.fillRect(x - barWidth/2, yAxis.top, barWidth, yAxis.bottom - yAxis.top);
+            break;
+          }
+        }
+      }
+    }
+    ctx.restore();
+  }
+};
+
+Chart.register(peakBandPlugin);
+
 // ── Time range ─────────────────────────────────────────────────────────────
 const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
 const RANGE_TICKS  = { '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+
+// Convert a peak band to viewer-local (Chicago) hour range for a given day.
+// Uses Intl.DateTimeFormat for cross-timezone conversion — no external libraries.
+// Returns {start: float, end: float} in decimal hours (viewer time), or null if
+// the band doesn't apply to the given day-of-week in viewer time.
+function convertBandForDay(band, dayStr) {
+  // dayStr = 'YYYY-MM-DD' interpreted in viewer time.
+  const [y, m, d] = dayStr.split('-').map(Number);
+  // Create a date at noon to safely determine day-of-week without DST edge cases
+  const localNoon = new Date(Date.UTC(y, m-1, d, 18, 0, 0));
+  const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const dowViewer = dayNames[localNoon.getUTCDay()];
+  if (!band.days.map(d => d.slice(0,3)).includes(dowViewer)) return null;
+
+  const [sh, sm] = band.start.split(':').map(Number);
+  const [eh, em] = band.end.split(':').map(Number);
+
+  const bandStartUTC = zonedTimeToUTC(y, m, d, sh, sm, band.timezone);
+  const bandEndUTC   = zonedTimeToUTC(y, m, d, eh, em, band.timezone);
+
+  const startLocal = utcToViewerHour(bandStartUTC, 'America/Chicago');
+  const endLocal   = utcToViewerHour(bandEndUTC,   'America/Chicago');
+  return { start: startLocal, end: endLocal };
+}
+
+// Given Y/M/D and H/M in `tz`, return the corresponding UTC Date.
+// Two-pass technique: assume the wall clock is UTC, measure the offset in tz, correct.
+function zonedTimeToUTC(y, mo, d, h, mi, tz) {
+  const guess = new Date(Date.UTC(y, mo-1, d, h, mi, 0));
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(guess);
+  const p = Object.fromEntries(parts.filter(x => x.type !== 'literal').map(x => [x.type, parseInt(x.value, 10)]));
+  const asUTCOfTZ = Date.UTC(p.year, p.month-1, p.day, p.hour === 24 ? 0 : p.hour, p.minute, p.second);
+  const offsetMs = asUTCOfTZ - guess.getTime();
+  return new Date(guess.getTime() - offsetMs);
+}
+
+// Convert a UTC Date to a decimal hour in viewer tz (e.g. 7.5 for 7:30am).
+function utcToViewerHour(utcDate, tz) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    hour: '2-digit', minute: '2-digit',
+  }).formatToParts(utcDate);
+  const p = Object.fromEntries(parts.filter(x => x.type !== 'literal').map(x => [x.type, parseInt(x.value, 10)]));
+  const hour = p.hour === 24 ? 0 : p.hour;
+  return hour + (p.minute / 60);
+}
+
+// Return a recent weekday (Mon-Fri) in YYYY-MM-DD format for histogram peak band rendering.
+function getRecentWeekday() {
+  const d = new Date();
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
 
 function getRangeCutoff(range) {
   if (range === 'all') return null;
@@ -381,11 +681,61 @@ function readURLRange() {
   return ['7d', '30d', '90d', 'all'].includes(p) ? p : '30d';
 }
 
+function readURLCustomDates() {
+  const p = new URLSearchParams(window.location.search);
+  return {
+    from: p.get('from'),
+    to:   p.get('to'),
+  };
+}
+
 function setRange(range) {
   selectedRange = range;
-  document.querySelectorAll('.range-btn').forEach(btn =>
-    btn.classList.toggle('active', btn.dataset.range === range)
-  );
+  customFrom = null;
+  customTo = null;
+  document.getElementById('from-date').value = '';
+  document.getElementById('to-date').value = '';
+  document.getElementById('from-date').max = '';
+  document.getElementById('to-date').min = '';
+  document.querySelectorAll('.range-btn').forEach(btn => {
+    btn.classList.remove('inactive');
+    btn.classList.toggle('active', btn.dataset.range === range);
+  });
+  updateURL();
+  applyFilter();
+}
+
+function onCustomDateChange() {
+  const fromEl = document.getElementById('from-date');
+  const toEl   = document.getElementById('to-date');
+  customFrom = fromEl.value || null;
+  customTo   = toEl.value || null;
+  // Prevent inverted ranges via native min/max on the counterpart input
+  fromEl.max = customTo || '';
+  toEl.min = customFrom || '';
+  // If either is set, deactivate preset buttons
+  const anyCustom = customFrom || customTo;
+  document.querySelectorAll('.range-btn').forEach(btn => {
+    btn.classList.toggle('inactive', !!anyCustom);
+    btn.classList.toggle('active', !anyCustom && btn.dataset.range === selectedRange);
+  });
+  if (anyCustom) selectedRange = 'custom';
+  updateURL();
+  applyFilter();
+}
+
+function clearCustomDates() {
+  document.getElementById('from-date').value = '';
+  document.getElementById('to-date').value = '';
+  document.getElementById('from-date').max = '';
+  document.getElementById('to-date').min = '';
+  customFrom = null;
+  customTo = null;
+  selectedRange = '30d';
+  document.querySelectorAll('.range-btn').forEach(btn => {
+    btn.classList.remove('inactive');
+    btn.classList.toggle('active', btn.dataset.range === '30d');
+  });
   updateURL();
   applyFilter();
 }
@@ -454,7 +804,12 @@ function clearAllModels() {
 function updateURL() {
   const allModels = Array.from(document.querySelectorAll('#model-checkboxes input')).map(cb => cb.value);
   const params = new URLSearchParams();
-  if (selectedRange !== '30d') params.set('range', selectedRange);
+  if (customFrom || customTo) {
+    if (customFrom) params.set('from', customFrom);
+    if (customTo)   params.set('to', customTo);
+  } else if (selectedRange !== '30d') {
+    params.set('range', selectedRange);
+  }
   if (!isDefaultModelSelection(allModels)) params.set('models', Array.from(selectedModels).join(','));
   const search = params.toString() ? '?' + params.toString() : '';
   history.replaceState(null, '', window.location.pathname + search);
@@ -501,11 +856,24 @@ function sortSessions(sessions) {
 function applyFilter() {
   if (!rawData) return;
 
-  const cutoff = getRangeCutoff(selectedRange);
+  // NOTE: day keys in daily_by_model and sessions_all come from the server as UTC-sliced
+  // ISO dates. Custom picker values are browser-local YYYY-MM-DD. For users far from UTC
+  // this can shift the boundary by one day at the edges. Full local-time bucketing is
+  // tracked as a follow-up.
+  // Compute date range: custom overrides preset
+  const isCustom = customFrom || customTo;
+  const rangeFrom = isCustom ? customFrom : getRangeCutoff(selectedRange);
+  const rangeTo = isCustom ? customTo : null;
+
+  const inRange = (day) => {
+    if (rangeFrom && day < rangeFrom) return false;
+    if (rangeTo && day > rangeTo) return false;
+    return true;
+  };
 
   // Filter daily rows by model + date range
   const filteredDaily = rawData.daily_by_model.filter(r =>
-    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+    selectedModels.has(r.model) && inRange(r.day)
   );
 
   // Daily chart: aggregate by day
@@ -534,7 +902,7 @@ function applyFilter() {
 
   // Filter sessions by model + date range
   const filteredSessions = rawData.sessions_all.filter(s =>
-    selectedModels.has(s.model) && (!cutoff || s.last_date >= cutoff)
+    selectedModels.has(s.model) && inRange(s.last_date)
   );
 
   // Add session counts into modelMap
@@ -543,6 +911,52 @@ function applyFilter() {
   }
 
   const byModel = Object.values(modelMap).sort((a, b) => (b.input + b.output) - (a.input + a.output));
+
+  // ── Hour-of-day histogram: average tokens per hour across distinct days ──
+  const filteredHourly = rawData.turns_by_hour_local.filter(r =>
+    selectedModels.has(r.model) && inRange(r.day_local)
+  );
+  const hourBuckets = Array.from({length: 24}, (_, h) => ({
+    hour: h, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0,
+  }));
+  const daysWithData = new Set();
+  for (const r of filteredHourly) {
+    daysWithData.add(r.day_local);
+    const b = hourBuckets[r.hour_local];
+    b.input          += r.input;
+    b.output         += r.output;
+    b.cache_read     += r.cache_read;
+    b.cache_creation += r.cache_creation;
+    b.turns          += r.turns;
+  }
+  const nDays = Math.max(daysWithData.size, 1);
+  const hourHistogram = hourBuckets.map(b => ({
+    hour:           b.hour,
+    input:          b.input / nDays,
+    output:         b.output / nDays,
+    cache_read:     b.cache_read / nDays,
+    cache_creation: b.cache_creation / nDays,
+    turns:          b.turns / nDays,
+  }));
+
+  // ── Hourly timeline: one bar per (day, hour) in chronological order ──
+  const timelineMap = {};  // "YYYY-MM-DD HH" -> bucket
+  for (const r of filteredHourly) {
+    const key = r.day_local + ' ' + String(r.hour_local).padStart(2, '0');
+    if (!timelineMap[key]) {
+      timelineMap[key] = {
+        key, day: r.day_local, hour: r.hour_local,
+        input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0,
+      };
+    }
+    const b = timelineMap[key];
+    b.input          += r.input;
+    b.output         += r.output;
+    b.cache_read     += r.cache_read;
+    b.cache_creation += r.cache_creation;
+    b.turns          += r.turns;
+  }
+  const hourTimeline = Object.values(timelineMap).sort((a, b) => a.key.localeCompare(b.key));
 
   // By project: aggregate from filtered sessions
   const projMap = {};
@@ -575,6 +989,8 @@ function applyFilter() {
 
   renderStats(totals);
   renderDailyChart(daily);
+  renderHourHistogram(hourHistogram);
+  renderHourTimeline(hourTimeline);
   renderModelChart(byModel);
   renderProjectChart(byProject);
   lastFilteredSessions = sortSessions(filteredSessions);
@@ -624,6 +1040,79 @@ function renderDailyChart(daily) {
       plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
       scales: {
         x: { ticks: { color: '#8892a4', maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: '#2a2d3a' } },
+        y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
+      }
+    }
+  });
+}
+
+function renderHourHistogram(hourly) {
+  const ctx = document.getElementById('chart-hour-histogram').getContext('2d');
+  if (charts.hourHistogram) charts.hourHistogram.destroy();
+  charts.hourHistogram = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: hourly.map(h => String(h.hour).padStart(2, '0') + ':00'),
+      datasets: [
+        { label: 'Input',          data: hourly.map(h => h.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens' },
+        { label: 'Output',         data: hourly.map(h => h.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens' },
+        { label: 'Cache Read',     data: hourly.map(h => h.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens' },
+        { label: 'Cache Creation', data: hourly.map(h => h.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens' },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#8892a4', boxWidth: 12 } },
+        peakBands: { mode: 'histogram' },
+      },
+      scales: {
+        x: { ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } },
+        y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
+      }
+    }
+  });
+}
+
+function renderHourTimeline(timeline) {
+  const ctx = document.getElementById('chart-hour-timeline').getContext('2d');
+  if (charts.hourTimeline) charts.hourTimeline.destroy();
+  if (!timeline.length) { charts.hourTimeline = null; return; }
+  // Compact label: "MM-DD HH" (e.g. "04-10 15")
+  const labels = timeline.map(b => b.day.slice(5) + ' ' + String(b.hour).padStart(2, '0'));
+  // Scale canvas width for many bars (approx 12px per bar)
+  const canvas = document.getElementById('chart-hour-timeline');
+  const minWidth = Math.max(800, timeline.length * 12);
+  canvas.style.width = minWidth + 'px';
+
+  charts.hourTimeline = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Input',          data: timeline.map(b => b.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens' },
+        { label: 'Output',         data: timeline.map(b => b.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens' },
+        { label: 'Cache Read',     data: timeline.map(b => b.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens' },
+        { label: 'Cache Creation', data: timeline.map(b => b.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens' },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#8892a4', boxWidth: 12 } },
+        peakBands: { mode: 'timeline', timelineData: timeline },
+        tooltip: {
+          callbacks: {
+            title: items => {
+              if (!items.length) return '';
+              const b = timeline[items[0].dataIndex];
+              return b.day + ' ' + String(b.hour).padStart(2, '0') + ':00 CT';
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8892a4', maxRotation: 0, autoSkip: true, autoSkipPadding: 20 }, grid: { color: '#2a2d3a' } },
         y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
       }
     }
@@ -683,7 +1172,7 @@ function renderSessionsTable(sessions) {
       : `<td class="cost-na">n/a</td>`;
     return `<tr>
       <td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>
-      <td title="${esc(s.project_raw || '')}">${esc(s.project)}</td>
+      <td>${esc(s.project)}</td>
       <td class="muted">${esc(s.last)}</td>
       <td class="muted">${esc(s.duration_min)}m</td>
       <td><span class="model-tag">${esc(s.model)}</span></td>
@@ -816,10 +1305,10 @@ function downloadCSV(reportType, header, rows) {
 }
 
 function exportSessionsCSV() {
-  const header = ['Session', 'Title', 'Project (cwd-derived)', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
+  const header = ['Session', 'Project', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
   const rows = lastFilteredSessions.map(s => {
     const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
-    return [s.session_id, s.title || '', s.project_raw || s.project, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
+    return [s.session_id, s.project, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
   });
   downloadCSV('sessions', header, rows);
 }
@@ -862,6 +1351,7 @@ async function loadData() {
 
     const isFirstLoad = rawData === null;
     rawData = d;
+    peakBands = d.peak_bands || [];
 
     if (isFirstLoad) {
       // Restore range from URL, mark active button
@@ -869,6 +1359,21 @@ async function loadData() {
       document.querySelectorAll('.range-btn').forEach(btn =>
         btn.classList.toggle('active', btn.dataset.range === selectedRange)
       );
+      // Restore custom date range from URL if present
+      const urlCustom = readURLCustomDates();
+      if (urlCustom.from || urlCustom.to) {
+        customFrom = urlCustom.from;
+        customTo = urlCustom.to;
+        if (customFrom) document.getElementById('from-date').value = customFrom;
+        if (customTo)   document.getElementById('to-date').value = customTo;
+        if (customTo)   document.getElementById('from-date').max = customTo;
+        if (customFrom) document.getElementById('to-date').min = customFrom;
+        selectedRange = 'custom';
+        document.querySelectorAll('.range-btn').forEach(btn => {
+          btn.classList.add('inactive');
+          btn.classList.remove('active');
+        });
+      }
       // Build model filter (reads URL for model selection too)
       buildFilterUI(d.all_models);
       updateSortIcons();

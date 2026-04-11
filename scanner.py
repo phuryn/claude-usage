@@ -13,6 +13,8 @@ PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
 DB_PATH = Path.home() / ".claude" / "usage.db"
 DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
+_APPDATA = os.environ.get("APPDATA")
+DESKTOP_METADATA_DIR = Path(_APPDATA) / "Claude" / "claude-code-sessions" if _APPDATA else None
 
 
 def get_db(db_path=DB_PATH):
@@ -34,7 +36,9 @@ def init_db(conn):
             total_cache_read        INTEGER DEFAULT 0,
             total_cache_creation    INTEGER DEFAULT 0,
             model           TEXT,
-            turn_count      INTEGER DEFAULT 0
+            turn_count      INTEGER DEFAULT 0,
+            title           TEXT,
+            original_cwd    TEXT
         );
 
         CREATE TABLE IF NOT EXISTS turns (
@@ -66,6 +70,16 @@ def init_db(conn):
         conn.execute("SELECT message_id FROM turns LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE turns ADD COLUMN message_id TEXT")
+    # Add title column if upgrading from older schema
+    try:
+        conn.execute("SELECT title FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+    # Add original_cwd column if upgrading from older schema
+    try:
+        conn.execute("SELECT original_cwd FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE sessions ADD COLUMN original_cwd TEXT")
     # Conditional unique index: only dedup non-null message IDs
     conn.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_message_id
@@ -83,6 +97,51 @@ def project_name_from_cwd(cwd):
     if len(parts) >= 2:
         return "/".join(parts[-2:])
     return parts[-1] if parts else "unknown"
+
+
+def read_desktop_metadata(desktop_dir=DESKTOP_METADATA_DIR):
+    """Walk the Windows Claude Desktop session metadata directory and return
+    a dict keyed by cliSessionId.
+
+    Silently returns {} if the directory doesn't exist. Individual files
+    that are malformed, missing cliSessionId, or unreadable are dropped
+    without raising.
+
+    Returns:
+        dict: {cli_session_id: {
+            "title": str | None,
+            "original_cwd": str | None,
+            "model": str | None,
+            "created_at_ms": int | None,
+            "last_activity_at_ms": int | None,
+        }}
+    """
+    result = {}
+    if desktop_dir is None:
+        return result
+    desktop_dir = Path(desktop_dir)
+    if not desktop_dir.is_dir():
+        return result
+
+    for f in desktop_dir.rglob("local_*.json"):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        cli_id = data.get("cliSessionId")
+        if not cli_id:
+            continue
+        result[cli_id] = {
+            "title": data.get("title"),
+            "original_cwd": data.get("cwd"),
+            "model": data.get("model"),
+            "created_at_ms": data.get("createdAt"),
+            "last_activity_at_ms": data.get("lastActivityAt"),
+        }
+    return result
 
 
 def parse_jsonl_file(filepath):
@@ -281,6 +340,36 @@ def insert_turns(conn, turns):
     ])
 
 
+def enrich_sessions_with_desktop_metadata(conn, metadata):
+    """Update sessions.title and sessions.original_cwd from a desktop
+    metadata dict (as returned by read_desktop_metadata).
+
+    Only updates rows where session_id matches a key in metadata. Never
+    clears existing values: if a session was previously enriched and its
+    metadata is now absent (whole entry missing OR entry present with
+    None field), the old values are preserved. This is enforced by
+    COALESCE in the UPDATE — only non-None metadata values overwrite
+    existing columns.
+
+    Args:
+        conn: sqlite3 Connection
+        metadata: dict {cli_session_id: {title, original_cwd, ...}}
+    """
+    rows = [
+        (meta.get("title"), meta.get("original_cwd"), cli_id)
+        for cli_id, meta in metadata.items()
+    ]
+    if not rows:
+        return
+    conn.executemany("""
+        UPDATE sessions
+        SET title = COALESCE(?, title),
+            original_cwd = COALESCE(?, original_cwd)
+        WHERE session_id = ?
+    """, rows)
+    conn.commit()
+
+
 def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
     conn = get_db(db_path)
     init_db(conn)
@@ -469,6 +558,13 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                 turn_count = COALESCE((SELECT COUNT(*) FROM turns WHERE turns.session_id = sessions.session_id), 0)
         """)
         conn.commit()
+
+    # Enrich sessions with desktop app metadata (Windows only; no-op elsewhere)
+    desktop_metadata = read_desktop_metadata(desktop_dir=DESKTOP_METADATA_DIR)
+    if desktop_metadata:
+        enrich_sessions_with_desktop_metadata(conn, desktop_metadata)
+        if verbose:
+            print(f"  Desktop metadata: {len(desktop_metadata)} sessions enriched")
 
     if verbose:
         print(f"\nScan complete:")
