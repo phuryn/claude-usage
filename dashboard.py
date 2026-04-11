@@ -571,6 +571,8 @@ function setRange(range) {
   customTo = null;
   document.getElementById('from-date').value = '';
   document.getElementById('to-date').value = '';
+  document.getElementById('from-date').max = '';
+  document.getElementById('to-date').min = '';
   document.querySelectorAll('.range-btn').forEach(btn => {
     btn.classList.remove('inactive');
     btn.classList.toggle('active', btn.dataset.range === range);
@@ -584,6 +586,9 @@ function onCustomDateChange() {
   const toEl   = document.getElementById('to-date');
   customFrom = fromEl.value || null;
   customTo   = toEl.value || null;
+  // Prevent inverted ranges via native min/max on the counterpart input
+  fromEl.max = customTo || '';
+  toEl.min = customFrom || '';
   // If either is set, deactivate preset buttons
   const anyCustom = customFrom || customTo;
   document.querySelectorAll('.range-btn').forEach(btn => {
@@ -598,6 +603,8 @@ function onCustomDateChange() {
 function clearCustomDates() {
   document.getElementById('from-date').value = '';
   document.getElementById('to-date').value = '';
+  document.getElementById('from-date').max = '';
+  document.getElementById('to-date').min = '';
   customFrom = null;
   customTo = null;
   selectedRange = '30d';
@@ -725,6 +732,10 @@ function sortSessions(sessions) {
 function applyFilter() {
   if (!rawData) return;
 
+  // NOTE: day keys in daily_by_model and sessions_all come from the server as UTC-sliced
+  // ISO dates. Custom picker values are browser-local YYYY-MM-DD. For users far from UTC
+  // this can shift the boundary by one day at the edges. Full local-time bucketing is
+  // tracked as a follow-up.
   // Compute date range: custom overrides preset
   const isCustom = customFrom || customTo;
   const rangeFrom = isCustom ? customFrom : getRangeCutoff(selectedRange);
@@ -1109,6 +1120,8 @@ async function loadData() {
         customTo = urlCustom.to;
         if (customFrom) document.getElementById('from-date').value = customFrom;
         if (customTo)   document.getElementById('to-date').value = customTo;
+        if (customTo)   document.getElementById('from-date').max = customTo;
+        if (customFrom) document.getElementById('to-date').min = customFrom;
         selectedRange = 'custom';
         document.querySelectorAll('.range-btn').forEach(btn => {
           btn.classList.add('inactive');
