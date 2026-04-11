@@ -1140,9 +1140,9 @@ function applyClickFilter(fromDay, toDay) {
   document.getElementById('to-date').min = fromDay;
   updateURL();
   applyFilter();
-  // Scroll sessions table into view so the user sees what survived the filter
-  const sessCard = document.querySelector('.table-card');
-  if (sessCard) sessCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // Note: we intentionally do NOT scrollIntoView here — the user is already
+  // looking at the chart they clicked, and the stats row at the top updates
+  // to reflect the new totals. Jumping the page would be disorienting.
 }
 
 function renderHourHistogram(hourly) {
@@ -1296,6 +1296,8 @@ function renderSessionsTable(sessions) {
 async function openDrill(sessionIdPrefix) {
   const modal = document.getElementById('drill-modal');
   modal.classList.remove('hidden');
+  // Lock body scroll so the fixed-position modal sits in the viewport cleanly
+  document.body.style.overflow = 'hidden';
   document.getElementById('drill-title').textContent = 'Loading…';
   document.getElementById('drill-sub').textContent = sessionIdPrefix;
   document.getElementById('drill-summary').innerHTML = '';
@@ -1318,6 +1320,7 @@ async function openDrill(sessionIdPrefix) {
 
 function closeDrill() {
   document.getElementById('drill-modal').classList.add('hidden');
+  document.body.style.overflow = '';
   document.removeEventListener('keydown', onDrillKey);
 }
 
