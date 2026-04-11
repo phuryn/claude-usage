@@ -38,7 +38,8 @@ def init_db(conn):
             model           TEXT,
             turn_count      INTEGER DEFAULT 0,
             title           TEXT,
-            original_cwd    TEXT
+            original_cwd    TEXT,
+            jsonl_path      TEXT
         );
 
         CREATE TABLE IF NOT EXISTS turns (
@@ -80,6 +81,11 @@ def init_db(conn):
         conn.execute("SELECT original_cwd FROM sessions LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE sessions ADD COLUMN original_cwd TEXT")
+    # Add jsonl_path column if upgrading from older schema
+    try:
+        conn.execute("SELECT jsonl_path FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE sessions ADD COLUMN jsonl_path TEXT")
     # Conditional unique index: only dedup non-null message IDs
     conn.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_message_id
@@ -390,6 +396,29 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         jsonl_files.extend(glob.glob(str(d / "**" / "*.jsonl"), recursive=True))
     jsonl_files.sort()
 
+    # Backfill jsonl_path for existing sessions that don't have it yet
+    # (database upgraded from an older schema). Maps session_id (JSONL stem)
+    # → filepath.
+    missing_path_ids = {
+        row[0] for row in conn.execute(
+            "SELECT session_id FROM sessions WHERE jsonl_path IS NULL"
+        ).fetchall()
+    }
+    if missing_path_ids:
+        backfilled = 0
+        for filepath in jsonl_files:
+            sid = Path(filepath).stem
+            if sid in missing_path_ids:
+                conn.execute(
+                    "UPDATE sessions SET jsonl_path = ? WHERE session_id = ?",
+                    (filepath, sid)
+                )
+                backfilled += 1
+        if backfilled:
+            conn.commit()
+            if verbose:
+                print(f"  Backfilled jsonl_path for {backfilled} sessions")
+
     new_files = 0
     updated_files = 0
     skipped_files = 0
@@ -424,6 +453,11 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                 sessions = aggregate_sessions(session_metas, turns)
                 upsert_sessions(conn, sessions)
                 insert_turns(conn, turns)
+                # Record JSONL path for drill-down
+                conn.executemany(
+                    "UPDATE sessions SET jsonl_path = ? WHERE session_id = ?",
+                    [(filepath, s["session_id"]) for s in sessions]
+                )
                 for s in sessions:
                     total_sessions.add(s["session_id"])
                 total_turns += len(turns)
@@ -533,6 +567,11 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                 sessions = aggregate_sessions(list(new_session_metas.values()), new_turns)
                 upsert_sessions(conn, sessions)
                 insert_turns(conn, new_turns)
+                # Record JSONL path for drill-down (covers new sessions in this updated file)
+                conn.executemany(
+                    "UPDATE sessions SET jsonl_path = ? WHERE session_id = ?",
+                    [(filepath, s["session_id"]) for s in sessions]
+                )
                 for s in sessions:
                     total_sessions.add(s["session_id"])
                 total_turns += len(new_turns)

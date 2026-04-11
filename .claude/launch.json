@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["dashboard.py"],
       "port": 8080
+    },
+    {
+      "name": "claude-usage-dashboard-test",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-c", "import os; os.environ['PORT']='8092'; import dashboard; dashboard.serve()"],
+      "port": 8092
     }
   ]
 }

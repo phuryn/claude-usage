@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import sqlite3
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -355,6 +355,46 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .footer-content a:hover { text-decoration: underline; }
 
   @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } }
+
+  /* Clickable session rows */
+  #sessions-body tr { cursor: pointer; }
+  #sessions-body tr:hover td { background: rgba(217,119,87,0.05); }
+
+  /* Drill-down modal */
+  .drill-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 32px; overflow-y: auto; }
+  .drill-modal.hidden { display: none; }
+  .drill-panel { background: var(--card); border: 1px solid var(--border); border-radius: 10px; max-width: 1100px; width: 100%; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 12px 48px rgba(0,0,0,0.6); }
+  .drill-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--border); }
+  .drill-title { font-size: 18px; font-weight: 600; color: var(--accent); }
+  .drill-sub { font-size: 12px; margin-top: 4px; }
+  .drill-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--border); background: rgba(0,0,0,0.15); }
+  .drill-summary .ds-cell { display: flex; flex-direction: column; gap: 2px; }
+  .drill-summary .ds-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .drill-summary .ds-value { font-size: 14px; font-weight: 600; font-family: monospace; }
+  .drill-body { padding: 12px 24px 24px 24px; overflow-y: auto; flex: 1 1 auto; }
+  .drill-body .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+  .drill-body .loading { color: var(--muted); padding: 40px 0; text-align: center; }
+  .drill-body .err { color: #f87171; padding: 24px 0; }
+
+  .turn-row { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; background: rgba(255,255,255,0.015); }
+  .turn-head { display: flex; gap: 12px; align-items: center; padding: 10px 14px; cursor: pointer; user-select: none; }
+  .turn-head:hover { background: rgba(255,255,255,0.03); }
+  .turn-idx { color: var(--muted); font-family: monospace; font-size: 11px; min-width: 32px; }
+  .turn-time { color: var(--muted); font-family: monospace; font-size: 11px; min-width: 155px; }
+  .turn-preview { flex: 1; color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .turn-preview.user { color: #a5c8ff; }
+  .turn-preview.asst { color: var(--text); }
+  .turn-tools { display: flex; gap: 4px; flex-wrap: wrap; }
+  .turn-tool { display: inline-block; padding: 1px 7px; border-radius: 10px; background: rgba(79,142,247,0.18); color: var(--blue); font-size: 10px; font-family: monospace; }
+  .turn-tokens { font-family: monospace; font-size: 11px; color: var(--muted); min-width: 150px; text-align: right; }
+  .turn-cost { font-family: monospace; font-size: 11px; color: var(--green); min-width: 70px; text-align: right; }
+  .turn-body { display: none; padding: 0 14px 14px 56px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+  .turn-row.open .turn-body { display: block; }
+  .turn-body .tb-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 10px; margin-bottom: 4px; }
+  .turn-body .tb-text { color: var(--text); white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.5; }
+  .turn-body .tb-tools-list { margin: 4px 0 0 0; padding: 0; list-style: none; }
+  .turn-body .tb-tools-list li { font-family: monospace; font-size: 11px; color: var(--text); padding: 2px 0; }
+  .turn-body .tb-tools-list .tn { color: var(--blue); }
 </style>
 </head>
 <body>
@@ -454,6 +494,21 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </tr></thead>
       <tbody id="project-cost-body"></tbody>
     </table>
+  </div>
+</div>
+
+<!-- Session drill-down modal -->
+<div id="drill-modal" class="drill-modal hidden" onclick="onDrillBackdrop(event)">
+  <div class="drill-panel" role="dialog" aria-modal="true">
+    <div class="drill-header">
+      <div>
+        <div id="drill-title" class="drill-title">Session</div>
+        <div id="drill-sub" class="drill-sub muted"></div>
+      </div>
+      <button class="filter-btn" onclick="closeDrill()">×</button>
+    </div>
+    <div id="drill-summary" class="drill-summary"></div>
+    <div id="drill-body" class="drill-body"></div>
   </div>
 </div>
 
@@ -1052,6 +1107,15 @@ function renderDailyChart(daily) {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
+      onClick: (evt, elements) => {
+        if (!elements.length) return;
+        const idx = elements[0].index;
+        const day = daily[idx]?.day;
+        if (day) applyClickFilter(day, day);
+      },
+      onHover: (evt, elements) => {
+        evt.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+      },
       plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
       scales: {
         x: { ticks: { color: '#8892a4', maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: '#2a2d3a' } },
@@ -1059,6 +1123,26 @@ function renderDailyChart(daily) {
       }
     }
   });
+}
+
+// Click-through from charts: set custom range to the clicked day and apply.
+function applyClickFilter(fromDay, toDay) {
+  document.getElementById('from-date').value = fromDay;
+  document.getElementById('to-date').value = toDay;
+  customFrom = fromDay;
+  customTo = toDay;
+  selectedRange = 'custom';
+  document.querySelectorAll('.range-btn').forEach(btn => {
+    btn.classList.add('inactive');
+    btn.classList.remove('active');
+  });
+  document.getElementById('from-date').max = toDay;
+  document.getElementById('to-date').min = fromDay;
+  updateURL();
+  applyFilter();
+  // Scroll sessions table into view so the user sees what survived the filter
+  const sessCard = document.querySelector('.table-card');
+  if (sessCard) sessCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function renderHourHistogram(hourly) {
@@ -1113,6 +1197,15 @@ function renderHourTimeline(timeline) {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
+      onClick: (evt, elements) => {
+        if (!elements.length) return;
+        const idx = elements[0].index;
+        const b = timeline[idx];
+        if (b?.day) applyClickFilter(b.day, b.day);
+      },
+      onHover: (evt, elements) => {
+        evt.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+      },
       plugins: {
         legend: { labels: { color: '#8892a4', boxWidth: 12 } },
         peakBands: { mode: 'timeline', timelineData: timeline },
@@ -1121,7 +1214,7 @@ function renderHourTimeline(timeline) {
             title: items => {
               if (!items.length) return '';
               const b = timeline[items[0].dataIndex];
-              return b.day + ' ' + String(b.hour).padStart(2, '0') + ':00 CT';
+              return b.day + ' ' + String(b.hour).padStart(2, '0') + ':00 CT (click to drill into this day)';
             }
           }
         }
@@ -1185,7 +1278,7 @@ function renderSessionsTable(sessions) {
     const costCell = isBillable(s.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
-    return `<tr>
+    return `<tr onclick="openDrill('${esc(s.session_id)}')" title="Click to see turn-by-turn breakdown">
       <td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>
       <td title="${esc(s.project_raw || '')}">${esc(s.project)}</td>
       <td class="muted">${esc(s.last)}</td>
@@ -1197,6 +1290,107 @@ function renderSessionsTable(sessions) {
       ${costCell}
     </tr>`;
   }).join('');
+}
+
+// ── Session drill-down modal ─────────────────────────────────────────────
+async function openDrill(sessionIdPrefix) {
+  const modal = document.getElementById('drill-modal');
+  modal.classList.remove('hidden');
+  document.getElementById('drill-title').textContent = 'Loading…';
+  document.getElementById('drill-sub').textContent = sessionIdPrefix;
+  document.getElementById('drill-summary').innerHTML = '';
+  document.getElementById('drill-body').innerHTML = '<div class="loading">Fetching session…</div>';
+  // ESC to close
+  document.addEventListener('keydown', onDrillKey);
+  try {
+    const resp = await fetch('/api/session/' + encodeURIComponent(sessionIdPrefix));
+    const data = await resp.json();
+    if (data.error) {
+      document.getElementById('drill-body').innerHTML = '<div class="err">' + esc(data.error) + '</div>';
+      document.getElementById('drill-title').textContent = 'Error';
+      return;
+    }
+    renderDrill(data);
+  } catch (e) {
+    document.getElementById('drill-body').innerHTML = '<div class="err">' + esc(String(e)) + '</div>';
+  }
+}
+
+function closeDrill() {
+  document.getElementById('drill-modal').classList.add('hidden');
+  document.removeEventListener('keydown', onDrillKey);
+}
+
+function onDrillBackdrop(e) {
+  if (e.target.id === 'drill-modal') closeDrill();
+}
+
+function onDrillKey(e) {
+  if (e.key === 'Escape') closeDrill();
+}
+
+function renderDrill(d) {
+  const titleLabel = d.title || d.project_name || 'Session';
+  document.getElementById('drill-title').textContent = titleLabel;
+  const cwdInfo = d.original_cwd || d.project_name || '';
+  const branch = d.git_branch ? ' · ' + esc(d.git_branch) : '';
+  document.getElementById('drill-sub').innerHTML =
+    esc(d.session_id_short) + ' · ' + esc(d.first_timestamp) + ' → ' + esc(d.last_timestamp)
+    + branch + ' · <span style="font-family:monospace">' + esc(cwdInfo) + '</span>';
+
+  const totalCost = calcCost(d.model, d.total_input_tokens, d.total_output_tokens, d.total_cache_read, d.total_cache_creation);
+  const summaryCells = [
+    ['Turns',          fmt(d.turn_count || d.turns.length)],
+    ['Input',          fmt(d.total_input_tokens)],
+    ['Output',         fmt(d.total_output_tokens)],
+    ['Cache read',     fmt(d.total_cache_read)],
+    ['Cache write',    fmt(d.total_cache_creation)],
+    ['Model',          d.model || 'unknown'],
+    ['Est. cost',      fmtCost(totalCost)],
+  ];
+  document.getElementById('drill-summary').innerHTML = summaryCells.map(([label, value]) =>
+    `<div class="ds-cell"><div class="ds-label">${esc(label)}</div><div class="ds-value">${esc(value)}</div></div>`
+  ).join('');
+
+  if (!d.turns.length) {
+    document.getElementById('drill-body').innerHTML = '<div class="empty">No turns recorded in this session.</div>';
+    return;
+  }
+
+  const trimmedNotice = d.trimmed
+    ? '<div class="muted" style="padding:8px 0;font-size:11px">Showing the most recent turns (large session truncated).</div>'
+    : '';
+
+  const rows = d.turns.map((t, i) => {
+    const cost = calcCost(t.model, t.input_tokens, t.output_tokens, t.cache_read, t.cache_creation);
+    const toolsBar = (t.tools || []).slice(0, 5).map(tc =>
+      `<span class="turn-tool" title="${esc(tc.summary || '')}">${esc(tc.name)}</span>`
+    ).join('');
+    const userPreview = t.user_preview ? t.user_preview : (t.assistant_preview || '(no preview)');
+    const previewClass = t.user_preview ? 'user' : 'asst';
+    const tokens = `${fmt(t.input_tokens)}/${fmt(t.output_tokens)}`;
+    const cacheRead = t.cache_read ? ' cr:' + fmt(t.cache_read) : '';
+    return `
+      <div class="turn-row" id="turn-${i}">
+        <div class="turn-head" onclick="document.getElementById('turn-${i}').classList.toggle('open')">
+          <div class="turn-idx">#${i+1}</div>
+          <div class="turn-time">${esc(t.local_time)}</div>
+          <div class="turn-preview ${previewClass}">${esc(userPreview)}</div>
+          <div class="turn-tools">${toolsBar}</div>
+          <div class="turn-tokens">${esc(tokens)}${esc(cacheRead)}</div>
+          <div class="turn-cost">${fmtCost(cost)}</div>
+        </div>
+        <div class="turn-body">
+          ${t.user_preview ? `<div class="tb-label">User prompt</div><div class="tb-text">${esc(t.user_preview)}</div>` : ''}
+          <div class="tb-label">Assistant</div><div class="tb-text">${esc(t.assistant_preview || '(no content)')}</div>
+          ${(t.tools && t.tools.length) ? `<div class="tb-label">Tool calls</div><ul class="tb-tools-list">${
+            t.tools.map(tc => `<li><span class="tn">${esc(tc.name)}</span> ${esc(tc.summary || '')}</li>`).join('')
+          }</ul>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  document.getElementById('drill-body').innerHTML = trimmedNotice + rows;
 }
 
 function setModelSort(col) {
@@ -1410,6 +1604,201 @@ setInterval(loadData, 30000);
 """
 
 
+def _preview_from_content(content, max_len=400):
+    """Extract a short text preview from a Claude message.content field.
+    content may be a string, a list of blocks (dicts with 'type': 'text'/'tool_use'/etc),
+    or None. Returns at most max_len characters.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        s = content.strip()
+        return s[:max_len] + ("…" if len(s) > max_len else "")
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            t = item.get("type")
+            if t == "text":
+                parts.append(str(item.get("text", "")).strip())
+            elif t == "tool_use":
+                name = item.get("name", "?")
+                parts.append(f"[tool_use: {name}]")
+            elif t == "tool_result":
+                rc = item.get("content", "")
+                if isinstance(rc, list):
+                    rc = " ".join(
+                        str(x.get("text", "")) for x in rc if isinstance(x, dict)
+                    )
+                parts.append(f"[tool_result] {str(rc)[:200]}")
+            elif t == "thinking":
+                parts.append(f"[thinking] {str(item.get('thinking',''))[:200]}")
+        joined = " ".join(p for p in parts if p).strip()
+        return joined[:max_len] + ("…" if len(joined) > max_len else "")
+    return ""
+
+
+def _tool_calls_from_content(content):
+    """Return a list of {name, input_summary} for tool_use blocks in content."""
+    calls = []
+    if not isinstance(content, list):
+        return calls
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "tool_use":
+            name = item.get("name", "?")
+            inp = item.get("input", {})
+            # Produce a short input summary without shipping huge payloads
+            summary = ""
+            if isinstance(inp, dict):
+                for k in ("file_path", "path", "command", "url", "query", "pattern"):
+                    if k in inp:
+                        summary = f"{k}={str(inp[k])[:160]}"
+                        break
+                if not summary:
+                    keys = ",".join(list(inp.keys())[:4])
+                    summary = f"keys=[{keys}]"
+            calls.append({"name": name, "summary": summary})
+    return calls
+
+
+def read_session_turns(session_id, db_path=DB_PATH, max_turns=500):
+    """Read a session's JSONL file and return turn-by-turn drill-down data.
+
+    Looks up jsonl_path from the sessions table, parses the JSONL, and
+    produces a list of turn objects with prompt previews, tool calls,
+    tokens, and local-time stamps. Returns an error dict if the session
+    or file is missing/unreadable.
+    """
+    if not db_path.exists():
+        return {"error": "Database not found. Run: python cli.py scan"}
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    from scanner import init_db
+    init_db(conn)
+
+    # Accept either a full session_id or the 8-char prefix shown in the UI
+    row = conn.execute("""
+        SELECT session_id, title, original_cwd, project_name, git_branch,
+               first_timestamp, last_timestamp, total_input_tokens,
+               total_output_tokens, total_cache_read, total_cache_creation,
+               model, turn_count, jsonl_path
+        FROM sessions
+        WHERE session_id = ? OR session_id LIKE ?
+        LIMIT 1
+    """, (session_id, session_id + "%")).fetchone()
+    conn.close()
+
+    if row is None:
+        return {"error": f"Session {session_id!r} not found"}
+
+    jsonl_path = row["jsonl_path"]
+    if not jsonl_path:
+        return {
+            "error": "No JSONL path recorded for this session. "
+                     "Run `python cli.py scan` to populate it."
+        }
+    if not Path(jsonl_path).exists():
+        return {"error": f"JSONL file missing on disk: {jsonl_path}"}
+
+    # Parse the JSONL — group user+assistant messages into turns keyed by
+    # message_id on the assistant side (same dedup strategy as scanner).
+    turns_by_msg = {}   # message_id -> turn dict
+    turn_order = []     # list of message_ids in first-seen order
+    pending_user = None  # last user message text preview
+
+    try:
+        with open(jsonl_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                rtype = record.get("type")
+                if rtype == "user":
+                    msg = record.get("message", {})
+                    content = msg.get("content") if isinstance(msg, dict) else None
+                    pending_user = _preview_from_content(content)
+                    continue
+                if rtype != "assistant":
+                    continue
+
+                msg = record.get("message", {})
+                usage = msg.get("usage", {}) or {}
+                model = msg.get("model", "")
+                message_id = msg.get("id", "")
+
+                inp = usage.get("input_tokens", 0) or 0
+                out = usage.get("output_tokens", 0) or 0
+                cr  = usage.get("cache_read_input_tokens", 0) or 0
+                cc  = usage.get("cache_creation_input_tokens", 0) or 0
+                if inp + out + cr + cc == 0:
+                    continue
+
+                content = msg.get("content", [])
+                preview = _preview_from_content(content)
+                tools = _tool_calls_from_content(content)
+                timestamp = record.get("timestamp", "")
+                day_local, hour_local = to_local_hour(timestamp)
+                local_label = f"{day_local} {hour_local:02d}:00 CT" if day_local else timestamp
+
+                turn = {
+                    "message_id": message_id or f"anon-{len(turn_order)}",
+                    "timestamp": timestamp,
+                    "local_time": local_label,
+                    "user_preview": pending_user or "",
+                    "assistant_preview": preview,
+                    "tools": tools,
+                    "model": model,
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                    "cache_read": cr,
+                    "cache_creation": cc,
+                }
+                pending_user = None  # consumed
+
+                key = turn["message_id"]
+                if key not in turns_by_msg:
+                    turn_order.append(key)
+                turns_by_msg[key] = turn  # last write wins (streaming dedup)
+    except OSError as e:
+        return {"error": f"Could not read JSONL: {e}"}
+
+    turns = [turns_by_msg[k] for k in turn_order]
+    if len(turns) > max_turns:
+        # Truncate to most recent max_turns, but mark the truncation
+        trimmed = True
+        turns = turns[-max_turns:]
+    else:
+        trimmed = False
+
+    def safe_iso_slice(ts):
+        return (ts or "")[:16].replace("T", " ")
+
+    return {
+        "session_id": row["session_id"],
+        "session_id_short": row["session_id"][:8],
+        "title": row["title"],
+        "project_name": row["project_name"],
+        "original_cwd": row["original_cwd"],
+        "git_branch": row["git_branch"],
+        "model": row["model"],
+        "first_timestamp": safe_iso_slice(row["first_timestamp"]),
+        "last_timestamp": safe_iso_slice(row["last_timestamp"]),
+        "total_input_tokens": row["total_input_tokens"],
+        "total_output_tokens": row["total_output_tokens"],
+        "total_cache_read": row["total_cache_read"],
+        "total_cache_creation": row["total_cache_creation"],
+        "turn_count": row["turn_count"],
+        "trimmed": trimmed,
+        "turns": turns,
+    }
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -1425,6 +1814,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             data = get_dashboard_data()
             body = json.dumps(data).encode("utf-8")
             self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path.startswith("/api/session/"):
+            sid = self.path[len("/api/session/"):]
+            data = read_session_turns(sid)
+            status = 404 if "error" in data else 200
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -1455,7 +1855,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def serve(host=None, port=None):
     host = host or os.environ.get("HOST", "localhost")
     port = port or int(os.environ.get("PORT", "8080"))
-    server = HTTPServer((host, port), DashboardHandler)
+    server = ThreadingHTTPServer((host, port), DashboardHandler)
     print(f"Dashboard running at http://{host}:{port}")
     print("Press Ctrl+C to stop.")
     try:
