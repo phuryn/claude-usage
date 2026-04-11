@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-04-11
+
+- Fix Opus pricing constants that were set to 1/3 of correct Anthropic API rates (`$5/$25` instead of `$15/$75` per million input/output tokens; cache write `$6.25` instead of `$18.75`, cache read `$0.50` instead of `$1.50`). Sonnet and Haiku rates were unaffected.
+
 ## 2026-04-09
 
 - Fix token counts inflated ~2x by deduplicating streaming events that share the same message ID

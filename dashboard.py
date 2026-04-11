@@ -72,7 +72,7 @@ def get_dashboard_data(db_path=DB_PATH):
         except Exception:
             duration_min = 0
         sessions_all.append({
-            "session_id":    r["session_id"][:8],
+            "session_id":    r["session_id"],
             "project":       r["project_name"] or "unknown",
             "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
             "last_date":     (r["last_timestamp"] or "")[:10],
@@ -306,8 +306,8 @@ let sessionSortDir = 'desc';
 
 // ── Pricing (Anthropic API, April 2026) ────────────────────────────────────
 const PRICING = {
-  'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
-  'claude-opus-4-5':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
+  'claude-opus-4-6':   { input: 15.00, output: 75.00, cache_write: 18.75, cache_read: 1.50 },
+  'claude-opus-4-5':   { input: 15.00, output: 75.00, cache_write: 18.75, cache_read: 1.50 },
   'claude-sonnet-4-6': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
   'claude-sonnet-4-5': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
   'claude-haiku-4-5':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
