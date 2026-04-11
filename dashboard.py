@@ -158,61 +158,61 @@ def get_dashboard_data(db_path=DB_PATH):
     """).fetchall()
     all_models = [r["model"] for r in model_rows]
 
-    # ── Daily per-model, ALL history (client filters by range) ────────────────
-    daily_rows = conn.execute("""
-        SELECT
-            substr(timestamp, 1, 10)   as day,
-            COALESCE(model, 'unknown') as model,
-            SUM(input_tokens)          as input,
-            SUM(output_tokens)         as output,
-            SUM(cache_read_tokens)     as cache_read,
-            SUM(cache_creation_tokens) as cache_creation,
-            COUNT(*)                   as turns
-        FROM turns
-        GROUP BY day, model
-        ORDER BY day, model
-    """).fetchall()
-
-    daily_by_model = [{
-        "day":            r["day"],
-        "model":          r["model"],
-        "input":          r["input"] or 0,
-        "output":         r["output"] or 0,
-        "cache_read":     r["cache_read"] or 0,
-        "cache_creation": r["cache_creation"] or 0,
-        "turns":          r["turns"] or 0,
-    } for r in daily_rows]
-
-    # ── Hourly bucketing in viewer's local time (America/Chicago) ─────────────
+    # ── Single pass: bucket every turn by Chicago-local (day, hour) and model.
+    # We build BOTH daily_by_model and turns_by_hour_local from this one pass so
+    # the Daily chart and the Hourly charts always agree on where the day starts.
+    # Previously daily_by_model used SQL substr(timestamp, 1, 10) which is UTC —
+    # that caused late-evening Chicago work to show up on the next calendar day.
     hourly_rows = conn.execute("""
         SELECT timestamp, COALESCE(model, 'unknown') as model,
                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
         FROM turns
     """).fetchall()
 
+    def _new_bucket():
+        return {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "turns": 0}
+
     hourly_map = {}  # (day_local, hour_local, model) -> counters
+    daily_map  = {}  # (day_local, model) -> counters
     for r in hourly_rows:
         day_local, hour_local = to_local_hour(r["timestamp"])
         if not day_local:
             continue
-        key = (day_local, hour_local, r["model"])
-        if key not in hourly_map:
-            hourly_map[key] = {
-                "input": 0, "output": 0,
-                "cache_read": 0, "cache_creation": 0,
-                "turns": 0,
-            }
-        bucket = hourly_map[key]
-        bucket["input"] += r["input_tokens"] or 0
-        bucket["output"] += r["output_tokens"] or 0
-        bucket["cache_read"] += r["cache_read_tokens"] or 0
-        bucket["cache_creation"] += r["cache_creation_tokens"] or 0
-        bucket["turns"] += 1
+        model = r["model"]
+        inp = r["input_tokens"] or 0
+        out = r["output_tokens"] or 0
+        cr  = r["cache_read_tokens"] or 0
+        cc  = r["cache_creation_tokens"] or 0
+
+        hkey = (day_local, hour_local, model)
+        hb = hourly_map.get(hkey)
+        if hb is None:
+            hb = _new_bucket()
+            hourly_map[hkey] = hb
+        hb["input"] += inp; hb["output"] += out
+        hb["cache_read"] += cr; hb["cache_creation"] += cc
+        hb["turns"] += 1
+
+        dkey = (day_local, model)
+        db = daily_map.get(dkey)
+        if db is None:
+            db = _new_bucket()
+            daily_map[dkey] = db
+        db["input"] += inp; db["output"] += out
+        db["cache_read"] += cr; db["cache_creation"] += cc
+        db["turns"] += 1
 
     turns_by_hour_local = [
         {"day_local": k[0], "hour_local": k[1], "model": k[2], **v}
         for k, v in hourly_map.items()
     ]
+
+    # Sort daily_by_model the same way the old SQL ORDER BY did (day asc, model asc)
+    # so the front-end's existing sort-agnostic code still renders in order.
+    daily_by_model = sorted(
+        [{"day": k[0], "model": k[1], **v} for k, v in daily_map.items()],
+        key=lambda d: (d["day"], d["model"]),
+    )
 
     # ── All sessions (client filters by range and model) ──────────────────────
     session_rows = conn.execute("""
@@ -226,13 +226,29 @@ def get_dashboard_data(db_path=DB_PATH):
     """).fetchall()
 
     sessions_all = []
+    chicago_tz, _ = _get_chicago_tz()
     for r in session_rows:
+        t1 = t2 = None
+        duration_min = 0
         try:
-            t1 = datetime.fromisoformat(r["first_timestamp"].replace("Z", "+00:00"))
-            t2 = datetime.fromisoformat(r["last_timestamp"].replace("Z", "+00:00"))
+            t1 = datetime.fromisoformat((r["first_timestamp"] or "").replace("Z", "+00:00"))
+            t2 = datetime.fromisoformat((r["last_timestamp"] or "").replace("Z", "+00:00"))
             duration_min = round((t2 - t1).total_seconds() / 60, 1)
         except Exception:
-            duration_min = 0
+            pass
+
+        # Show last-activity timestamp AND group by day in Chicago local time.
+        # The old code used (last_timestamp or "")[:10] which was UTC — so a
+        # session that ran at 10pm Chicago (=03:00 UTC next day) would show up
+        # on the wrong day in both the filter and the "Last Active" column.
+        if t2 is not None:
+            t2_local = t2.astimezone(chicago_tz)
+            last_str = t2_local.strftime("%Y-%m-%d %H:%M")
+            last_date = t2_local.strftime("%Y-%m-%d")
+        else:
+            last_str = ""
+            last_date = ""
+
         project_name = r["project_name"] or "unknown"
         title = r["title"]
         sessions_all.append({
@@ -241,8 +257,8 @@ def get_dashboard_data(db_path=DB_PATH):
             "project_raw":   project_name,
             "title":         title,
             "original_cwd":  r["original_cwd"],
-            "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
-            "last_date":     (r["last_timestamp"] or "")[:10],
+            "last":          last_str,
+            "last_date":     last_date,
             "duration_min":  duration_min,
             "model":         r["model"] or "unknown",
             "turns":         r["turn_count"] or 0,
@@ -731,11 +747,22 @@ function utcToViewerHour(utcDate, tz) {
   return hour + (p.minute / 60);
 }
 
-// Return a recent weekday (Mon-Fri) in YYYY-MM-DD format for histogram peak band rendering.
+// Format a Date as YYYY-MM-DD using LOCAL getters (NOT toISOString, which is UTC).
+// Matches the Chicago-local day keys the server ships in daily_by_model / sessions_all.
+function formatLocalYMD(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+
+// Return a recent weekday (Mon-Fri) in local YYYY-MM-DD format for the histogram
+// peak band reference day. Using local getters so day-of-week lines up with the
+// viewer's actual week.
 function getRecentWeekday() {
   const d = new Date();
   while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return formatLocalYMD(d);
 }
 
 function getRangeCutoff(range) {
@@ -743,7 +770,7 @@ function getRangeCutoff(range) {
   const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
   const d = new Date();
   d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
+  return formatLocalYMD(d);
 }
 
 function readURLRange() {
@@ -926,10 +953,10 @@ function sortSessions(sessions) {
 function applyFilter() {
   if (!rawData) return;
 
-  // NOTE: day keys in daily_by_model and sessions_all come from the server as UTC-sliced
-  // ISO dates. Custom picker values are browser-local YYYY-MM-DD. For users far from UTC
-  // this can shift the boundary by one day at the edges. Full local-time bucketing is
-  // tracked as a follow-up.
+  // Day keys in daily_by_model and sessions_all are now Chicago-local YYYY-MM-DD
+  // (converted in Python via to_local_hour / astimezone in get_dashboard_data).
+  // getRangeCutoff() and the custom picker both yield local YYYY-MM-DD, so the
+  // lexicographic string comparison in inRange() is apples-to-apples.
   // Compute date range: custom overrides preset
   const isCustom = customFrom || customTo;
   const rangeFrom = isCustom ? customFrom : getRangeCutoff(selectedRange);
