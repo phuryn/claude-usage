@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -133,6 +134,17 @@ class TestDashboardHTTP(unittest.TestCase):
             self.assertIn("updated", data)
             self.assertIn("skipped", data)
 
+    def test_api_subscription_returns_json(self):
+        url = f"http://127.0.0.1:{self.port}/api/subscription"
+        with urllib.request.urlopen(url) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("application/json", resp.headers["Content-Type"])
+            data = json.loads(resp.read())
+            # Either configured with budget data, or not_configured error
+            self.assertTrue(
+                "current_week" in data or data.get("error") == "not_configured"
+            )
+
     def test_404_for_unknown_path(self):
         url = f"http://127.0.0.1:{self.port}/nonexistent"
         try:
@@ -163,6 +175,12 @@ class TestHTMLTemplate(unittest.TestCase):
     def test_unknown_models_return_null(self):
         """Verify getPricing returns null for non-Anthropic models."""
         self.assertIn("return null;", HTML_TEMPLATE)
+
+    def test_template_has_gauge_container(self):
+        self.assertIn('id="gauge-container"', HTML_TEMPLATE)
+
+    def test_template_has_gauge_fetch(self):
+        self.assertIn("fetchAndRenderGauge", HTML_TEMPLATE)
 
 
 class TestPricingParity(unittest.TestCase):
@@ -198,6 +216,260 @@ class TestPricingParity(unittest.TestCase):
                 CLI_PRICING[model]["output"], js_prices[model]["output"],
                 msg=f"{model} output price mismatch"
             )
+
+
+class TestTimezoneBucketing(unittest.TestCase):
+    def test_utc_midnight_converts_to_chicago_6pm_previous_day_standard_time(self):
+        """January timestamp → CST (UTC-6)."""
+        from dashboard import to_local_hour
+        # 2026-01-15 00:00 UTC = 2026-01-14 18:00 CST
+        day, hour = to_local_hour("2026-01-15T00:00:00Z")
+        self.assertEqual(day, "2026-01-14")
+        self.assertEqual(hour, 18)
+
+    def test_utc_midnight_converts_to_chicago_7pm_previous_day_dst(self):
+        """July timestamp → CDT (UTC-5)."""
+        from dashboard import to_local_hour
+        # 2026-07-15 00:00 UTC = 2026-07-14 19:00 CDT
+        day, hour = to_local_hour("2026-07-15T00:00:00Z")
+        self.assertEqual(day, "2026-07-14")
+        self.assertEqual(hour, 19)
+
+    def test_dst_spring_forward_boundary(self):
+        """2026-03-08 08:00 UTC = 03:00 CDT (after spring forward)."""
+        from dashboard import to_local_hour
+        day, hour = to_local_hour("2026-03-08T08:00:00Z")
+        self.assertEqual(day, "2026-03-08")
+        self.assertEqual(hour, 3)
+
+    def test_dst_fall_back_boundary(self):
+        """2026-11-01 07:00 UTC = 01:00 CST (after fall back)."""
+        from dashboard import to_local_hour
+        day, hour = to_local_hour("2026-11-01T07:00:00Z")
+        self.assertEqual(day, "2026-11-01")
+        self.assertEqual(hour, 1)
+
+    def test_unparseable_timestamp_returns_empty(self):
+        from dashboard import to_local_hour
+        day, hour = to_local_hour("not a timestamp")
+        self.assertEqual(day, "")
+        self.assertEqual(hour, 0)
+
+    def test_none_timestamp_returns_empty(self):
+        from dashboard import to_local_hour
+        day, hour = to_local_hour(None)
+        self.assertEqual(day, "")
+        self.assertEqual(hour, 0)
+
+
+class TestLoadPeakBands(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_config(self, data):
+        p = self.tmp / "peak-hours.json"
+        p.write_text(json.dumps(data), encoding="utf-8")
+        return p
+
+    def test_valid_file_loads(self):
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "America/Los_Angeles", "days": ["Mon", "Tue"],
+                 "start": "05:00", "end": "11:00", "label": "Test"}
+            ]
+        })
+        bands = load_peak_bands(p)
+        self.assertEqual(len(bands), 1)
+        self.assertEqual(bands[0]["timezone"], "America/Los_Angeles")
+        self.assertEqual(bands[0]["start"], "05:00")
+
+    def test_missing_file_returns_empty(self):
+        from dashboard import load_peak_bands
+        bands = load_peak_bands(self.tmp / "nonexistent.json")
+        self.assertEqual(bands, [])
+
+    def test_malformed_json_returns_empty(self):
+        from dashboard import load_peak_bands
+        p = self.tmp / "peak-hours.json"
+        p.write_text("{not valid json", encoding="utf-8")
+        bands = load_peak_bands(p)
+        self.assertEqual(bands, [])
+
+    def test_invalid_band_is_dropped(self):
+        """One valid + one missing required field → only valid returned."""
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "America/Los_Angeles", "days": ["Mon"],
+                 "start": "05:00", "end": "11:00"},  # valid
+                {"timezone": "America/Los_Angeles", "days": ["Tue"],
+                 "start": "05:00"},  # missing 'end'
+            ]
+        })
+        bands = load_peak_bands(p)
+        self.assertEqual(len(bands), 1)
+        self.assertEqual(bands[0]["days"], ["Mon"])
+
+    def test_bad_timezone_is_dropped(self):
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "Not/AReal_Zone", "days": ["Mon"],
+                 "start": "05:00", "end": "11:00"}
+            ]
+        })
+        bands = load_peak_bands(p)
+        self.assertEqual(bands, [])
+
+    def test_hh_mm_format_is_validated(self):
+        """Non HH:MM strings should be rejected even if they pass isinstance(str)."""
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "America/Los_Angeles", "days": ["Mon"],
+                 "start": "banana", "end": "carrot"}
+            ]
+        })
+        self.assertEqual(load_peak_bands(p), [])
+
+    def test_empty_days_list_is_rejected(self):
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "America/Los_Angeles", "days": [],
+                 "start": "05:00", "end": "11:00"}
+            ]
+        })
+        self.assertEqual(load_peak_bands(p), [])
+
+    def test_start_after_end_is_rejected(self):
+        from dashboard import load_peak_bands
+        p = self._write_config({
+            "bands": [
+                {"timezone": "America/Los_Angeles", "days": ["Mon"],
+                 "start": "11:00", "end": "05:00"}
+            ]
+        })
+        self.assertEqual(load_peak_bands(p), [])
+
+
+class TestHourlyAggregation(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db_path = self.tmp / "test.db"
+        from scanner import get_db, init_db
+        conn = get_db(self.db_path)
+        init_db(conn)
+        # Seed: two turns in the same local hour, one turn in a different hour
+        conn.execute("""
+            INSERT INTO sessions (session_id, project_name, first_timestamp,
+                last_timestamp, total_input_tokens, total_output_tokens,
+                total_cache_read, total_cache_creation, model, turn_count)
+            VALUES ('s1', 'proj', '2026-04-10T14:00:00Z', '2026-04-10T14:45:00Z',
+                    300, 150, 0, 0, 'claude-opus-4-6', 2)
+        """)
+        conn.executemany("""
+            INSERT INTO turns (session_id, timestamp, model, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, tool_name, cwd, message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            # 2026-04-10T14:15:00Z = 2026-04-10 09:15 Chicago (CDT, UTC-5)
+            ("s1", "2026-04-10T14:15:00Z", "claude-opus-4-6", 100, 50, 0, 0, None, "/cwd", "m1"),
+            # 2026-04-10T14:45:00Z = 2026-04-10 09:45 Chicago
+            ("s1", "2026-04-10T14:45:00Z", "claude-opus-4-6", 200, 100, 0, 0, None, "/cwd", "m2"),
+            # 2026-04-10T20:00:00Z = 2026-04-10 15:00 Chicago
+            ("s1", "2026-04-10T20:00:00Z", "claude-opus-4-6",  50,  25, 0, 0, None, "/cwd", "m3"),
+        ])
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_single_turn_lands_in_correct_hour_bucket(self):
+        from dashboard import get_dashboard_data
+        data = get_dashboard_data(self.db_path)
+        hourly = data["turns_by_hour_local"]
+        # Find the 15:00 bucket (Chicago) — should have one turn, 50 input
+        h15 = [h for h in hourly if h["hour_local"] == 15]
+        self.assertEqual(len(h15), 1)
+        self.assertEqual(h15[0]["input"], 50)
+        self.assertEqual(h15[0]["turns"], 1)
+        self.assertEqual(h15[0]["day_local"], "2026-04-10")
+
+    def test_multiple_turns_same_hour_sum_correctly(self):
+        from dashboard import get_dashboard_data
+        data = get_dashboard_data(self.db_path)
+        hourly = data["turns_by_hour_local"]
+        h9 = [h for h in hourly if h["hour_local"] == 9]
+        self.assertEqual(len(h9), 1)
+        self.assertEqual(h9[0]["input"], 300)  # 100 + 200
+        self.assertEqual(h9[0]["output"], 150)  # 50 + 100
+        self.assertEqual(h9[0]["turns"], 2)
+
+    def test_response_includes_peak_bands_and_timezone(self):
+        from dashboard import get_dashboard_data
+        data = get_dashboard_data(self.db_path)
+        self.assertIn("peak_bands", data)
+        self.assertIn("viewer_timezone", data)
+        self.assertEqual(data["viewer_timezone"], "America/Chicago")
+        self.assertIsInstance(data["peak_bands"], list)
+
+
+class TestSessionTitleFallback(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db_path = self.tmp / "test.db"
+        from scanner import get_db, init_db
+        conn = get_db(self.db_path)
+        init_db(conn)
+        # Session A: has title
+        conn.execute("""
+            INSERT INTO sessions (session_id, project_name, first_timestamp,
+                last_timestamp, total_input_tokens, total_output_tokens,
+                total_cache_read, total_cache_creation, model, turn_count,
+                title, original_cwd)
+            VALUES ('sess-a', 'Users/scott', '2026-04-10T14:00:00Z',
+                    '2026-04-10T14:30:00Z', 100, 50, 0, 0,
+                    'claude-opus-4-6', 1, 'Hourly checkin', 'C:\\users\\scott')
+        """)
+        # Session B: no title
+        conn.execute("""
+            INSERT INTO sessions (session_id, project_name, first_timestamp,
+                last_timestamp, total_input_tokens, total_output_tokens,
+                total_cache_read, total_cache_creation, model, turn_count)
+            VALUES ('sess-b', 'my/project', '2026-04-10T15:00:00Z',
+                    '2026-04-10T15:30:00Z', 200, 100, 0, 0,
+                    'claude-opus-4-6', 1)
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_titled_session_shows_title_as_project(self):
+        from dashboard import get_dashboard_data
+        data = get_dashboard_data(self.db_path)
+        # session_id in response is truncated to first 8 chars
+        sess_a = next(s for s in data["sessions_all"] if s["session_id"] == "sess-a"[:8])
+        self.assertEqual(sess_a["project"], "Hourly checkin")
+        self.assertEqual(sess_a["project_raw"], "Users/scott")
+        self.assertEqual(sess_a["title"], "Hourly checkin")
+        self.assertEqual(sess_a["original_cwd"], "C:\\users\\scott")
+
+    def test_untitled_session_falls_back_to_project_name(self):
+        from dashboard import get_dashboard_data
+        data = get_dashboard_data(self.db_path)
+        sess_b = next(s for s in data["sessions_all"] if s["session_id"] == "sess-b"[:8])
+        self.assertEqual(sess_b["project"], "my/project")
+        self.assertEqual(sess_b["project_raw"], "my/project")
+        self.assertIsNone(sess_b["title"])
+        self.assertIsNone(sess_b["original_cwd"])
 
 
 if __name__ == "__main__":

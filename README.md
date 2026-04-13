@@ -25,12 +25,24 @@ Captures usage from:
 **Not captured:**
 - **Cowork sessions** — these run server-side and do not write local JSONL transcripts
 
+### Windows: Desktop app session metadata
+
+On Windows, the scanner additionally reads session metadata from `%APPDATA%/Claude/claude-code-sessions/` (written by the Claude Desktop app). This enriches sessions with:
+
+- **Title** — human-readable names like "Hourly checkin" or "Kb refresh" that replace the generic cwd-derived project name in the dashboard's Project column
+- **Original cwd** — the working directory the desktop app recorded explicitly, shown as a hover tooltip
+
+This feature is Windows-only. On macOS/Linux, the enrichment silently no-ops and sessions show their cwd-derived project name as before.
+
+Token counts are not affected by enrichment — they come entirely from the JSONL files under `~/.claude/projects/`. Desktop metadata only adds labels.
+
 ---
 
 ## Requirements
 
-- Python 3.8+
-- No third-party packages — uses only the standard library (`sqlite3`, `http.server`, `json`, `pathlib`)
+- Python 3.9+
+- No third-party packages on macOS/Linux — uses only the standard library (`sqlite3`, `http.server`, `json`, `pathlib`, `zoneinfo`)
+- **Windows only:** install `tzdata` for timezone support: `pip install tzdata` (Python's `zoneinfo` needs IANA timezone data, which Windows does not ship natively)
 
 > Anyone running Claude Code already has Python installed.
 
@@ -112,6 +124,21 @@ Costs are calculated using **Anthropic API pricing as of April 2026** ([claude.c
 | claude-haiku-4-5 | $1.00/MTok | $5.00/MTok | $1.25/MTok | $0.10/MTok |
 
 > **Note:** These are API prices. If you use Claude Code via a Max or Pro subscription, your actual cost structure is different (subscription-based, not per-token).
+
+---
+
+## Time-of-day view
+
+The dashboard includes two charts that break usage down by hour of day in your local time (currently hardcoded to America/Chicago, DST-aware):
+
+- **Usage by Hour of Day** — 24 stacked bars averaged across the days in your selected range. Useful for spotting patterns like "I always burn tokens at 9am."
+- **Hourly Timeline** — one stacked bar per (day, hour) in the selected range, sorted chronologically. Wider ranges scroll horizontally. Useful for forensic investigation like "what happened yesterday at 3pm?"
+
+Both charts show a translucent peak-hour overlay based on `peak-hours.json` in the repo root. The default reflects Anthropic's reported peak window (Mon–Fri 05:00–11:00 Pacific, March 2026 source). Edit the file and refresh the dashboard to change it.
+
+## Custom date range
+
+In addition to the preset 7d/30d/90d/All buttons, you can pick a custom From/To range using the date inputs at the top of the dashboard. Using the custom range deactivates the preset buttons; clicking any preset clears the custom dates. Range is persisted in the URL as `?from=YYYY-MM-DD&to=YYYY-MM-DD`.
 
 ---
 
