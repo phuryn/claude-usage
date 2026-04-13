@@ -9,7 +9,158 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
 
-DB_PATH = Path.home() / ".claude" / "usage.db"
+DB_PATH    = Path.home() / ".claude" / "usage.db"
+THEMES_DIR = Path.home() / ".claude" / "claude-usage" / "themes"
+
+# ── Bundled themes ─────────────────────────────────────────────────────────────
+BUNDLED_THEMES = [
+    {
+        "id": "apple", "name": "Apple", "category": "Enterprise & Consumer",
+        "dark": False, "bundled": True,
+        "preview": {"bg": "#f5f5f7", "card": "#ffffff", "text": "#1d1d1f", "accent": "#0071e3", "muted": "rgba(0,0,0,0.10)"},
+        "css": """:root {
+  --bg: #f5f5f7; --card: #ffffff; --border: rgba(0,0,0,0.08);
+  --text: #1d1d1f; --muted: rgba(0,0,0,0.48); --accent: #0071e3;
+  --green: #1c7a3a; --shadow: 0px 2px 12px rgba(0,0,0,0.08);
+  --card-radius: 14px; --card-border: none;
+  --chart-label: rgba(0,0,0,0.48); --chart-grid: rgba(0,0,0,0.06);
+  --chart-1: rgba(0,113,227,0.8); --chart-2: rgba(88,86,214,0.8);
+  --chart-3: rgba(52,199,89,0.8); --chart-4: rgba(255,159,10,0.75);
+}"""
+    },
+    {
+        "id": "linear", "name": "Linear", "category": "Developer Tools",
+        "dark": True, "bundled": True,
+        "preview": {"bg": "#0f0f10", "card": "#1a1a1b", "text": "#e8e8e8", "accent": "#5e6ad2", "muted": "rgba(255,255,255,0.12)"},
+        "css": """:root {
+  --bg: #0f0f10; --card: #1a1a1b; --border: rgba(255,255,255,0.08);
+  --text: #e8e8e8; --muted: rgba(255,255,255,0.4); --accent: #5e6ad2;
+  --green: #4ade80; --shadow: none;
+  --card-radius: 8px; --card-border: 1px solid rgba(255,255,255,0.08);
+  --chart-label: rgba(255,255,255,0.4); --chart-grid: rgba(255,255,255,0.07);
+  --chart-1: rgba(94,106,210,0.9); --chart-2: rgba(139,92,246,0.85);
+  --chart-3: rgba(74,222,128,0.85); --chart-4: rgba(251,191,36,0.85);
+}"""
+    },
+    {
+        "id": "vercel", "name": "Vercel", "category": "Developer Tools",
+        "dark": True, "bundled": True,
+        "preview": {"bg": "#000000", "card": "#111111", "text": "#ffffff", "accent": "#ffffff", "muted": "rgba(255,255,255,0.12)"},
+        "css": """:root {
+  --bg: #000000; --card: #111111; --border: rgba(255,255,255,0.1);
+  --text: #ffffff; --muted: rgba(255,255,255,0.4); --accent: #ffffff;
+  --green: #50e3c2; --shadow: none;
+  --card-radius: 4px; --card-border: 1px solid rgba(255,255,255,0.12);
+  --chart-label: rgba(255,255,255,0.4); --chart-grid: rgba(255,255,255,0.08);
+  --chart-1: rgba(255,255,255,0.85); --chart-2: rgba(160,160,160,0.75);
+  --chart-3: rgba(80,227,194,0.85); --chart-4: rgba(200,200,200,0.6);
+}"""
+    },
+    {
+        "id": "notion", "name": "Notion", "category": "Design & Productivity",
+        "dark": False, "bundled": True,
+        "preview": {"bg": "#ffffff", "card": "#f7f7f5", "text": "#37352f", "accent": "#2eaadc", "muted": "rgba(55,53,47,0.10)"},
+        "css": """:root {
+  --bg: #ffffff; --card: #f7f7f5; --border: rgba(55,53,47,0.09);
+  --text: #37352f; --muted: rgba(55,53,47,0.5); --accent: #2eaadc;
+  --green: #0f7b6c; --shadow: none;
+  --card-radius: 6px; --card-border: 1px solid rgba(55,53,47,0.12);
+  --chart-label: rgba(55,53,47,0.5); --chart-grid: rgba(55,53,47,0.08);
+  --chart-1: rgba(46,170,220,0.85); --chart-2: rgba(103,195,140,0.85);
+  --chart-3: rgba(15,123,108,0.85); --chart-4: rgba(235,168,69,0.85);
+}"""
+    },
+    {
+        "id": "stripe", "name": "Stripe", "category": "Infrastructure & Cloud",
+        "dark": False, "bundled": True,
+        "preview": {"bg": "#f6f9fc", "card": "#ffffff", "text": "#0a2540", "accent": "#635bff", "muted": "rgba(10,37,64,0.10)"},
+        "css": """:root {
+  --bg: #f6f9fc; --card: #ffffff; --border: rgba(0,0,0,0.1);
+  --text: #0a2540; --muted: rgba(10,37,64,0.5); --accent: #635bff;
+  --green: #09825d; --shadow: 0px 2px 5px rgba(0,0,0,0.08), 0px 1px 1px rgba(0,0,0,0.05);
+  --card-radius: 8px; --card-border: 1px solid rgba(10,37,64,0.1);
+  --chart-label: rgba(10,37,64,0.5); --chart-grid: rgba(10,37,64,0.07);
+  --chart-1: rgba(99,91,255,0.85); --chart-2: rgba(0,122,255,0.8);
+  --chart-3: rgba(9,130,93,0.85); --chart-4: rgba(255,149,0,0.8);
+}"""
+    },
+]
+
+# ── Catalog of all themes available from awesome-design-md ─────────────────────
+AWESOME_CATALOG = [
+    # AI & ML
+    {"id": "claude",      "name": "Claude",       "category": "AI & ML"},
+    {"id": "cohere",      "name": "Cohere",        "category": "AI & ML"},
+    {"id": "elevenlabs",  "name": "ElevenLabs",    "category": "AI & ML"},
+    {"id": "minimax",     "name": "Minimax",       "category": "AI & ML"},
+    {"id": "mistral",     "name": "Mistral AI",    "category": "AI & ML"},
+    {"id": "ollama",      "name": "Ollama",        "category": "AI & ML"},
+    {"id": "replicate",   "name": "Replicate",     "category": "AI & ML"},
+    {"id": "runwayml",    "name": "RunwayML",      "category": "AI & ML"},
+    {"id": "together",    "name": "Together AI",   "category": "AI & ML"},
+    # Developer Tools
+    {"id": "cursor",      "name": "Cursor",        "category": "Developer Tools"},
+    {"id": "expo",        "name": "Expo",          "category": "Developer Tools"},
+    {"id": "lovable",     "name": "Lovable",       "category": "Developer Tools"},
+    {"id": "mintlify",    "name": "Mintlify",      "category": "Developer Tools"},
+    {"id": "posthog",     "name": "PostHog",       "category": "Developer Tools"},
+    {"id": "raycast",     "name": "Raycast",       "category": "Developer Tools"},
+    {"id": "resend",      "name": "Resend",        "category": "Developer Tools"},
+    {"id": "sentry",      "name": "Sentry",        "category": "Developer Tools"},
+    {"id": "supabase",    "name": "Supabase",      "category": "Developer Tools"},
+    {"id": "superhuman",  "name": "Superhuman",    "category": "Developer Tools"},
+    {"id": "warp",        "name": "Warp",          "category": "Developer Tools"},
+    {"id": "zapier",      "name": "Zapier",        "category": "Developer Tools"},
+    # Infrastructure & Cloud
+    {"id": "clickhouse",  "name": "ClickHouse",    "category": "Infrastructure & Cloud"},
+    {"id": "composio",    "name": "Composio",      "category": "Infrastructure & Cloud"},
+    {"id": "hashicorp",   "name": "HashiCorp",     "category": "Infrastructure & Cloud"},
+    {"id": "mongodb",     "name": "MongoDB",       "category": "Infrastructure & Cloud"},
+    {"id": "sanity",      "name": "Sanity",        "category": "Infrastructure & Cloud"},
+    # Design & Productivity
+    {"id": "airtable",    "name": "Airtable",      "category": "Design & Productivity"},
+    {"id": "cal",         "name": "Cal.com",       "category": "Design & Productivity"},
+    {"id": "clay",        "name": "Clay",          "category": "Design & Productivity"},
+    {"id": "figma",       "name": "Figma",         "category": "Design & Productivity"},
+    {"id": "framer",      "name": "Framer",        "category": "Design & Productivity"},
+    {"id": "intercom",    "name": "Intercom",      "category": "Design & Productivity"},
+    {"id": "miro",        "name": "Miro",          "category": "Design & Productivity"},
+    {"id": "pinterest",   "name": "Pinterest",     "category": "Design & Productivity"},
+    {"id": "webflow",     "name": "Webflow",       "category": "Design & Productivity"},
+    # Fintech & Crypto
+    {"id": "coinbase",    "name": "Coinbase",      "category": "Fintech & Crypto"},
+    {"id": "kraken",      "name": "Kraken",        "category": "Fintech & Crypto"},
+    {"id": "revolut",     "name": "Revolut",       "category": "Fintech & Crypto"},
+    {"id": "wise",        "name": "Wise",          "category": "Fintech & Crypto"},
+    # Enterprise & Consumer
+    {"id": "airbnb",      "name": "Airbnb",        "category": "Enterprise & Consumer"},
+    {"id": "ibm",         "name": "IBM",           "category": "Enterprise & Consumer"},
+    {"id": "nvidia",      "name": "NVIDIA",        "category": "Enterprise & Consumer"},
+    {"id": "spacex",      "name": "SpaceX",        "category": "Enterprise & Consumer"},
+    {"id": "spotify",     "name": "Spotify",       "category": "Enterprise & Consumer"},
+    {"id": "uber",        "name": "Uber",          "category": "Enterprise & Consumer"},
+    # Car Brands
+    {"id": "bmw",         "name": "BMW",           "category": "Car Brands"},
+    {"id": "ferrari",     "name": "Ferrari",       "category": "Car Brands"},
+    {"id": "lamborghini", "name": "Lamborghini",   "category": "Car Brands"},
+    {"id": "renault",     "name": "Renault",       "category": "Car Brands"},
+    {"id": "tesla",       "name": "Tesla",         "category": "Car Brands"},
+]
+
+
+def get_themes():
+    """Return installed themes: bundled first, then user-generated from THEMES_DIR."""
+    themes = {t["id"]: dict(t) for t in BUNDLED_THEMES}
+    THEMES_DIR.mkdir(parents=True, exist_ok=True)
+    for f in sorted(THEMES_DIR.glob("*.json")):
+        try:
+            t = json.loads(f.read_text())
+            if "id" in t and "css" in t:
+                t.setdefault("bundled", False)
+                themes[t["id"]] = t
+        except Exception:
+            pass
+    return list(themes.values())
 
 
 def get_dashboard_data(db_path=DB_PATH):
@@ -95,6 +246,232 @@ def get_dashboard_data(db_path=DB_PATH):
     }
 
 
+GALLERY_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Appearance — Claude Usage Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #f5f5f7; font-family: -apple-system, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 14px; color: #1d1d1f; }
+
+  .g-header { position: sticky; top: 0; z-index: 100; background: rgba(255,255,255,0.85); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); border-bottom: 1px solid rgba(0,0,0,0.08); padding: 0 32px; height: 52px; display: flex; align-items: center; gap: 16px; }
+  .g-back { background: none; border: none; cursor: pointer; font-size: 17px; color: #0071e3; padding: 0 8px 0 0; letter-spacing: -0.374px; }
+  .g-back:hover { text-decoration: underline; }
+  .g-title { font-size: 17px; font-weight: 600; letter-spacing: -0.374px; flex: 1; }
+  .g-search { background: rgba(0,0,0,0.06); border: none; border-radius: 8px; padding: 6px 12px; font-size: 13px; width: 220px; color: #1d1d1f; outline: none; letter-spacing: -0.12px; }
+  .g-search:focus { background: rgba(0,0,0,0.09); }
+
+  .g-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1000; align-items: center; justify-content: center; }
+  .g-modal-overlay.visible { display: flex; }
+  .g-modal { background: #fff; border-radius: 16px; padding: 32px 40px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.2); min-width: 280px; }
+  .g-modal-icon { font-size: 40px; margin-bottom: 12px; }
+  .g-modal-title { font-size: 17px; font-weight: 600; letter-spacing: -0.374px; margin-bottom: 8px; }
+  .g-modal-sub { font-size: 13px; color: rgba(0,0,0,0.48); letter-spacing: -0.12px; }
+
+  .g-body { max-width: 1200px; margin: 0 auto; padding: 40px 32px 64px; }
+  .g-section-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+  .g-section-title { font-size: 21px; font-weight: 600; letter-spacing: -0.28px; }
+  .g-section-hint { font-size: 13px; color: rgba(0,0,0,0.48); letter-spacing: -0.12px; }
+  .g-divider { margin: 48px 0 32px; border: none; border-top: 1px solid rgba(0,0,0,0.08); }
+
+  .g-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px; }
+
+  .theme-card { background: #ffffff; border-radius: 14px; overflow: hidden; box-shadow: 0px 2px 12px rgba(0,0,0,0.08); transition: transform 0.18s, box-shadow 0.18s; display: flex; flex-direction: column; }
+  .theme-card:hover { transform: translateY(-3px); box-shadow: 0px 8px 28px rgba(0,0,0,0.13); }
+  .theme-card.is-active { box-shadow: 0px 0px 0px 2px #0071e3, 0px 8px 28px rgba(0,113,227,0.18); }
+
+  .theme-preview { height: 152px; padding: 10px; overflow: hidden; position: relative; }
+  .theme-preview.unavailable { filter: grayscale(1); opacity: 0.45; }
+  .prev-shell { height: 100%; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+  .prev-topbar { height: 18px; display: flex; align-items: center; padding: 0 8px; gap: 5px; flex-shrink: 0; }
+  .prev-topbar-title { height: 5px; width: 48px; border-radius: 3px; opacity: 0.5; }
+  .prev-topbar-dot { width: 12px; height: 12px; border-radius: 50%; margin-left: auto; }
+  .prev-filterbar { height: 14px; display: flex; align-items: center; padding: 0 8px; gap: 3px; flex-shrink: 0; }
+  .prev-pill { height: 7px; border-radius: 4px; }
+  .prev-body { flex: 1; padding: 6px 8px; display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
+  .prev-stats { display: flex; gap: 4px; }
+  .prev-stat { flex: 1; border-radius: 5px; height: 22px; }
+  .prev-chart { flex: 1; border-radius: 5px; padding: 5px 6px; display: flex; align-items: flex-end; gap: 2px; }
+  .prev-bar { flex: 1; border-radius: 2px; }
+
+  .theme-info { padding: 14px 16px 16px; border-top: 1px solid rgba(0,0,0,0.06); display: flex; flex-direction: column; gap: 8px; }
+  .theme-name { font-size: 14px; font-weight: 600; letter-spacing: -0.224px; }
+  .theme-meta { display: flex; align-items: center; gap: 6px; }
+  .theme-category { font-size: 11px; color: rgba(0,0,0,0.48); letter-spacing: -0.08px; }
+  .theme-badge { font-size: 10px; padding: 1px 7px; border-radius: 980px; letter-spacing: -0.08px; }
+  .badge-active { background: rgba(0,113,227,0.1); color: #0071e3; }
+  .badge-bundled { background: rgba(0,0,0,0.06); color: rgba(0,0,0,0.48); }
+  .btn-apply { background: #0071e3; color: #fff; border: none; border-radius: 6px; padding: 6px 16px; font-size: 13px; font-weight: 500; cursor: pointer; letter-spacing: -0.12px; transition: background 0.15s; }
+  .btn-apply:hover { background: #0077ed; }
+  .btn-applied { background: rgba(0,113,227,0.1); color: #0071e3; border: none; border-radius: 6px; padding: 6px 16px; font-size: 13px; font-weight: 500; cursor: default; letter-spacing: -0.12px; }
+  .btn-generate { background: transparent; color: rgba(0,0,0,0.4); border: 1px solid rgba(0,0,0,0.15); border-radius: 6px; padding: 6px 16px; font-size: 13px; cursor: default; letter-spacing: -0.12px; }
+  .theme-cmd { font-family: "SF Mono", ui-monospace, monospace; font-size: 10px; color: rgba(0,0,0,0.35); margin-top: 2px; }
+
+  .g-empty { color: rgba(0,0,0,0.4); font-size: 14px; padding: 24px 0; }
+
+  @media (max-width: 600px) { .g-body { padding: 24px 16px; } .g-header { padding: 0 16px; } }
+</style>
+</head>
+<body>
+<div class="g-header">
+  <button class="g-back" onclick="window.close()">← Back</button>
+  <div class="g-title">Appearance</div>
+  <input class="g-search" type="search" placeholder="Search themes…" oninput="filterThemes(this.value)">
+</div>
+<div class="g-modal-overlay" id="applied-modal">
+  <div class="g-modal">
+    <div class="g-modal-icon">✓</div>
+    <div class="g-modal-title" id="modal-theme-name">Theme applied</div>
+    <div class="g-modal-sub" id="modal-countdown">Closing in 3…</div>
+  </div>
+</div>
+<div class="g-body">
+  <div class="g-section-header">
+    <div class="g-section-title">Installed</div>
+  </div>
+  <div class="g-grid" id="installed-grid"><div class="g-empty">Loading…</div></div>
+
+  <hr class="g-divider">
+
+  <div class="g-section-header">
+    <div class="g-section-title">Available</div>
+    <div class="g-section-hint">Run <code>python cli.py theme add &lt;id&gt;</code> to generate and install</div>
+  </div>
+  <div class="g-grid" id="available-grid"></div>
+</div>
+
+<script>
+const CATALOG = __CATALOG_JSON__;
+let allInstalled = [];
+let activeThemeId = localStorage.getItem('dashboard-theme-id') || 'apple';
+
+async function init() {
+  const resp = await fetch('/api/themes');
+  allInstalled = await resp.json();
+  render('');
+}
+
+function render(query) {
+  const q = query.toLowerCase();
+  const installedIds = new Set(allInstalled.map(t => t.id));
+
+  const matchInstalled = allInstalled.filter(t =>
+    !q || t.name.toLowerCase().includes(q) || t.category.toLowerCase().includes(q)
+  );
+  const matchAvailable = CATALOG.filter(t =>
+    !installedIds.has(t.id) &&
+    (!q || t.name.toLowerCase().includes(q) || t.category.toLowerCase().includes(q))
+  );
+
+  document.getElementById('installed-grid').innerHTML =
+    matchInstalled.length ? matchInstalled.map(t => cardHTML(t, true)).join('') : '<div class="g-empty">No installed themes match.</div>';
+  document.getElementById('available-grid').innerHTML =
+    matchAvailable.length ? matchAvailable.map(t => cardHTML(t, false)).join('') : '<div class="g-empty">No available themes match.</div>';
+}
+
+function filterThemes(q) { render(q); }
+
+function cardHTML(t, installed) {
+  const isActive = t.id === activeThemeId;
+  const preview = t.preview ? previewHTML(t) : unavailablePreviewHTML(t);
+  const badge = isActive
+    ? '<span class="theme-badge badge-active">Active</span>'
+    : (t.bundled ? '<span class="theme-badge badge-bundled">Bundled</span>' : '');
+  const btn = !installed
+    ? `<button class="btn-generate" disabled>Generate</button><div class="theme-cmd">python cli.py theme add ${t.id}</div>`
+    : isActive
+    ? `<button class="btn-applied">Applied ✓</button>`
+    : `<button class="btn-apply" onclick="applyTheme('${t.id}')">Apply</button>`;
+
+  return `<div class="theme-card${isActive ? ' is-active' : ''}" id="card-${t.id}">
+    <div class="theme-preview${!installed ? ' unavailable' : ''}">${preview}</div>
+    <div class="theme-info">
+      <div>
+        <div class="theme-name">${t.name}</div>
+        <div class="theme-meta"><span class="theme-category">${t.category}</span>${badge}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px">${btn}</div>
+    </div>
+  </div>`;
+}
+
+function previewHTML(t) {
+  const p = t.preview;
+  const bars = [40, 70, 55, 85, 60, 90, 75].map(h =>
+    `<div class="prev-bar" style="height:${h}%;background:${p.accent};opacity:0.75"></div>`
+  ).join('');
+  return `<div class="prev-shell" style="background:${p.bg}">
+    <div class="prev-topbar" style="background:${p.card}">
+      <div class="prev-topbar-title" style="background:${p.text}"></div>
+      <div class="prev-topbar-dot" style="background:${p.accent}"></div>
+    </div>
+    <div class="prev-filterbar" style="background:${p.card};border-bottom:1px solid ${p.muted}">
+      <div class="prev-pill" style="width:28px;background:${p.accent}"></div>
+      <div class="prev-pill" style="width:20px;background:${p.muted}"></div>
+      <div class="prev-pill" style="width:20px;background:${p.muted}"></div>
+    </div>
+    <div class="prev-body" style="background:${p.bg}">
+      <div class="prev-stats">
+        <div class="prev-stat" style="background:${p.card}"></div>
+        <div class="prev-stat" style="background:${p.card}"></div>
+        <div class="prev-stat" style="background:${p.card}"></div>
+      </div>
+      <div class="prev-chart" style="background:${p.card}">${bars}</div>
+    </div>
+  </div>`;
+}
+
+function unavailablePreviewHTML(t) {
+  return `<div class="prev-shell" style="background:#e8e8e8">
+    <div class="prev-topbar" style="background:#d0d0d0"></div>
+    <div class="prev-body" style="background:#e8e8e8">
+      <div class="prev-stats">
+        <div class="prev-stat" style="background:#d0d0d0"></div>
+        <div class="prev-stat" style="background:#d0d0d0"></div>
+        <div class="prev-stat" style="background:#d0d0d0"></div>
+      </div>
+      <div class="prev-chart" style="background:#d0d0d0;height:60px"></div>
+    </div>
+  </div>`;
+}
+
+function applyTheme(id) {
+  const t = allInstalled.find(x => x.id === id);
+  if (!t) return;
+  localStorage.setItem('dashboard-theme-id', id);
+  localStorage.setItem('dashboard-theme-css', t.css);
+  activeThemeId = id;
+  if (window.opener && !window.opener.closed) {
+    try { window.opener.setTheme(t.css, id); } catch(e) {}
+  }
+  render(document.querySelector('.g-search').value);
+
+  // Show confirmation modal then auto-close
+  const modal = document.getElementById('applied-modal');
+  const countdownEl = document.getElementById('modal-countdown');
+  document.getElementById('modal-theme-name').textContent = t.name + ' applied';
+  modal.classList.add('visible');
+  let secs = 3;
+  countdownEl.textContent = 'Closing in ' + secs + '\u2026';
+  const iv = setInterval(() => {
+    secs--;
+    if (secs > 0) {
+      countdownEl.textContent = 'Closing in ' + secs + '\u2026';
+    } else {
+      clearInterval(iv);
+      window.close();
+    }
+  }, 1000);
+}
+
+init();
+</script>
+</body>
+</html>
+"""
+
 HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -102,54 +479,55 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Code Usage Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style id="active-theme">:root {
+    --bg: #f5f5f7; --card: #ffffff; --border: rgba(0,0,0,0.08);
+    --text: #1d1d1f; --muted: rgba(0,0,0,0.48); --accent: #0071e3;
+    --green: #1c7a3a; --shadow: 0px 2px 12px rgba(0,0,0,0.08);
+    --card-radius: 14px; --card-border: none;
+    --chart-label: rgba(0,0,0,0.48); --chart-grid: rgba(0,0,0,0.06);
+    --chart-1: rgba(0,113,227,0.8); --chart-2: rgba(88,86,214,0.8);
+    --chart-3: rgba(52,199,89,0.8); --chart-4: rgba(255,159,10,0.75);
+  }</style>
 <style>
-  :root {
-    --bg: #0f1117;
-    --card: #1a1d27;
-    --border: #2a2d3a;
-    --text: #e2e8f0;
-    --muted: #8892a4;
-    --accent: #d97757;
-    --blue: #4f8ef7;
-    --green: #4ade80;
-  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 14px; letter-spacing: -0.224px; }
 
-  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
-  header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
-  header .meta { color: var(--muted); font-size: 12px; }
-  #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
+  header { position: sticky; top: 0; z-index: 100; background: rgba(255,255,255,0.85); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); border-bottom: 1px solid var(--border); padding: 0 24px; height: 48px; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 17px; font-weight: 600; color: var(--text); letter-spacing: -0.374px; }
+  header .meta { color: var(--muted); font-size: 12px; letter-spacing: -0.12px; }
+  .appearance-btn { background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 12px; padding: 4px 12px; cursor: pointer; letter-spacing: -0.12px; transition: all 0.15s; white-space: nowrap; }
+  .appearance-btn:hover { border-color: var(--accent); color: var(--accent); }
+  #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
   #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
   #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
-  .filter-sep { width: 1px; height: 22px; background: var(--border); flex-shrink: 0; }
+  #filter-bar { background: rgba(255,255,255,0.85); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .filter-label { font-size: 12px; font-weight: 600; letter-spacing: -0.12px; color: var(--muted); white-space: nowrap; }
+  .filter-sep { width: 1px; height: 22px; background: rgba(0,0,0,0.12); flex-shrink: 0; }
   #model-checkboxes { display: flex; flex-wrap: wrap; gap: 6px; }
-  .model-cb-label { display: flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; border: 1px solid var(--border); cursor: pointer; font-size: 12px; color: var(--muted); transition: border-color 0.15s, color 0.15s, background 0.15s; user-select: none; }
-  .model-cb-label:hover { border-color: var(--accent); color: var(--text); }
-  .model-cb-label.checked { background: rgba(217,119,87,0.12); border-color: var(--accent); color: var(--text); }
+  .model-cb-label { display: flex; align-items: center; gap: 5px; padding: 4px 12px; border-radius: 980px; border: 1px solid rgba(0,0,0,0.12); cursor: pointer; font-size: 12px; color: var(--muted); letter-spacing: -0.12px; transition: all 0.15s; user-select: none; }
+  .model-cb-label:hover { border-color: var(--accent); color: var(--accent); }
+  .model-cb-label.checked { background: rgba(0,113,227,0.08); border-color: var(--accent); color: var(--accent); font-weight: 500; }
   .model-cb-label input { display: none; }
-  .filter-btn { padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; white-space: nowrap; }
-  .filter-btn:hover { border-color: var(--accent); color: var(--text); }
-  .range-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
-  .range-btn { padding: 4px 13px; background: transparent; border: none; border-right: 1px solid var(--border); color: var(--muted); font-size: 12px; cursor: pointer; transition: background 0.15s, color 0.15s; }
+  .filter-btn { padding: 4px 12px; border-radius: 980px; border: 1px solid rgba(0,0,0,0.12); background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; letter-spacing: -0.12px; transition: all 0.15s; }
+  .filter-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .range-group { display: flex; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; overflow: hidden; flex-shrink: 0; background: var(--card); }
+  .range-btn { padding: 5px 14px; background: transparent; border: none; border-right: 1px solid rgba(0,0,0,0.08); color: var(--muted); font-size: 12px; cursor: pointer; letter-spacing: -0.12px; transition: background 0.15s, color 0.15s; }
   .range-btn:last-child { border-right: none; }
-  .range-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
-  .range-btn.active { background: rgba(217,119,87,0.15); color: var(--accent); font-weight: 600; }
+  .range-btn:hover { background: rgba(0,113,227,0.05); color: var(--text); }
+  .range-btn.active { background: var(--accent); color: #ffffff; font-weight: 500; }
 
-  .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 32px 24px; }
   .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
-  .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-  .stat-card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
-  .stat-card .value { font-size: 22px; font-weight: 700; }
-  .stat-card .sub { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .stat-card { background: var(--card); border-radius: var(--card-radius); border: var(--card-border); padding: 20px; box-shadow: var(--shadow); }
+  .stat-card .label { color: var(--muted); font-size: 12px; letter-spacing: -0.12px; margin-bottom: 8px; font-weight: 500; }
+  .stat-card .value { font-size: 24px; font-weight: 600; letter-spacing: -0.28px; color: var(--text); }
+  .stat-card .sub { color: var(--muted); font-size: 11px; margin-top: 4px; letter-spacing: -0.08px; }
 
   .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
-  .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+  .chart-card { background: var(--card); border-radius: var(--card-radius); border: var(--card-border); padding: 20px; box-shadow: var(--shadow); }
   .chart-card.wide { grid-column: 1 / -1; }
-  .chart-card h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 16px; }
+  .chart-card h2 { font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: -0.12px; margin-bottom: 16px; }
   .chart-wrap { position: relative; height: 240px; }
   .chart-wrap.tall { height: 300px; }
 
@@ -160,24 +538,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .sort-icon { font-size: 9px; opacity: 0.8; }
   td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
   tr:last-child td { border-bottom: none; }
-  tr:hover td { background: rgba(255,255,255,0.02); }
-  .model-tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; background: rgba(79,142,247,0.15); color: var(--blue); }
-  .cost { color: var(--green); font-family: monospace; }
-  .cost-na { color: var(--muted); font-family: monospace; font-size: 11px; }
-  .num { font-family: monospace; }
+  tr:hover td { background: rgba(0,113,227,0.03); }
+  .model-tag { display: inline-block; padding: 2px 8px; border-radius: 980px; font-size: 11px; background: rgba(0,113,227,0.08); color: var(--accent); letter-spacing: -0.08px; }
+  .cost { color: var(--green); font-family: "SF Mono", ui-monospace, monospace; font-size: 12px; }
+  .cost-na { color: var(--muted); font-family: "SF Mono", ui-monospace, monospace; font-size: 11px; }
+  .num { font-family: "SF Mono", ui-monospace, monospace; font-size: 12px; }
   .muted { color: var(--muted); }
   .section-title { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
   .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
   .section-header .section-title { margin-bottom: 0; }
   .export-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 3px 10px; border-radius: 5px; cursor: pointer; font-size: 11px; }
   .export-btn:hover { color: var(--text); border-color: var(--accent); }
-  .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
+  .table-card { background: var(--card); border-radius: var(--card-radius); border: var(--card-border); padding: 20px; margin-bottom: 24px; overflow-x: auto; box-shadow: var(--shadow); }
 
   footer { border-top: 1px solid var(--border); padding: 20px 24px; margin-top: 8px; }
-  .footer-content { max-width: 1400px; margin: 0 auto; }
-  .footer-content p { color: var(--muted); font-size: 12px; line-height: 1.7; margin-bottom: 4px; }
+  .footer-content { max-width: 1200px; margin: 0 auto; }
+  .footer-content p { color: var(--muted); font-size: 12px; line-height: 1.7; margin-bottom: 4px; letter-spacing: -0.12px; }
   .footer-content p:last-child { margin-bottom: 0; }
-  .footer-content a { color: var(--blue); text-decoration: none; }
+  .footer-content a { color: var(--accent); text-decoration: none; }
   .footer-content a:hover { text-decoration: underline; }
 
   @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } }
@@ -186,8 +564,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <body>
 <header>
   <h1>Claude Code Usage Dashboard</h1>
-  <div class="meta" id="meta">Loading...</div>
-  <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
+  <div style="display:flex;align-items:center;gap:12px">
+    <div class="meta" id="meta">Loading...</div>
+    <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
+    <button class="appearance-btn" onclick="window.open('/themes','_blank')">Appearance</button>
+  </div>
 </header>
 
 <div id="filter-bar">
@@ -283,6 +664,31 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </footer>
 
 <script>
+// ── Theme switching ────────────────────────────────────────────────────────
+function setTheme(css, id) {
+  document.getElementById('active-theme').textContent = css;
+  if (id)  localStorage.setItem('dashboard-theme-id',  id);
+  if (css) localStorage.setItem('dashboard-theme-css', css);
+  if (rawData) applyFilter();
+}
+
+(function restoreTheme() {
+  const css = localStorage.getItem('dashboard-theme-css');
+  if (css) document.getElementById('active-theme').textContent = css;
+})();
+
+function chartColors() {
+  const s = getComputedStyle(document.documentElement);
+  return {
+    label: s.getPropertyValue('--chart-label').trim() || 'rgba(0,0,0,0.48)',
+    grid:  s.getPropertyValue('--chart-grid').trim()  || 'rgba(0,0,0,0.06)',
+    c1:    s.getPropertyValue('--chart-1').trim()     || 'rgba(0,113,227,0.8)',
+    c2:    s.getPropertyValue('--chart-2').trim()     || 'rgba(88,86,214,0.8)',
+    c3:    s.getPropertyValue('--chart-3').trim()     || 'rgba(52,199,89,0.8)',
+    c4:    s.getPropertyValue('--chart-4').trim()     || 'rgba(255,159,10,0.75)',
+  };
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 function esc(s) {
   const d = document.createElement('div');
@@ -356,13 +762,14 @@ function fmtCost(c)    { return '$' + c.toFixed(4); }
 function fmtCostBig(c) { return '$' + c.toFixed(2); }
 
 // ── Chart colors ───────────────────────────────────────────────────────────
-const TOKEN_COLORS = {
-  input:          'rgba(79,142,247,0.8)',
-  output:         'rgba(167,139,250,0.8)',
-  cache_read:     'rgba(74,222,128,0.6)',
-  cache_creation: 'rgba(251,191,36,0.6)',
-};
-const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
+function tokenColors() {
+  const c = chartColors();
+  return { input: c.c1, output: c.c2, cache_read: c.c3, cache_creation: c.c4 };
+}
+function modelColors() {
+  const c = chartColors();
+  return [c.c1, c.c2, c.c3, c.c4, '#ff3b30', '#ff2d55', '#64d2ff', '#30d158'];
+}
 
 // ── Time range ─────────────────────────────────────────────────────────────
 const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
@@ -613,18 +1020,18 @@ function renderDailyChart(daily) {
     data: {
       labels: daily.map(d => d.day),
       datasets: [
-        { label: 'Input',          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens' },
-        { label: 'Output',         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens' },
-        { label: 'Cache Read',     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens' },
-        { label: 'Cache Creation', data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens' },
+        { label: 'Input',          data: daily.map(d => d.input),          backgroundColor: tokenColors().input,          stack: 'tokens' },
+        { label: 'Output',         data: daily.map(d => d.output),         backgroundColor: tokenColors().output,         stack: 'tokens' },
+        { label: 'Cache Read',     data: daily.map(d => d.cache_read),     backgroundColor: tokenColors().cache_read,     stack: 'tokens' },
+        { label: 'Cache Creation', data: daily.map(d => d.cache_creation), backgroundColor: tokenColors().cache_creation, stack: 'tokens' },
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
+      plugins: { legend: { labels: { color: chartColors().label, boxWidth: 12 } } },
       scales: {
-        x: { ticks: { color: '#8892a4', maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: '#2a2d3a' } },
-        y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
+        x: { ticks: { color: chartColors().label, maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: chartColors().grid } },
+        y: { ticks: { color: chartColors().label, callback: v => fmt(v) }, grid: { color: chartColors().grid } },
       }
     }
   });
@@ -638,12 +1045,12 @@ function renderModelChart(byModel) {
     type: 'doughnut',
     data: {
       labels: byModel.map(m => m.model),
-      datasets: [{ data: byModel.map(m => m.input + m.output), backgroundColor: MODEL_COLORS, borderWidth: 2, borderColor: '#1a1d27' }]
+      datasets: [{ data: byModel.map(m => m.input + m.output), backgroundColor: modelColors(), borderWidth: 2, borderColor: '#ffffff' }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
-        legend: { position: 'bottom', labels: { color: '#8892a4', boxWidth: 12, font: { size: 11 } } },
+        legend: { position: 'bottom', labels: { color: chartColors().label, boxWidth: 12, font: { size: 11 } } },
         tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${fmt(ctx.raw)} tokens` } }
       }
     }
@@ -660,16 +1067,16 @@ function renderProjectChart(byProject) {
     data: {
       labels: top.map(p => p.project.length > 22 ? '\u2026' + p.project.slice(-20) : p.project),
       datasets: [
-        { label: 'Input',  data: top.map(p => p.input),  backgroundColor: TOKEN_COLORS.input },
-        { label: 'Output', data: top.map(p => p.output), backgroundColor: TOKEN_COLORS.output },
+        { label: 'Input',  data: top.map(p => p.input),  backgroundColor: tokenColors().input },
+        { label: 'Output', data: top.map(p => p.output), backgroundColor: tokenColors().output },
       ]
     },
     options: {
       indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
+      plugins: { legend: { labels: { color: chartColors().label, boxWidth: 12 } } },
       scales: {
-        x: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
-        y: { ticks: { color: '#8892a4', font: { size: 11 } }, grid: { color: '#2a2d3a' } },
+        x: { ticks: { color: chartColors().label, callback: v => fmt(v) }, grid: { color: chartColors().grid } },
+        y: { ticks: { color: chartColors().label, font: { size: 11 } }, grid: { color: chartColors().grid } },
       }
     }
   });
@@ -907,6 +1314,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path == "/api/themes":
+            body = json.dumps(get_themes()).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path == "/themes":
+            catalog_json = json.dumps(AWESOME_CATALOG)
+            html = GALLERY_TEMPLATE.replace("__CATALOG_JSON__", catalog_json)
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(body)
 
