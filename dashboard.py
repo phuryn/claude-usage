@@ -344,6 +344,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .stat-card .value { font-size: 22px; font-weight: 700; }
   .stat-card .sub { color: var(--muted); font-size: 11px; margin-top: 4px; }
 
+  /* Budget gauge */
+  .gauge-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 180px; text-align: center; }
+  .gauge-card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+  .gauge-card .gauge-pct { font-size: 28px; font-weight: 700; margin: 4px 0; }
+  .gauge-card .gauge-cost { font-size: 13px; color: var(--fg); font-family: monospace; }
+  .gauge-card .gauge-pace { font-size: 11px; margin-top: 4px; }
+  .gauge-card .gauge-reset { color: var(--muted); font-size: 10px; margin-top: 6px; }
+
+  @keyframes pulse-border { 0%, 100% { border-color: var(--border); } 50% { border-color: var(--gauge-alert); } }
+  .gauge-card.pace-yellow { --gauge-alert: #facc15; animation: pulse-border 2s ease-in-out infinite; }
+  .gauge-card.pace-red { --gauge-alert: #f87171; animation: pulse-border 1.5s ease-in-out infinite; box-shadow: 0 0 12px rgba(248,113,113,0.25); }
+
   .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
   .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
   .chart-card.wide { grid-column: 1 / -1; }
@@ -450,6 +462,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <div class="container">
+  <div id="gauge-container"></div>
   <div class="stats-row" id="stats-row"></div>
   <div class="charts-grid">
     <div class="chart-card wide">
@@ -1093,6 +1106,7 @@ function applyFilter() {
   document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + currentRangeLabel();
 
   renderStats(totals);
+  fetchAndRenderGauge();
   renderDailyChart(daily);
   renderHourHistogram(hourHistogram);
   renderHourTimeline(hourTimeline);
@@ -1124,6 +1138,72 @@ function renderStats(t) {
       ${s.sub ? `<div class="sub">${esc(s.sub)}</div>` : ''}
     </div>
   `).join('');
+}
+
+// ── Subscription gauge ────────────────────────────────────────────────────
+const PACE_COLORS = { green: '#4ade80', yellow: '#facc15', red: '#f87171' };
+
+async function fetchAndRenderGauge() {
+  try {
+    const resp = await fetch('/api/subscription');
+    const data = await resp.json();
+    if (data.error) { document.getElementById('gauge-container').innerHTML = ''; return; }
+
+    const w = data.current_week;
+    const pct = Math.min(w.percent_used, 100);
+    const color = PACE_COLORS[w.pace_color] || PACE_COLORS.green;
+    const paceClass = w.pace_color === 'red' ? 'pace-red' : w.pace_color === 'yellow' ? 'pace-yellow' : '';
+
+    // SVG arc gauge (semicircle, 180 degrees)
+    const R = 50, CX = 60, CY = 55, SW = 8;
+    const startAngle = Math.PI;
+    const fullArc = Math.PI;
+    const usedAngle = startAngle + fullArc * (pct / 100);
+    const paceAngle = startAngle + fullArc * Math.min(w.elapsed_fraction, 1);
+
+    function arcXY(angle) { return [CX + R * Math.cos(angle), CY + R * Math.sin(angle)]; }
+    const [ex, ey] = arcXY(usedAngle);
+    const largeArc = pct > 50 ? 1 : 0;
+    const [sx, sy] = arcXY(startAngle);
+
+    // Background arc (full semicircle)
+    const [bex, bey] = arcXY(startAngle + fullArc);
+    const bgArc = `M ${sx} ${sy} A ${R} ${R} 0 1 1 ${bex} ${bey}`;
+
+    // Used arc
+    const usedArc = pct > 0
+      ? `M ${sx} ${sy} A ${R} ${R} 0 ${largeArc} 1 ${ex} ${ey}`
+      : '';
+
+    // Pace marker (thin line showing expected position)
+    const [pix, piy] = [CX + (R - 12) * Math.cos(paceAngle), CY + (R - 12) * Math.sin(paceAngle)];
+    const [pox, poy] = [CX + (R + 4) * Math.cos(paceAngle), CY + (R + 4) * Math.sin(paceAngle)];
+
+    const paceLabel = w.pace_ratio <= 0 ? 'no usage yet'
+      : w.elapsed_fraction < 0.006 ? 'just started'
+      : w.pace_ratio <= 1.05 ? 'on track'
+      : w.pace_ratio.toFixed(1) + '\u00d7 pace';
+
+    const resetDay = w.end ? new Date(w.end).toLocaleDateString('en-US', { weekday: 'short' }) : '';
+    const resetSuffix = data.plan ? ` \u00b7 ${w.days_remaining.toFixed(1)}d left` : '';
+
+    document.getElementById('gauge-container').innerHTML = `
+      <div class="gauge-card ${esc(paceClass)}" style="display:inline-block; vertical-align:top; margin-right:12px; margin-bottom:12px;">
+        <div class="label">Weekly Budget</div>
+        <svg viewBox="0 0 120 65" width="140" height="76" style="display:block; margin:0 auto;">
+          <path d="${bgArc}" fill="none" stroke="#2a2d3a" stroke-width="${SW}" stroke-linecap="round"/>
+          ${usedArc ? `<path d="${usedArc}" fill="none" stroke="${color}" stroke-width="${SW}" stroke-linecap="round"/>` : ''}
+          <line x1="${pix}" y1="${piy}" x2="${pox}" y2="${poy}" stroke="#8892a4" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+        </svg>
+        <div class="gauge-pct" style="color:${color}">${pct.toFixed(1)}%</div>
+        <div class="gauge-cost">$${w.cost_used.toFixed(2)} / $${data.weekly_budget}</div>
+        <div class="gauge-pace" style="color:${color}">${esc(paceLabel)}</div>
+        <div class="gauge-reset">Resets ${esc(resetDay)} 5:00 PM${esc(resetSuffix)}</div>
+      </div>
+    `;
+  } catch (e) {
+    document.getElementById('gauge-container').innerHTML = '';
+  }
 }
 
 function renderDailyChart(daily) {
