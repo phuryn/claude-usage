@@ -109,21 +109,30 @@ def fetch_usage_data():
             return _usage_cache["data"]
 
     # 1) Try reading from usage-tracker.js hook cache (no API call needed)
+    hook_fallback = None
     try:
         if HOOK_CACHE_FILE.exists():
             hook_data = json.loads(HOOK_CACHE_FILE.read_text())
             hook_age = time.time() - hook_data.get("cached_at", 0)
-            if hook_age < 300:  # hook cache valid within 5 min
-                if hook_data.get("rate_limited"):
-                    return {"error": "Usage data delayed"}
+            if hook_age < 1800 and not hook_data.get("rate_limited"):  # 30 min validity
                 data = {
                     "five_hour": hook_data.get("five_hour"),
                     "seven_day": hook_data.get("seven_day"),
+                    "seven_day_sonnet": hook_data.get("seven_day_sonnet"),
+                    "extra_usage": hook_data.get("extra_usage"),
                 }
                 with _usage_lock:
                     _usage_cache["data"] = data
                     _usage_cache["ts"] = time.time()
                 return data
+            # Keep stale/rate-limited hook data as last-resort fallback
+            if hook_data.get("five_hour") or hook_data.get("seven_day"):
+                hook_fallback = {
+                    "five_hour": hook_data.get("five_hour"),
+                    "seven_day": hook_data.get("seven_day"),
+                    "seven_day_sonnet": hook_data.get("seven_day_sonnet"),
+                    "extra_usage": hook_data.get("extra_usage"),
+                }
     except (json.JSONDecodeError, OSError):
         pass
 
@@ -132,6 +141,8 @@ def fetch_usage_data():
     if not token:
         if _usage_cache["data"]:
             return _usage_cache["data"]
+        if hook_fallback:
+            return hook_fallback
         return {"error": "No OAuth token found"}
 
     try:
@@ -153,6 +164,8 @@ def fetch_usage_data():
     except Exception:
         if _usage_cache["data"]:
             return _usage_cache["data"]
+        if hook_fallback:
+            return hook_fallback
         return {"error": "Usage data delayed"}
 
 
