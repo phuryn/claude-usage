@@ -176,6 +176,12 @@ class TestHTMLTemplate(unittest.TestCase):
         """Verify getPricing returns null for non-Anthropic models."""
         self.assertIn("return null;", HTML_TEMPLATE)
 
+    def test_template_has_gauge_container(self):
+        self.assertIn('id="gauge-container"', HTML_TEMPLATE)
+
+    def test_template_has_gauge_fetch(self):
+        self.assertIn("fetchAndRenderGauge", HTML_TEMPLATE)
+
 
 class TestPricingParity(unittest.TestCase):
     """Verify CLI and dashboard pricing tables stay in sync."""

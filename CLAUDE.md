@@ -7,7 +7,9 @@ A local CLI + web dashboard that tracks Claude Code token usage and estimated co
 - **`cli.py`** — CLI entry point (`scan`, `today`, `stats`, `dashboard` commands)
 - **`scanner.py`** — Parses Claude Code JSONL transcripts from `~/.claude/projects/` into a SQLite DB (`~/.claude/usage.db`)
 - **`dashboard.py`** — Serves a local web dashboard on `localhost:8080` (threaded HTTP server, no framework)
+- **`subscription.py`** — Weekly budget tracking: config loading, week boundary calculation, pace ratio
 - **`peak-hours.json`** — Configurable peak-hour overlay bands for the dashboard chart
+- **`subscription.json`** — User config for subscription plan, weekly budget, and reset schedule
 
 ## Key conventions
 
@@ -25,6 +27,11 @@ python cli.py dashboard   # scan + open browser + serve on :8080
 python cli.py today       # terminal summary
 python cli.py stats       # all-time terminal summary
 ```
+
+## Configuration
+
+- `peak-hours.json` — Peak hour overlay bands for the hourly chart
+- `subscription.json` — Subscription plan and weekly budget settings (optional; gauge hidden if absent)
 
 ## Testing
 
