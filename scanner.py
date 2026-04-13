@@ -14,6 +14,20 @@ XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAs
 DB_PATH = Path.home() / ".claude" / "usage.db"
 DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
 
+# Higher number = higher priority when choosing a session's primary model
+MODEL_PRIORITY = {"opus": 3, "sonnet": 2, "haiku": 1}
+
+
+def _model_priority(model):
+    """Return a priority score for a model name (higher = more capable)."""
+    if not model:
+        return 0
+    m = model.lower()
+    for keyword, priority in MODEL_PRIORITY.items():
+        if keyword in m:
+            return priority
+    return 0
+
 
 def get_db(db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
@@ -192,7 +206,7 @@ def parse_jsonl_file(filepath):
 
 def aggregate_sessions(session_metas, turns):
     """Aggregate turn data back into session-level stats."""
-    from collections import defaultdict
+    from collections import defaultdict, Counter
 
     session_stats = defaultdict(lambda: {
         "total_input_tokens": 0,
@@ -202,6 +216,7 @@ def aggregate_sessions(session_metas, turns):
         "turn_count": 0,
         "model": None,
     })
+    session_model_counts = defaultdict(Counter)
 
     for t in turns:
         s = session_stats[t["session_id"]]
@@ -211,7 +226,11 @@ def aggregate_sessions(session_metas, turns):
         s["total_cache_creation"] += t["cache_creation_tokens"]
         s["turn_count"] += 1
         if t["model"]:
-            s["model"] = t["model"]
+            session_model_counts[t["session_id"]][t["model"]] += 1
+
+    for sid, counts in session_model_counts.items():
+        if counts:
+            session_stats[sid]["model"] = counts.most_common(1)[0][0]
 
     # Merge into session_metas
     result = []
@@ -247,6 +266,17 @@ def upsert_sessions(conn, sessions):
             ))
         else:
             # Update: add new tokens on top of existing (since we only insert new turns)
+            # Keep the highest-priority model (e.g. opus over haiku from subagents)
+            existing_model = conn.execute(
+                "SELECT model FROM sessions WHERE session_id = ?",
+                (s["session_id"],)
+            ).fetchone()["model"]
+            new_model = s["model"]
+            if _model_priority(new_model) > _model_priority(existing_model):
+                model_to_set = new_model
+            else:
+                model_to_set = existing_model
+
             conn.execute("""
                 UPDATE sessions SET
                     last_timestamp = MAX(last_timestamp, ?),
@@ -255,13 +285,13 @@ def upsert_sessions(conn, sessions):
                     total_cache_read = total_cache_read + ?,
                     total_cache_creation = total_cache_creation + ?,
                     turn_count = turn_count + ?,
-                    model = COALESCE(?, model)
+                    model = ?
                 WHERE session_id = ?
             """, (
                 s["last_timestamp"],
                 s["total_input_tokens"], s["total_output_tokens"],
                 s["total_cache_read"], s["total_cache_creation"],
-                s["turn_count"], s["model"],
+                s["turn_count"], model_to_set,
                 s["session_id"]
             ))
 
