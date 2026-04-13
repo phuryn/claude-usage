@@ -1,0 +1,10 @@
+{
+  "plan": "max-20x",
+  "monthly_price": 200,
+  "weekly_budget_api_equivalent": 200,
+  "reset": {
+    "timezone": "America/Chicago",
+    "day": "Tuesday",
+    "time": "17:00"
+  }
+}
