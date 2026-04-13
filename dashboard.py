@@ -12,6 +12,14 @@ from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from subscription import (
+    load_subscription_config,
+    get_week_window,
+    calc_pace_ratio,
+    pace_color,
+    SUBSCRIPTION_PATH,
+)
+
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
 # Timezone constants — lazily initialized so dashboard.py remains importable
@@ -1829,6 +1837,67 @@ def read_session_turns(session_id, db_path=DB_PATH, max_turns=500):
     }
 
 
+def get_subscription_data(config_path=SUBSCRIPTION_PATH, db_path=DB_PATH):
+    """Compute current-week subscription usage. Returns dict for JSON response."""
+    cfg = load_subscription_config(config_path)
+    if cfg is None:
+        return {"error": "not_configured"}
+
+    reset = cfg["reset"]
+    tz = ZoneInfo(reset["timezone"])
+    now = datetime.now(tz)
+    start, end = get_week_window(reset, now)
+    budget = cfg["weekly_budget_api_equivalent"]
+
+    # Sum costs for all turns in the current week window
+    from cli import calc_cost
+    if not db_path.exists():
+        return {"error": "not_configured"}
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT COALESCE(model, 'unknown') as model,
+               input_tokens, output_tokens,
+               cache_read_tokens, cache_creation_tokens
+        FROM turns
+        WHERE timestamp >= ? AND timestamp < ?
+    """, (
+        start.astimezone(ZoneInfo("UTC")).isoformat(),
+        end.astimezone(ZoneInfo("UTC")).isoformat(),
+    )).fetchall()
+    conn.close()
+
+    cost_used = sum(
+        calc_cost(r["model"], r["input_tokens"] or 0, r["output_tokens"] or 0,
+                  r["cache_read_tokens"] or 0, r["cache_creation_tokens"] or 0)
+        for r in rows
+    )
+
+    elapsed = (now - start).total_seconds()
+    total = (end - start).total_seconds()
+    elapsed_fraction = max(0, min(1, elapsed / total)) if total > 0 else 0
+
+    percent_used = (cost_used / budget * 100) if budget > 0 else 0
+    ratio = calc_pace_ratio(cost_used, budget, elapsed_fraction)
+    days_remaining = max(0, (end - now).total_seconds() / 86400)
+
+    return {
+        "plan": cfg["plan"],
+        "weekly_budget": budget,
+        "current_week": {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "cost_used": round(cost_used, 4),
+            "percent_used": round(percent_used, 1),
+            "elapsed_fraction": round(elapsed_fraction, 4),
+            "pace_ratio": round(ratio, 2),
+            "pace_color": pace_color(ratio),
+            "days_remaining": round(days_remaining, 1),
+        }
+    }
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -1855,6 +1924,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             status = 404 if "error" in data else 200
             body = json.dumps(data).encode("utf-8")
             self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path == "/api/subscription":
+            data = get_subscription_data()
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()

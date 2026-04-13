@@ -134,6 +134,17 @@ class TestDashboardHTTP(unittest.TestCase):
             self.assertIn("updated", data)
             self.assertIn("skipped", data)
 
+    def test_api_subscription_returns_json(self):
+        url = f"http://127.0.0.1:{self.port}/api/subscription"
+        with urllib.request.urlopen(url) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("application/json", resp.headers["Content-Type"])
+            data = json.loads(resp.read())
+            # Either configured with budget data, or not_configured error
+            self.assertTrue(
+                "current_week" in data or data.get("error") == "not_configured"
+            )
+
     def test_404_for_unknown_path(self):
         url = f"http://127.0.0.1:{self.port}/nonexistent"
         try:
