@@ -6,11 +6,12 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 from scanner import get_db, init_db, upsert_sessions, insert_turns
-from dashboard import get_dashboard_data, DashboardHandler, HTML_TEMPLATE
+from dashboard import get_dashboard_data, get_session_detail, DashboardHandler, HTML_TEMPLATE
 
 try:
     from http.server import HTTPServer
@@ -91,6 +92,66 @@ class TestGetDashboardData(unittest.TestCase):
         # 1 hour = 60 minutes
         self.assertEqual(session["duration_min"], 60.0)
 
+    def test_session_detail_includes_tools_and_cwds(self):
+        detail = get_session_detail("sess-abc123", db_path=self.db_path)
+        self.assertEqual(detail["project"], "user/myproject")
+        self.assertEqual(detail["branch"], "main")
+        self.assertEqual(detail["tool_usage"][0]["tool_name"], "reply")
+        self.assertEqual(detail["cwd_usage"][0]["cwd"], "/tmp")
+        self.assertEqual(len(detail["turn_history"]), 1)
+
+    def test_session_detail_token_values(self):
+        detail = get_session_detail("sess-abc123", db_path=self.db_path)
+        turn = detail["turn_history"][0]
+        self.assertEqual(turn["input"], 500)
+        self.assertEqual(turn["output"], 200)
+        self.assertEqual(turn["cache_read"], 50)
+        self.assertEqual(turn["cache_creation"], 20)
+        self.assertEqual(turn["total"], 770)
+        tool = detail["tool_usage"][0]
+        self.assertEqual(tool["tokens"], 770)
+        self.assertEqual(tool["turns"], 1)
+
+    def test_session_detail_missing_db(self):
+        data = get_session_detail("any-id", db_path=Path("/nonexistent/usage.db"))
+        self.assertIn("error", data)
+        self.assertIn("Database not found", data["error"])
+
+    def test_session_detail_not_found(self):
+        detail = get_session_detail("nonexistent-session", db_path=self.db_path)
+        self.assertIn("error", detail)
+        self.assertEqual(detail["error"], "Session not found")
+
+    def test_session_detail_empty_session_id(self):
+        detail = get_session_detail("", db_path=self.db_path)
+        self.assertIn("error", detail)
+        self.assertEqual(detail["error"], "Session not found")
+
+    def test_session_detail_zero_turns(self):
+        conn = get_db(self.db_path)
+        upsert_sessions(conn, [{
+            "session_id": "sess-empty", "project_name": "proj",
+            "first_timestamp": "2026-04-08T09:00:00Z",
+            "last_timestamp": "2026-04-08T09:00:00Z",
+            "git_branch": None, "model": "claude-sonnet-4-6",
+            "total_input_tokens": 0, "total_output_tokens": 0,
+            "total_cache_read": 0, "total_cache_creation": 0,
+            "turn_count": 0,
+        }])
+        conn.commit()
+        conn.close()
+        detail = get_session_detail("sess-empty", db_path=self.db_path)
+        self.assertEqual(detail["tool_usage"], [])
+        self.assertEqual(detail["cwd_usage"], [])
+        self.assertEqual(detail["turn_history"], [])
+
+    def test_sessions_include_new_fields(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        session = data["sessions_all"][0]
+        self.assertEqual(session["session_id_full"], "sess-abc123")
+        self.assertEqual(session["branch"], "main")
+        self.assertIn("2026-04-08", session["first"])
+
 
 class TestDashboardHTTP(unittest.TestCase):
     """Integration test: start server and make HTTP requests."""
@@ -132,6 +193,26 @@ class TestDashboardHTTP(unittest.TestCase):
             self.assertIn("new", data)
             self.assertIn("updated", data)
             self.assertIn("skipped", data)
+
+    def test_api_session_unknown_id_returns_404(self):
+        url = f"http://127.0.0.1:{self.port}/api/session?session_id=nonexistent"
+        try:
+            urllib.request.urlopen(url)
+            self.fail("Expected 404")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 404)
+            data = json.loads(e.read())
+            self.assertIn("error", data)
+            e.close()
+
+    def test_api_session_missing_param_returns_404(self):
+        url = f"http://127.0.0.1:{self.port}/api/session"
+        try:
+            urllib.request.urlopen(url)
+            self.fail("Expected 404")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 404)
+            e.close()
 
     def test_404_for_unknown_path(self):
         url = f"http://127.0.0.1:{self.port}/nonexistent"

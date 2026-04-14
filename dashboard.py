@@ -8,6 +8,7 @@ import sqlite3
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
@@ -56,7 +57,7 @@ def get_dashboard_data(db_path=DB_PATH):
     # ── All sessions (client filters by range and model) ──────────────────────
     session_rows = conn.execute("""
         SELECT
-            session_id, project_name, first_timestamp, last_timestamp,
+            session_id, project_name, first_timestamp, last_timestamp, git_branch,
             total_input_tokens, total_output_tokens,
             total_cache_read, total_cache_creation, model, turn_count
         FROM sessions
@@ -73,7 +74,10 @@ def get_dashboard_data(db_path=DB_PATH):
             duration_min = 0
         sessions_all.append({
             "session_id":    r["session_id"][:8],
+            "session_id_full": r["session_id"],
             "project":       r["project_name"] or "unknown",
+            "branch":        r["git_branch"] or "",
+            "first":         (r["first_timestamp"] or "")[:16].replace("T", " "),
             "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
             "last_date":     (r["last_timestamp"] or "")[:10],
             "duration_min":  duration_min,
@@ -92,6 +96,97 @@ def get_dashboard_data(db_path=DB_PATH):
         "daily_by_model": daily_by_model,
         "sessions_all":   sessions_all,
         "generated_at":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def get_session_detail(session_id, db_path=DB_PATH):
+    if not db_path.exists():
+        return {"error": "Database not found. Run: python cli.py scan"}
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    session = conn.execute("""
+        SELECT
+            session_id, project_name, first_timestamp, last_timestamp, git_branch,
+            total_input_tokens, total_output_tokens,
+            total_cache_read, total_cache_creation, model, turn_count
+        FROM sessions
+        WHERE session_id = ?
+    """, (session_id,)).fetchone()
+
+    if session is None:
+        conn.close()
+        return {"error": "Session not found"}
+
+    turn_rows = conn.execute("""
+        SELECT
+            timestamp, model, input_tokens, output_tokens,
+            cache_read_tokens, cache_creation_tokens, tool_name, cwd
+        FROM turns
+        WHERE session_id = ?
+        ORDER BY timestamp ASC, id ASC
+    """, (session_id,)).fetchall()
+
+    turns = []
+    tool_usage = {}
+    cwd_counts = {}
+
+    for r in turn_rows:
+        tool_name = r["tool_name"] or "reply"
+        cwd = r["cwd"] or "unknown"
+        total_tokens = (
+            (r["input_tokens"] or 0) +
+            (r["output_tokens"] or 0) +
+            (r["cache_read_tokens"] or 0) +
+            (r["cache_creation_tokens"] or 0)
+        )
+        turns.append({
+            "timestamp":      r["timestamp"] or "",
+            "timestamp_short": (r["timestamp"] or "")[:16].replace("T", " "),
+            "model":          r["model"] or "unknown",
+            "tool_name":      tool_name,
+            "cwd":            cwd,
+            "input":          r["input_tokens"] or 0,
+            "output":         r["output_tokens"] or 0,
+            "cache_read":     r["cache_read_tokens"] or 0,
+            "cache_creation": r["cache_creation_tokens"] or 0,
+            "total":          total_tokens,
+        })
+
+        stats = tool_usage.setdefault(tool_name, {"tool_name": tool_name, "turns": 0, "tokens": 0})
+        stats["turns"] += 1
+        stats["tokens"] += total_tokens
+        cwd_counts[cwd] = cwd_counts.get(cwd, 0) + 1
+
+    conn.close()
+
+    try:
+        t1 = datetime.fromisoformat((session["first_timestamp"] or "").replace("Z", "+00:00"))
+        t2 = datetime.fromisoformat((session["last_timestamp"] or "").replace("Z", "+00:00"))
+        duration_min = round((t2 - t1).total_seconds() / 60, 1)
+    except Exception:
+        duration_min = 0
+
+    return {
+        "session_id":       session["session_id"],
+        "project":          session["project_name"] or "unknown",
+        "branch":           session["git_branch"] or "",
+        "first":            (session["first_timestamp"] or "")[:19].replace("T", " "),
+        "last":             (session["last_timestamp"] or "")[:19].replace("T", " "),
+        "duration_min":     duration_min,
+        "model":            session["model"] or "unknown",
+        "turns":            session["turn_count"] or 0,
+        "input":            session["total_input_tokens"] or 0,
+        "output":           session["total_output_tokens"] or 0,
+        "cache_read":       session["total_cache_read"] or 0,
+        "cache_creation":   session["total_cache_creation"] or 0,
+        "tool_usage":       sorted(tool_usage.values(), key=lambda item: (-item["tokens"], item["tool_name"])),
+        "cwd_usage":        sorted(
+            [{"cwd": c, "turns": n} for c, n in cwd_counts.items()],
+            key=lambda item: (-item["turns"], item["cwd"])
+        ),
+        "turn_history":     turns,
     }
 
 
@@ -161,6 +256,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
   tr:last-child td { border-bottom: none; }
   tr:hover td { background: rgba(255,255,255,0.02); }
+  tr.session-row { cursor: pointer; }
+  tr.session-row.selected td { background: rgba(217,119,87,0.10); }
   .model-tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; background: rgba(79,142,247,0.15); color: var(--blue); }
   .cost { color: var(--green); font-family: monospace; }
   .cost-na { color: var(--muted); font-family: monospace; font-size: 11px; }
@@ -172,6 +269,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .export-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 3px 10px; border-radius: 5px; cursor: pointer; font-size: 11px; }
   .export-btn:hover { color: var(--text); border-color: var(--accent); }
   .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
+  .detail-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 16px; }
+  .detail-card { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .detail-card h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px; }
+  .detail-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .detail-meta .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+  .detail-meta .value { font-size: 13px; }
+  .pill-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pill { border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; font-size: 12px; color: var(--text); background: rgba(255,255,255,0.02); }
+  .detail-table-wrap { max-height: 360px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .detail-table-wrap table th { position: sticky; top: 0; background: var(--card); }
+  .hint { color: var(--muted); font-size: 12px; }
 
   footer { border-top: 1px solid var(--border); padding: 20px 24px; margin-top: 8px; }
   .footer-content { max-width: 1400px; margin: 0 auto; }
@@ -180,7 +288,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .footer-content a { color: var(--blue); text-decoration: none; }
   .footer-content a:hover { text-decoration: underline; }
 
-  @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } }
+  @media (max-width: 768px) {
+    .charts-grid { grid-template-columns: 1fr; }
+    .chart-card.wide { grid-column: 1; }
+    .detail-grid { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -238,6 +350,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
   <div class="table-card">
     <div class="section-header"><div class="section-title">Recent Sessions</div><button class="export-btn" onclick="exportSessionsCSV()" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
+    <div class="hint" style="margin-bottom:12px;">Click a session row for branch, tool, cwd, and turn history detail.</div>
     <table>
       <thead><tr>
         <th>Session</th>
@@ -252,6 +365,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
     </table>
+  </div>
+  <div class="table-card" id="session-detail-card" style="display:none;">
+    <div class="section-title">Session Detail</div>
+    <div id="session-detail"></div>
   </div>
   <div class="table-card">
     <div class="section-header"><div class="section-title">Cost by Project</div><button class="export-btn" onclick="exportProjectsCSV()" title="Export all projects to CSV">&#x2913; CSV</button></div>
@@ -294,6 +411,7 @@ function esc(s) {
 let rawData = null;
 let selectedModels = new Set();
 let selectedRange = '30d';
+let selectedSessionId = null;
 let charts = {};
 let sessionSortCol = 'last';
 let modelSortCol = 'cost';
@@ -497,6 +615,14 @@ function sortSessions(sessions) {
   });
 }
 
+function selectSession(sessionId) {
+  selectedSessionId = sessionId;
+  document.querySelectorAll('tr.session-row').forEach(row =>
+    row.classList.toggle('selected', row.dataset.sessionId === sessionId)
+  );
+  loadSessionDetail(sessionId);
+}
+
 // ── Aggregation & filtering ────────────────────────────────────────────────
 function applyFilter() {
   if (!rawData) return;
@@ -582,6 +708,19 @@ function applyFilter() {
   renderSessionsTable(lastFilteredSessions.slice(0, 20));
   renderModelCostTable(byModel);
   renderProjectCostTable(lastByProject.slice(0, 20));
+
+  const visibleSessions = lastFilteredSessions.slice(0, 20);
+
+  if (!visibleSessions.length) {
+    selectedSessionId = null;
+    document.getElementById('session-detail-card').style.display = 'none';
+    return;
+  }
+
+  if (!selectedSessionId || !visibleSessions.some(s => s.session_id_full === selectedSessionId)) {
+    selectedSessionId = visibleSessions[0].session_id_full;
+  }
+  selectSession(selectedSessionId);
 }
 
 // ── Renderers ──────────────────────────────────────────────────────────────
@@ -681,7 +820,7 @@ function renderSessionsTable(sessions) {
     const costCell = isBillable(s.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
-    return `<tr>
+    return `<tr class="session-row ${selectedSessionId === s.session_id_full ? 'selected' : ''}" data-session-id="${esc(s.session_id_full)}">
       <td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>
       <td>${esc(s.project)}</td>
       <td class="muted">${esc(s.last)}</td>
@@ -693,6 +832,10 @@ function renderSessionsTable(sessions) {
       ${costCell}
     </tr>`;
   }).join('');
+  document.getElementById('sessions-body').addEventListener('click', function(e) {
+    const row = e.target.closest('tr.session-row');
+    if (row) selectSession(row.dataset.sessionId);
+  });
 }
 
 function setModelSort(col) {
@@ -726,6 +869,81 @@ function sortModels(byModel) {
     if (av > bv) return modelSortDir === 'desc' ? -1 : 1;
     return 0;
   });
+}
+
+async function loadSessionDetail(sessionId) {
+  if (!sessionId) return;
+  try {
+    const resp = await fetch('/api/session?session_id=' + encodeURIComponent(sessionId));
+    if (selectedSessionId !== sessionId) return;
+    const detail = await resp.json();
+    if (detail.error) return;
+    renderSessionDetail(detail);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function renderSessionDetail(detail) {
+  const detailCard = document.getElementById('session-detail-card');
+  detailCard.style.display = '';
+
+  const toolPills = detail.tool_usage.length
+    ? detail.tool_usage.map(t => `<span class="pill">${esc(t.tool_name)} · ${fmt(t.tokens)} tokens · ${fmt(t.turns)} turns</span>`).join('')
+    : '<div class="hint">No tool usage recorded.</div>';
+
+  const cwdPills = detail.cwd_usage.length
+    ? detail.cwd_usage.map(c => `<span class="pill">${esc(c.cwd)} · ${fmt(c.turns)} turns</span>`).join('')
+    : '<div class="hint">No working directory recorded.</div>';
+
+  document.getElementById('session-detail').innerHTML = `
+    <div class="detail-meta">
+      <div><div class="label">Session</div><div class="value" style="font-family:monospace">${esc(detail.session_id)}</div></div>
+      <div><div class="label">Project</div><div class="value">${esc(detail.project)}</div></div>
+      <div><div class="label">Branch</div><div class="value">${esc(detail.branch || 'n/a')}</div></div>
+      <div><div class="label">Model</div><div class="value">${esc(detail.model)}</div></div>
+      <div><div class="label">First Seen</div><div class="value">${esc(detail.first)}</div></div>
+      <div><div class="label">Last Seen</div><div class="value">${esc(detail.last)}</div></div>
+      <div><div class="label">Duration</div><div class="value">${esc(detail.duration_min)}m</div></div>
+      <div><div class="label">Tokens</div><div class="value">${fmt(detail.input + detail.output + detail.cache_read + detail.cache_creation)}</div></div>
+    </div>
+    <div class="detail-grid">
+      <div class="detail-card">
+        <h3>Turn History</h3>
+        <div class="detail-table-wrap">
+          <table>
+            <thead><tr>
+              <th>Time</th><th>Tool</th><th>Model</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Creation</th><th>Total</th>
+            </tr></thead>
+            <tbody>
+              ${detail.turn_history.map(turn => `
+                <tr>
+                  <td class="muted">${esc(turn.timestamp_short)}</td>
+                  <td>${esc(turn.tool_name)}</td>
+                  <td><span class="model-tag">${esc(turn.model)}</span></td>
+                  <td class="num">${fmt(turn.input)}</td>
+                  <td class="num">${fmt(turn.output)}</td>
+                  <td class="num">${fmt(turn.cache_read)}</td>
+                  <td class="num">${fmt(turn.cache_creation)}</td>
+                  <td class="num">${fmt(turn.total)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <div class="detail-card" style="margin-bottom:16px;">
+          <h3>Tool Usage</h3>
+          <div class="pill-list">${toolPills}</div>
+        </div>
+        <div class="detail-card">
+          <h3>Working Directories</h3>
+          <div class="pill-list">${cwdPills}</div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderModelCostTable(byModel) {
@@ -895,16 +1113,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        parsed = urlparse(self.path)
+
+        if parsed.path in ("/", "/index.html"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
 
-        elif self.path == "/api/data":
+        elif parsed.path == "/api/data":
             data = get_dashboard_data()
             body = json.dumps(data).encode("utf-8")
             self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif parsed.path == "/api/session":
+            session_id = parse_qs(parsed.query).get("session_id", [""])[0]
+            data = get_session_detail(session_id)
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(200 if "error" not in data else 404)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
