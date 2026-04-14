@@ -1058,10 +1058,21 @@ function renderGauges(data) {
     return;
   }
 
+  // If resets_at is in the past, the limit already reset — show 0%
+  function adjustPct(entry) {
+    if (!entry) return { pct: 0, reset: null };
+    const pct = entry.utilization || 0;
+    if (entry.resets_at) {
+      const diff = new Date(entry.resets_at) - new Date();
+      if (diff <= 0) return { pct: 0, reset: null };
+    }
+    return { pct, reset: entry.resets_at };
+  }
+
   const items = [];
-  if (data.five_hour) items.push({ label: '5h', pct: data.five_hour.utilization || 0, reset: data.five_hour.resets_at });
-  if (data.seven_day) items.push({ label: '7d All models', pct: data.seven_day.utilization || 0, reset: data.seven_day.resets_at });
-  if (data.seven_day_sonnet) items.push({ label: '7d Sonnet', pct: data.seven_day_sonnet.utilization || 0, reset: data.seven_day_sonnet.resets_at });
+  if (data.five_hour) { const a = adjustPct(data.five_hour); items.push({ label: '5h', pct: a.pct, reset: a.reset }); }
+  if (data.seven_day) { const a = adjustPct(data.seven_day); items.push({ label: '7d All models', pct: a.pct, reset: a.reset }); }
+  if (data.seven_day_sonnet) { const a = adjustPct(data.seven_day_sonnet); items.push({ label: '7d Sonnet', pct: a.pct, reset: a.reset }); }
   if (data.extra_usage && data.extra_usage.is_enabled) {
     const eu = data.extra_usage;
     const used = ((eu.used_credits||0) / 100).toFixed(2);
