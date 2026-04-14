@@ -1064,7 +1064,13 @@ function renderGauges(data) {
   if (data.seven_day_sonnet) items.push({ label: '7d Son', pct: data.seven_day_sonnet.utilization || 0, reset: data.seven_day_sonnet.resets_at });
   if (data.extra_usage && data.extra_usage.is_enabled) {
     const eu = data.extra_usage;
-    items.push({ label: 'Extra', pct: eu.utilization || 0, reset: null, sub: '$' + (eu.used_credits||0).toFixed(0) + '/$' + (eu.monthly_limit||0) });
+    const used = ((eu.used_credits||0) / 100).toFixed(2);
+    const limit = ((eu.monthly_limit||0) / 100).toFixed(0);
+    // Reset on 1st of next month
+    const now = new Date();
+    const nextFirst = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const extraReset = nextFirst.toISOString();
+    items.push({ label: 'Extra', pct: eu.utilization || 0, reset: extraReset, sub: '$' + used + '/$' + limit });
   }
 
   container.innerHTML = items.map(g => {
