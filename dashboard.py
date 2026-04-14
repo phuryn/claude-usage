@@ -365,7 +365,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </header>
 
 <div id="usage-gate">
-  <div class="gate-title">Usage Gate</div>
+  <div class="gate-title">Usage Limits</div>
   <div class="gauge-group" id="gauge-group"><span class="gate-error">Loading...</span></div>
   <button id="usage-gate-refresh" onclick="fetchUsageGate()" title="Refresh usage data">&#x21bb;</button>
 </div>
@@ -1080,7 +1080,7 @@ function renderGauges(data) {
     return '<div class="gauge">' +
       '<span class="gauge-label">' + esc(g.label) + '</span>' +
       '<div class="gauge-bar-bg"><div class="gauge-bar ' + cls + '" style="width:' + Math.min(g.pct, 100) + '%"></div></div>' +
-      '<span class="gauge-pct" style="color:var(--' + (cls==='low'?'green':cls==='mid'?'text':'accent') + ')">' + g.pct + '%</span>' +
+      '<span class="gauge-pct" style="color:var(--' + (cls==='low'?'green':cls==='mid'?'text':'accent') + ')">' + Math.round(g.pct) + '%</span>' +
       '<span class="gauge-reset">' + resetStr + subStr + '</span>' +
     '</div>';
   }).join('');
