@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scanner import get_db, init_db, upsert_sessions, insert_turns
@@ -53,6 +54,7 @@ class TestGetDashboardData(unittest.TestCase):
         data = get_dashboard_data(db_path=self.db_path)
         self.assertIn("all_models", data)
         self.assertIn("daily_by_model", data)
+        self.assertIn("hourly_by_model", data)
         self.assertIn("sessions_all", data)
         self.assertIn("generated_at", data)
 
@@ -90,6 +92,96 @@ class TestGetDashboardData(unittest.TestCase):
         session = data["sessions_all"][0]
         # 1 hour = 60 minutes
         self.assertEqual(session["duration_min"], 60.0)
+
+    def test_hourly_excludes_old_data(self):
+        """Turns from 2026-04-08 fall outside the 48h window."""
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertEqual(len(data["hourly_by_model"]), 0)
+
+
+class TestHourlyData(unittest.TestCase):
+    """Tests for the 24h hourly view feature."""
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        conn = get_db(self.db_path)
+        init_db(conn)
+        # Insert a session
+        sessions = [{
+            "session_id": "sess-hourly1", "project_name": "user/hourlytest",
+            "first_timestamp": "2026-04-08T09:00:00Z",
+            "last_timestamp": "2026-04-08T10:00:00Z",
+            "git_branch": "main", "model": "claude-sonnet-4-6",
+            "total_input_tokens": 0, "total_output_tokens": 0,
+            "total_cache_read": 0, "total_cache_creation": 0,
+            "turn_count": 0,
+        }]
+        upsert_sessions(conn, sessions)
+        # Insert turns with recent timestamps (within 48h window)
+        now = datetime.now(timezone.utc)
+        self.recent_hour = now.strftime("%Y-%m-%dT%H")
+        turns = [
+            {
+                "session_id": "sess-hourly1",
+                "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "model": "claude-sonnet-4-6", "input_tokens": 100,
+                "output_tokens": 50, "cache_read_tokens": 10,
+                "cache_creation_tokens": 5, "tool_name": None, "cwd": "/tmp",
+            },
+            {
+                "session_id": "sess-hourly1",
+                "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "model": "claude-opus-4-6", "input_tokens": 200,
+                "output_tokens": 100, "cache_read_tokens": 20,
+                "cache_creation_tokens": 10, "tool_name": None, "cwd": "/tmp",
+            },
+        ]
+        insert_turns(conn, turns)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_hourly_populated(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertGreater(len(data["hourly_by_model"]), 0)
+
+    def test_hourly_row_structure(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        row = data["hourly_by_model"][0]
+        for key in ("hour", "model", "input", "output", "cache_read",
+                     "cache_creation", "turns"):
+            self.assertIn(key, row)
+
+    def test_hourly_hour_format(self):
+        """Hour field should be 'YYYY-MM-DDTHH' (13 chars)."""
+        data = get_dashboard_data(db_path=self.db_path)
+        row = data["hourly_by_model"][0]
+        self.assertEqual(len(row["hour"]), 13)
+        self.assertIn("T", row["hour"])
+
+    def test_hourly_per_model_separation(self):
+        """Two models in the same hour should produce separate rows."""
+        data = get_dashboard_data(db_path=self.db_path)
+        hourly = data["hourly_by_model"]
+        models = {r["model"] for r in hourly if r["hour"] == self.recent_hour}
+        self.assertIn("claude-sonnet-4-6", models)
+        self.assertIn("claude-opus-4-6", models)
+
+    def test_hourly_token_values(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        hourly = data["hourly_by_model"]
+        sonnet = [r for r in hourly if r["model"] == "claude-sonnet-4-6"
+                  and r["hour"] == self.recent_hour]
+        self.assertEqual(len(sonnet), 1)
+        self.assertEqual(sonnet[0]["input"], 100)
+        self.assertEqual(sonnet[0]["output"], 50)
+        self.assertEqual(sonnet[0]["cache_read"], 10)
+        self.assertEqual(sonnet[0]["cache_creation"], 5)
+        self.assertEqual(sonnet[0]["turns"], 1)
 
 
 class TestDashboardHTTP(unittest.TestCase):
@@ -163,6 +255,15 @@ class TestHTMLTemplate(unittest.TestCase):
     def test_unknown_models_return_null(self):
         """Verify getPricing returns null for non-Anthropic models."""
         self.assertIn("return null;", HTML_TEMPLATE)
+
+    def test_template_has_24h_range_button(self):
+        self.assertIn('data-range="24h"', HTML_TEMPLATE)
+
+    def test_template_has_hourly_label_formatter(self):
+        self.assertIn("function fmtHourLabel(", HTML_TEMPLATE)
+
+    def test_template_has_hourly_range_label(self):
+        self.assertIn("'24h': 'Last 24 Hours'", HTML_TEMPLATE)
 
 
 class TestPricingParity(unittest.TestCase):
