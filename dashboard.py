@@ -53,6 +53,32 @@ def get_dashboard_data(db_path=DB_PATH):
         "turns":          r["turns"] or 0,
     } for r in daily_rows]
 
+    # ── Hourly per-model, last 48h (for 24h view) ───────────────────────────
+    hourly_rows = conn.execute("""
+        SELECT
+            substr(timestamp, 1, 13)   as hour,
+            COALESCE(model, 'unknown') as model,
+            SUM(input_tokens)          as input,
+            SUM(output_tokens)         as output,
+            SUM(cache_read_tokens)     as cache_read,
+            SUM(cache_creation_tokens) as cache_creation,
+            COUNT(*)                   as turns
+        FROM turns
+        WHERE timestamp >= replace(datetime('now', '-48 hours'), ' ', 'T') || 'Z'
+        GROUP BY hour, model
+        ORDER BY hour, model
+    """).fetchall()
+
+    hourly_by_model = [{
+        "hour":           r["hour"],
+        "model":          r["model"],
+        "input":          r["input"] or 0,
+        "output":         r["output"] or 0,
+        "cache_read":     r["cache_read"] or 0,
+        "cache_creation": r["cache_creation"] or 0,
+        "turns":          r["turns"] or 0,
+    } for r in hourly_rows]
+
     # ── All sessions (client filters by range and model) ──────────────────────
     session_rows = conn.execute("""
         SELECT
@@ -88,10 +114,11 @@ def get_dashboard_data(db_path=DB_PATH):
     conn.close()
 
     return {
-        "all_models":     all_models,
-        "daily_by_model": daily_by_model,
-        "sessions_all":   sessions_all,
-        "generated_at":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "all_models":      all_models,
+        "daily_by_model":  daily_by_model,
+        "hourly_by_model": hourly_by_model,
+        "sessions_all":    sessions_all,
+        "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
@@ -198,6 +225,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="filter-sep"></div>
   <div class="filter-label">Range</div>
   <div class="range-group">
+    <button class="range-btn" data-range="24h" onclick="setRange('24h')">24h</button>
     <button class="range-btn" data-range="7d"  onclick="setRange('7d')">7d</button>
     <button class="range-btn" data-range="30d" onclick="setRange('30d')">30d</button>
     <button class="range-btn" data-range="90d" onclick="setRange('90d')">90d</button>
@@ -365,11 +393,16 @@ const TOKEN_COLORS = {
 const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
 
 // ── Time range ─────────────────────────────────────────────────────────────
-const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
-const RANGE_TICKS  = { '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+const RANGE_LABELS = { '24h': 'Last 24 Hours', '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
+const RANGE_TICKS  = { '24h': 24, '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
 
 function getRangeCutoff(range) {
   if (range === 'all') return null;
+  if (range === '24h') {
+    const d = new Date();
+    d.setHours(d.getHours() - 24);
+    return d.toISOString().slice(0, 13);  // "YYYY-MM-DDTHH"
+  }
   const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
   const d = new Date();
   d.setDate(d.getDate() - days);
@@ -378,7 +411,7 @@ function getRangeCutoff(range) {
 
 function readURLRange() {
   const p = new URLSearchParams(window.location.search).get('range');
-  return ['7d', '30d', '90d', 'all'].includes(p) ? p : '30d';
+  return ['24h', '7d', '30d', '90d', 'all'].includes(p) ? p : '30d';
 }
 
 function setRange(range) {
@@ -501,28 +534,38 @@ function sortSessions(sessions) {
 function applyFilter() {
   if (!rawData) return;
 
+  const isHourly = selectedRange === '24h';
   const cutoff = getRangeCutoff(selectedRange);
 
-  // Filter daily rows by model + date range
-  const filteredDaily = rawData.daily_by_model.filter(r =>
-    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
-  );
+  // Filter source rows by model + range
+  let filteredRows;
+  if (isHourly) {
+    filteredRows = (rawData.hourly_by_model || []).filter(r =>
+      selectedModels.has(r.model) && r.hour >= cutoff
+    );
+  } else {
+    filteredRows = rawData.daily_by_model.filter(r =>
+      selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+    );
+  }
 
-  // Daily chart: aggregate by day
-  const dailyMap = {};
-  for (const r of filteredDaily) {
-    if (!dailyMap[r.day]) dailyMap[r.day] = { day: r.day, input: 0, output: 0, cache_read: 0, cache_creation: 0 };
-    const d = dailyMap[r.day];
+  // Chart data: aggregate by time bucket
+  const bucketKey = isHourly ? 'hour' : 'day';
+  const chartMap = {};
+  for (const r of filteredRows) {
+    const key = r[bucketKey];
+    if (!chartMap[key]) chartMap[key] = { label: key, input: 0, output: 0, cache_read: 0, cache_creation: 0 };
+    const d = chartMap[key];
     d.input          += r.input;
     d.output         += r.output;
     d.cache_read     += r.cache_read;
     d.cache_creation += r.cache_creation;
   }
-  const daily = Object.values(dailyMap).sort((a, b) => a.day.localeCompare(b.day));
+  const chartBuckets = Object.values(chartMap).sort((a, b) => a.label.localeCompare(b.label));
 
-  // By model: aggregate tokens + turns from daily data
+  // By model: aggregate tokens + turns
   const modelMap = {};
-  for (const r of filteredDaily) {
+  for (const r of filteredRows) {
     if (!modelMap[r.model]) modelMap[r.model] = { model: r.model, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0, sessions: 0 };
     const m = modelMap[r.model];
     m.input          += r.input;
@@ -532,10 +575,18 @@ function applyFilter() {
     m.turns          += r.turns;
   }
 
-  // Filter sessions by model + date range
-  const filteredSessions = rawData.sessions_all.filter(s =>
-    selectedModels.has(s.model) && (!cutoff || s.last_date >= cutoff)
-  );
+  // Filter sessions by model + range
+  let filteredSessions;
+  if (isHourly) {
+    const sessionCutoff = cutoff.replace('T', ' ');  // "YYYY-MM-DD HH"
+    filteredSessions = rawData.sessions_all.filter(s =>
+      selectedModels.has(s.model) && s.last >= sessionCutoff
+    );
+  } else {
+    filteredSessions = rawData.sessions_all.filter(s =>
+      selectedModels.has(s.model) && (!cutoff || s.last_date >= cutoff)
+    );
+  }
 
   // Add session counts into modelMap
   for (const s of filteredSessions) {
@@ -570,11 +621,12 @@ function applyFilter() {
     cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0),
   };
 
-  // Update daily chart title
-  document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
+  // Update chart title
+  const chartPrefix = isHourly ? 'Hourly' : 'Daily';
+  document.getElementById('daily-chart-title').textContent = chartPrefix + ' Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
 
   renderStats(totals);
-  renderDailyChart(daily);
+  renderDailyChart(chartBuckets, isHourly);
   renderModelChart(byModel);
   renderProjectChart(byProject);
   lastFilteredSessions = sortSessions(filteredSessions);
@@ -605,18 +657,26 @@ function renderStats(t) {
   `).join('');
 }
 
-function renderDailyChart(daily) {
+function fmtHourLabel(label) {
+  // label = "YYYY-MM-DDTHH" → "MM/DD HH:00"
+  const date = label.slice(5, 10);  // "MM-DD"
+  const hour = label.slice(11, 13); // "HH"
+  return date + ' ' + hour + ':00';
+}
+
+function renderDailyChart(data, isHourly) {
   const ctx = document.getElementById('chart-daily').getContext('2d');
   if (charts.daily) charts.daily.destroy();
+  const labels = data.map(d => isHourly ? fmtHourLabel(d.label) : d.label);
   charts.daily = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: daily.map(d => d.day),
+      labels: labels,
       datasets: [
-        { label: 'Input',          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens' },
-        { label: 'Output',         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens' },
-        { label: 'Cache Read',     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens' },
-        { label: 'Cache Creation', data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens' },
+        { label: 'Input',          data: data.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens' },
+        { label: 'Output',         data: data.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens' },
+        { label: 'Cache Read',     data: data.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens' },
+        { label: 'Cache Creation', data: data.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens' },
       ]
     },
     options: {
