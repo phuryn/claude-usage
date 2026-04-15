@@ -76,6 +76,18 @@ class TestGetDashboardData(unittest.TestCase):
         self.assertIn("model", day)
         self.assertIn("input", day)
 
+    def test_hourly_by_model_populated(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertIn("hourly_by_model", data)
+        self.assertGreater(len(data["hourly_by_model"]), 0)
+        entry = data["hourly_by_model"][0]
+        self.assertIn("hour", entry)
+        self.assertIn("model", entry)
+        self.assertIn("turns", entry)
+        self.assertIn("output", entry)
+        # Hour 9 (from 09:30 timestamp)
+        self.assertEqual(entry["hour"], 9)
+
     def test_missing_db_returns_error(self):
         data = get_dashboard_data(db_path=Path("/nonexistent/path/usage.db"))
         self.assertIn("error", data)
@@ -159,6 +171,12 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertIn("m.includes('opus')", HTML_TEMPLATE)
         self.assertIn("m.includes('sonnet')", HTML_TEMPLATE)
         self.assertIn("m.includes('haiku')", HTML_TEMPLATE)
+
+    def test_template_has_hourly_chart(self):
+        """Verify hourly activity chart is present (#39)."""
+        self.assertIn("chart-hourly", HTML_TEMPLATE)
+        self.assertIn("renderHourlyChart", HTML_TEMPLATE)
+        self.assertIn("PEAK_START_UTC", HTML_TEMPLATE)
 
     def test_unknown_models_return_null(self):
         """Verify getPricing returns null for non-Anthropic models."""
