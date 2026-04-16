@@ -4,12 +4,39 @@ dashboard.py - Local web dashboard served on localhost:8080.
 
 import json
 import os
+import secrets
 import sqlite3
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
+
+# Per-process CSRF token. Embedded into the served HTML and required on
+# state-changing requests. Regenerates each server start.
+CSRF_TOKEN = secrets.token_urlsafe(32)
+
+# Populated by serve() or by tests. Any request whose Host header isn't in this
+# set is rejected with 403 — the standard DNS-rebinding defense for a local
+# HTTP server.
+ALLOWED_HOSTS = set()
+
+
+def _configure_allowed_hosts(host, port):
+    """Populate ALLOWED_HOSTS for the given bind address."""
+    ALLOWED_HOSTS.clear()
+    ALLOWED_HOSTS.update({
+        f"localhost:{port}",
+        f"127.0.0.1:{port}",
+        f"[::1]:{port}",
+    })
+    if host not in ("localhost", "127.0.0.1", "::1", "0.0.0.0", ""):
+        ALLOWED_HOSTS.add(f"{host}:{port}")
+
+
+def _render_template():
+    """Return HTML_TEMPLATE with the per-process CSRF token substituted in."""
+    return HTML_TEMPLATE.replace("__CSRF_TOKEN__", CSRF_TOKEN)
 
 
 def get_dashboard_data(db_path=DB_PATH):
@@ -101,7 +128,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Code Usage Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <style>
   :root {
     --bg: #0f1117;
@@ -272,13 +299,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <footer>
   <div class="footer-content">
     <p>Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of April 2026. Only models containing <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
-    <p>
-      GitHub: <a href="https://github.com/phuryn/claude-usage" target="_blank">https://github.com/phuryn/claude-usage</a>
-      &nbsp;&middot;&nbsp;
-      Created by: <a href="https://www.productcompass.pm" target="_blank">The Product Compass Newsletter</a>
-      &nbsp;&middot;&nbsp;
-      License: MIT
-    </p>
   </div>
 </footer>
 
@@ -838,7 +858,10 @@ async function triggerRescan() {
   btn.disabled = true;
   btn.textContent = '\u21bb Scanning...';
   try {
-    const resp = await fetch('/api/rescan', { method: 'POST' });
+    const resp = await fetch('/api/rescan', {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': '__CSRF_TOKEN__' }
+    });
     const d = await resp.json();
     btn.textContent = '\u21bb Rescan (' + d.new + ' new, ' + d.updated + ' updated)';
     await loadData();
@@ -894,12 +917,69 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def _send_security_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        # 'unsafe-inline' is required because the dashboard's JS and CSS live
+        # inside HTML_TEMPLATE. Externalizing them is out of scope for this
+        # patch; CSP still blocks cross-origin scripts and framing.
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; "
+            "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "connect-src 'self'; "
+            "img-src 'self' data:; "
+            "frame-ancestors 'none'"
+        )
+
+    def _reject(self, code, reason):
+        self.send_response(code)
+        self._send_security_headers()
+        self.end_headers()
+        try:
+            self.wfile.write(reason.encode("utf-8"))
+        except Exception:
+            pass
+
+    def _check_host(self):
+        """Reject if Host header isn't in the allowlist (DNS rebinding defense)."""
+        host = self.headers.get("Host", "")
+        if host not in ALLOWED_HOSTS:
+            self._reject(403, "Forbidden: host not allowed")
+            return False
+        return True
+
+    def _check_csrf(self):
+        """Reject state-changing requests without a valid CSRF token or with a
+        foreign Origin."""
+        token = self.headers.get("X-CSRF-Token", "")
+        if not secrets.compare_digest(token, CSRF_TOKEN):
+            self._reject(403, "Forbidden: bad CSRF token")
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            # Origin is scheme+host+port (no trailing slash). Compare just the
+            # host:port portion against the allowlist.
+            host_from_origin = origin.split("://", 1)[-1]
+            if host_from_origin not in ALLOWED_HOSTS:
+                self._reject(403, "Forbidden: bad Origin")
+                return False
+        return True
+
     def do_GET(self):
+        if not self._check_host():
+            return
+
         if self.path in ("/", "/index.html"):
+            body = _render_template().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             self.end_headers()
-            self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
+            self.wfile.write(body)
 
         elif self.path == "/api/data":
             data = get_dashboard_data()
@@ -907,36 +987,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
 
         else:
-            self.send_response(404)
-            self.end_headers()
+            self._reject(404, "Not found")
 
     def do_POST(self):
+        if not self._check_host():
+            return
+        if not self._check_csrf():
+            return
+
         if self.path == "/api/rescan":
-            # Full rebuild: delete DB and rescan from scratch
-            if DB_PATH.exists():
-                DB_PATH.unlink()
+            # Incremental rescan. The scanner already tracks file mtimes in
+            # processed_files, so we do NOT unlink the DB — that was a
+            # data-loss footgun if the scan failed mid-run.
             from scanner import scan
             result = scan(verbose=False)
             body = json.dumps(result).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
         else:
-            self.send_response(404)
-            self.end_headers()
+            self._reject(404, "Not found")
 
 
 def serve(host=None, port=None):
     host = host or os.environ.get("HOST", "localhost")
     port = port or int(os.environ.get("PORT", "8080"))
+    _configure_allowed_hosts(host, port)
     server = HTTPServer((host, port), DashboardHandler)
     print(f"Dashboard running at http://{host}:{port}")
+    if host not in ("localhost", "127.0.0.1", "::1"):
+        print(
+            f"  WARNING: binding to {host} exposes your Claude usage data "
+            f"(project paths, git branches, timestamps) unauthenticated to "
+            f"anyone who can reach this host. Only do this on a trusted "
+            f"network, and prefer 'localhost' unless you have a reason not to."
+        )
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()

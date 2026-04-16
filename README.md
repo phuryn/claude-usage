@@ -84,6 +84,20 @@ By default, the scanner checks both `~/.claude/projects/` and the Xcode Claude i
 
 ---
 
+## Security notes
+
+The dashboard is a local tool. It binds to `localhost` by default and does not ship with any authentication layer, but it does include the minimum defenses needed to stay safe on a laptop that also browses the web:
+
+- **Host header allowlist** — requests whose `Host` header isn't `localhost:<port>` or `127.0.0.1:<port>` are rejected with `403`. This blocks DNS rebinding, where a malicious site rebinds its hostname to `127.0.0.1` to read your data through your browser.
+- **CSRF token on `POST /api/rescan`** — a per-process random token is generated at startup and embedded into the served HTML. State-changing requests without the token (or from a foreign `Origin`) are rejected with `403`. This blocks CSRF via `fetch('/api/rescan', {method:'POST'})` from any website you happen to have open.
+- **No destructive rescan** — `POST /api/rescan` runs an incremental scan and does **not** delete `~/.claude/usage.db`. A failed scan can no longer lose your historical data.
+- **Chart.js with Subresource Integrity** — the CDN `<script>` tag is pinned with a `sha384` hash, so a compromised or MITM'd CDN can't inject code into your dashboard.
+- **Security headers** — every response sets `Content-Security-Policy` (blocks cross-origin scripts and framing), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`.
+
+**Binding to a non-loopback address (`HOST=0.0.0.0` or a LAN IP) exposes all project paths, git branch names, and activity timestamps unauthenticated to anyone who can reach that address.** Only do this on a trusted network, and prefer `localhost` unless you specifically need remote access. The server prints a warning on startup when bound to a non-loopback address.
+
+---
+
 ## How it works
 
 Claude Code writes one JSONL file per session to `~/.claude/projects/`. Each line is a JSON record; `assistant`-type records contain:

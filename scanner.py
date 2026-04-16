@@ -14,6 +14,23 @@ XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAs
 DB_PATH = Path.home() / ".claude" / "usage.db"
 DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
 
+# Generic parent directories that hold many unrelated projects. When one of
+# these appears as a parent in a cwd path, we strip it so the project label
+# shows the real project name instead of something like "Code/signal".
+UMBRELLA_DIRS = {
+    "Code", "code",
+    "Projects", "projects",
+    "src",
+    "repos",
+    "workspace",
+    "dev",
+    "github",
+    "git",
+}
+
+# Bump when a migration affects existing DBs. Tracked via PRAGMA user_version.
+SCHEMA_VERSION = 1
+
 
 def get_db(db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
@@ -73,16 +90,81 @@ def init_db(conn):
     """)
     conn.commit()
 
+    # Run any pending schema migrations. backfill_project_names is gated on
+    # PRAGMA user_version internally so it's safe to call on fresh DBs.
+    backfill_project_names(conn)
+
+
+def backfill_project_names(conn):
+    """Recompute sessions.project_name from each session's dominant cwd using
+    the current project_name_from_cwd() rules.
+
+    Gated on PRAGMA user_version — runs once per DB, then stamps user_version
+    so subsequent calls are no-ops. This makes it safe to call from init_db
+    on every startup and safe to call manually from a future CLI command.
+    """
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current >= SCHEMA_VERSION:
+        return  # already migrated
+
+    # For each session, find a representative cwd from its turns (MIN is
+    # stable and arbitrary — any non-null cwd works since a single session
+    # almost always stays in one directory).
+    rows = conn.execute("""
+        SELECT s.session_id, MIN(t.cwd) AS cwd
+        FROM sessions s
+        JOIN turns t ON t.session_id = s.session_id
+        WHERE t.cwd IS NOT NULL AND t.cwd != ''
+        GROUP BY s.session_id
+    """).fetchall()
+
+    updates = [
+        (project_name_from_cwd(r["cwd"]), r["session_id"])
+        for r in rows
+    ]
+    if updates:
+        conn.executemany(
+            "UPDATE sessions SET project_name = ? WHERE session_id = ?",
+            updates,
+        )
+
+    # Stamp the schema version so this won't re-run.
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    conn.commit()
+
 
 def project_name_from_cwd(cwd):
-    """Derive a friendly project name from cwd path."""
+    """Derive a friendly project name from cwd path.
+
+    When the path contains an umbrella directory (e.g. ~/Code/signal), we
+    strip the umbrella so the label shows just "signal" instead of
+    "Code/signal". Paths without any umbrella fall through to the legacy
+    "last 2 components" behavior.
+    """
     if not cwd:
         return "unknown"
-    # Normalize to forward slashes, take last 2 components
-    parts = cwd.replace("\\", "/").rstrip("/").split("/")
-    if len(parts) >= 2:
-        return "/".join(parts[-2:])
-    return parts[-1] if parts else "unknown"
+
+    raw = cwd.replace("\\", "/")
+    parts = [p for p in raw.split("/") if p]
+    if not parts:
+        return "unknown"
+
+    # Single component: preserve the leading slash so '/root' stays '/root'.
+    if len(parts) == 1:
+        return ("/" + parts[0]) if raw.startswith("/") else parts[0]
+
+    # Walk from the deepest possible umbrella position back to the root. The
+    # umbrella must have at least one component after it (it can't be the
+    # leaf — if 'Code' is the project itself, we don't want to erase it).
+    for i in range(len(parts) - 2, -1, -1):
+        if parts[i] in UMBRELLA_DIRS:
+            # Keep up to 2 components after the umbrella — that covers both
+            # simple cases (Code/signal → signal) and monorepo subpaths
+            # (Code/signal/apps/web → signal/apps).
+            return "/".join(parts[i + 1:i + 3])
+
+    # No umbrella found — fall through to the classic last-2 behavior.
+    return "/".join(parts[-2:])
 
 
 def parse_jsonl_file(filepath):

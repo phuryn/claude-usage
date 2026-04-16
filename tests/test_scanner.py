@@ -10,6 +10,7 @@ from pathlib import Path
 from scanner import (
     get_db, init_db, project_name_from_cwd, parse_jsonl_file,
     aggregate_sessions, upsert_sessions, insert_turns, scan,
+    backfill_project_names, UMBRELLA_DIRS,
 )
 
 
@@ -34,6 +35,187 @@ class TestProjectNameFromCwd(unittest.TestCase):
 
     def test_none(self):
         self.assertEqual(project_name_from_cwd(None), "unknown")
+
+    # ── Umbrella-dir behavior ────────────────────────────────────────────────
+    def test_umbrella_code_single_project(self):
+        """Classic case: ~/Code/signal should drop the Code umbrella."""
+        self.assertEqual(project_name_from_cwd("/Users/galit/Code/signal"), "signal")
+
+    def test_umbrella_projects_single_project(self):
+        self.assertEqual(project_name_from_cwd("/home/me/Projects/myapp"), "myapp")
+
+    def test_umbrella_lowercase_projects(self):
+        self.assertEqual(project_name_from_cwd("/home/me/projects/myapp"), "myapp")
+
+    def test_umbrella_src(self):
+        self.assertEqual(project_name_from_cwd("/home/me/src/thing"), "thing")
+
+    def test_umbrella_repos(self):
+        self.assertEqual(project_name_from_cwd("/home/me/repos/app"), "app")
+
+    def test_umbrella_workspace(self):
+        self.assertEqual(project_name_from_cwd("/home/me/workspace/app"), "app")
+
+    def test_umbrella_dev(self):
+        self.assertEqual(project_name_from_cwd("/home/me/dev/app"), "app")
+
+    def test_umbrella_github(self):
+        self.assertEqual(project_name_from_cwd("/home/me/github/app"), "app")
+
+    def test_umbrella_git(self):
+        self.assertEqual(project_name_from_cwd("/home/me/git/app"), "app")
+
+    def test_umbrella_nested_project_keeps_context(self):
+        """~/Code/AI-Mindset/Brand should still show AI-Mindset/Brand."""
+        self.assertEqual(
+            project_name_from_cwd("/Users/galit/Code/AI-Mindset/Brand"),
+            "AI-Mindset/Brand",
+        )
+
+    def test_umbrella_monorepo_subpath(self):
+        """~/Code/signal/apps/web should preserve the monorepo name."""
+        self.assertEqual(
+            project_name_from_cwd("/Users/galit/Code/signal/apps/web"),
+            "signal/apps",
+        )
+
+    def test_umbrella_is_leaf_not_stripped(self):
+        """A directory literally named 'Code' at the end of a path is NOT
+        stripped — we can't tell if it's an umbrella or a project called Code.
+        Falls through to the 'last 2 components' rule."""
+        self.assertEqual(project_name_from_cwd("/Users/me/work/Code"), "work/Code")
+
+    def test_umbrella_windows_path(self):
+        self.assertEqual(
+            project_name_from_cwd("C:\\Users\\me\\Code\\myapp"),
+            "myapp",
+        )
+
+    def test_no_umbrella_unchanged(self):
+        """Paths without any umbrella dir fall through to existing behavior."""
+        self.assertEqual(project_name_from_cwd("/var/lib/data/project"), "data/project")
+
+    def test_multiple_umbrellas_innermost_wins(self):
+        """If a path has multiple umbrellas (e.g. ~/dev/github/app), we strip
+        down to the deepest umbrella and keep what's underneath."""
+        self.assertEqual(project_name_from_cwd("/home/me/dev/github/app"), "app")
+
+    def test_umbrella_dirs_exported(self):
+        """UMBRELLA_DIRS constant is exported for inspection/configuration."""
+        self.assertIn("Code", UMBRELLA_DIRS)
+        self.assertIn("Projects", UMBRELLA_DIRS)
+        self.assertIn("src", UMBRELLA_DIRS)
+
+
+class TestBackfillProjectNames(unittest.TestCase):
+    """The backfill must rewrite sessions.project_name for every existing row
+    using the new umbrella-aware logic, and it must be idempotent so it only
+    runs once per DB."""
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        self.conn = get_db(self.db_path)
+        init_db(self.conn)
+        # init_db stamped user_version to the current SCHEMA_VERSION, which
+        # means the migration is considered "done". These tests simulate
+        # legacy data that existed before the migration, so we roll the
+        # version back to 0 after inserting rows to force backfill to run.
+
+    def _reset_migration_marker(self):
+        self.conn.execute("PRAGMA user_version = 0")
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.db_path)
+
+    def _insert_session_with_turn(self, session_id, project_name, cwd):
+        self.conn.execute(
+            "INSERT INTO sessions (session_id, project_name, first_timestamp, "
+            "last_timestamp, model, turn_count) VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, project_name, "2026-04-08T10:00:00Z",
+             "2026-04-08T11:00:00Z", "claude-sonnet-4-6", 1),
+        )
+        self.conn.execute(
+            "INSERT INTO turns (session_id, timestamp, model, input_tokens, "
+            "output_tokens, cache_read_tokens, cache_creation_tokens, cwd, "
+            "message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (session_id, "2026-04-08T10:00:00Z", "claude-sonnet-4-6",
+             100, 50, 0, 0, cwd, f"msg-{session_id}"),
+        )
+        self.conn.commit()
+
+    def test_backfill_rewrites_umbrella_labels(self):
+        self._insert_session_with_turn("s1", "Code/signal", "/Users/galit/Code/signal")
+        self._insert_session_with_turn("s2", "Code/claude-usage", "/Users/galit/Code/claude-usage")
+        self._insert_session_with_turn("s3", "AI-Mindset/Brand", "/Users/galit/Code/AI-Mindset/Brand")
+
+        self._reset_migration_marker()
+        backfill_project_names(self.conn)
+
+        rows = dict(self.conn.execute(
+            "SELECT session_id, project_name FROM sessions"
+        ).fetchall())
+        self.assertEqual(rows["s1"], "signal")
+        self.assertEqual(rows["s2"], "claude-usage")
+        self.assertEqual(rows["s3"], "AI-Mindset/Brand")
+
+    def test_backfill_leaves_non_umbrella_paths_alone(self):
+        self._insert_session_with_turn("s1", "data/project", "/var/lib/data/project")
+        self._reset_migration_marker()
+        backfill_project_names(self.conn)
+        row = self.conn.execute(
+            "SELECT project_name FROM sessions WHERE session_id = 's1'"
+        ).fetchone()
+        self.assertEqual(row["project_name"], "data/project")
+
+    def test_backfill_is_idempotent_via_user_version(self):
+        """Running backfill twice is safe — the second call is a no-op because
+        user_version advanced past the backfill version."""
+        self._insert_session_with_turn("s1", "Code/signal", "/Users/galit/Code/signal")
+        self._reset_migration_marker()
+        backfill_project_names(self.conn)
+        first = self.conn.execute(
+            "SELECT project_name FROM sessions WHERE session_id = 's1'"
+        ).fetchone()["project_name"]
+        self.assertEqual(first, "signal")
+
+        # Simulate user manually setting a weird name — backfill should NOT
+        # clobber it on re-run, because it's already marked complete.
+        self.conn.execute(
+            "UPDATE sessions SET project_name = 'manually-edited' WHERE session_id = 's1'"
+        )
+        self.conn.commit()
+        backfill_project_names(self.conn)
+        second = self.conn.execute(
+            "SELECT project_name FROM sessions WHERE session_id = 's1'"
+        ).fetchone()["project_name"]
+        self.assertEqual(second, "manually-edited")
+
+    def test_backfill_skips_sessions_without_turns(self):
+        """A session row with no matching turns has no cwd to derive from —
+        backfill should leave it alone."""
+        self.conn.execute(
+            "INSERT INTO sessions (session_id, project_name, first_timestamp, "
+            "last_timestamp, turn_count) VALUES (?, ?, ?, ?, ?)",
+            ("orphan", "Code/orphaned", "2026-04-08T10:00:00Z",
+             "2026-04-08T10:00:00Z", 0),
+        )
+        self.conn.commit()
+        self._reset_migration_marker()
+        backfill_project_names(self.conn)
+        row = self.conn.execute(
+            "SELECT project_name FROM sessions WHERE session_id = 'orphan'"
+        ).fetchone()
+        self.assertEqual(row["project_name"], "Code/orphaned")
+
+    def test_init_db_on_fresh_db_sets_user_version(self):
+        """Fresh init_db sets user_version to the current schema version so
+        the backfill doesn't re-run needlessly on brand-new databases."""
+        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        self.assertGreaterEqual(version, 1)
 
 
 def _make_assistant_record(session_id="sess-1", model="claude-sonnet-4-6",

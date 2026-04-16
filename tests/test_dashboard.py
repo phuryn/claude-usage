@@ -10,7 +10,13 @@ import urllib.request
 from pathlib import Path
 
 from scanner import get_db, init_db, upsert_sessions, insert_turns
-from dashboard import get_dashboard_data, DashboardHandler, HTML_TEMPLATE
+from dashboard import (
+    get_dashboard_data,
+    DashboardHandler,
+    HTML_TEMPLATE,
+    CSRF_TOKEN,
+    _configure_allowed_hosts,
+)
 
 try:
     from http.server import HTTPServer
@@ -99,6 +105,7 @@ class TestDashboardHTTP(unittest.TestCase):
     def setUpClass(cls):
         cls.server = HTTPServer(("127.0.0.1", 0), DashboardHandler)
         cls.port = cls.server.server_address[1]
+        _configure_allowed_hosts("127.0.0.1", cls.port)
         cls.thread = threading.Thread(target=cls.server.serve_forever)
         cls.thread.daemon = True
         cls.thread.start()
@@ -107,25 +114,30 @@ class TestDashboardHTTP(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown()
 
+    def _get(self, path, headers=None):
+        url = f"http://127.0.0.1:{self.port}{path}"
+        req = urllib.request.Request(url, headers=headers or {})
+        return urllib.request.urlopen(req)
+
+    def _post(self, path, headers=None):
+        url = f"http://127.0.0.1:{self.port}{path}"
+        req = urllib.request.Request(url, method="POST", headers=headers or {})
+        return urllib.request.urlopen(req)
+
     def test_index_returns_html(self):
-        url = f"http://127.0.0.1:{self.port}/"
-        with urllib.request.urlopen(url) as resp:
+        with self._get("/") as resp:
             self.assertEqual(resp.status, 200)
             self.assertIn("text/html", resp.headers["Content-Type"])
 
     def test_api_data_returns_json(self):
-        url = f"http://127.0.0.1:{self.port}/api/data"
-        with urllib.request.urlopen(url) as resp:
+        with self._get("/api/data") as resp:
             self.assertEqual(resp.status, 200)
             self.assertIn("application/json", resp.headers["Content-Type"])
             data = json.loads(resp.read())
-            # Should have expected keys (or error if no DB)
             self.assertTrue("all_models" in data or "error" in data)
 
     def test_api_rescan_returns_json(self):
-        url = f"http://127.0.0.1:{self.port}/api/rescan"
-        req = urllib.request.Request(url, method="POST")
-        with urllib.request.urlopen(req) as resp:
+        with self._post("/api/rescan", {"X-CSRF-Token": CSRF_TOKEN}) as resp:
             self.assertEqual(resp.status, 200)
             self.assertIn("application/json", resp.headers["Content-Type"])
             data = json.loads(resp.read())
@@ -134,12 +146,68 @@ class TestDashboardHTTP(unittest.TestCase):
             self.assertIn("skipped", data)
 
     def test_404_for_unknown_path(self):
-        url = f"http://127.0.0.1:{self.port}/nonexistent"
         try:
-            urllib.request.urlopen(url)
+            self._get("/nonexistent")
             self.fail("Expected 404")
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 404)
+
+    # ── Security: CSRF ───────────────────────────────────────────────────────
+    def test_rescan_rejected_without_csrf_token(self):
+        """POST /api/rescan must fail without X-CSRF-Token."""
+        try:
+            self._post("/api/rescan")
+            self.fail("Expected 403")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 403)
+
+    def test_rescan_rejected_with_wrong_csrf_token(self):
+        try:
+            self._post("/api/rescan", {"X-CSRF-Token": "nope"})
+            self.fail("Expected 403")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 403)
+
+    def test_rescan_rejected_with_foreign_origin(self):
+        """Valid token but cross-origin request must still be rejected."""
+        try:
+            self._post("/api/rescan", {
+                "X-CSRF-Token": CSRF_TOKEN,
+                "Origin": "https://evil.example",
+            })
+            self.fail("Expected 403")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 403)
+
+    # ── Security: Host header allowlist (DNS rebinding defense) ──────────────
+    def test_index_rejected_with_foreign_host_header(self):
+        try:
+            self._get("/", {"Host": "attacker.rebind.network"})
+            self.fail("Expected 403")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 403)
+
+    def test_api_data_rejected_with_foreign_host_header(self):
+        try:
+            self._get("/api/data", {"Host": "evil.example"})
+            self.fail("Expected 403")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 403)
+
+    # ── Security: response headers ───────────────────────────────────────────
+    def test_index_has_security_headers(self):
+        with self._get("/") as resp:
+            self.assertEqual(resp.headers.get("X-Content-Type-Options"), "nosniff")
+            self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
+            csp = resp.headers.get("Content-Security-Policy") or ""
+            self.assertIn("frame-ancestors 'none'", csp)
+
+    # ── Security: CSRF token is embedded in served HTML ──────────────────────
+    def test_csrf_token_rendered_into_html(self):
+        with self._get("/") as resp:
+            body = resp.read().decode("utf-8")
+            self.assertIn(CSRF_TOKEN, body)
+            self.assertNotIn("__CSRF_TOKEN__", body)
 
 
 class TestHTMLTemplate(unittest.TestCase):
