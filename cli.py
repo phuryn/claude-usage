@@ -274,9 +274,17 @@ def cmd_dashboard(projects_dir=None):
     host = os.environ.get("HOST", "localhost")
     port = int(os.environ.get("PORT", "8080"))
 
+    # 0.0.0.0 / :: are wildcard bind addresses; browsers can't connect to them.
+    # Map to the loopback address so the opened URL is always reachable.
+    _WILDCARD_TO_LOOPBACK = {"0.0.0.0": "127.0.0.1", "::": "[::1]"}
+    browser_host = _WILDCARD_TO_LOOPBACK.get(host, host)
+    # Wrap bare IPv6 addresses in brackets for URL use (e.g. ::1 -> [::1])
+    if ":" in browser_host and not browser_host.startswith("["):
+        browser_host = f"[{browser_host}]"
+
     def open_browser():
         time.sleep(1.0)
-        webbrowser.open(f"http://{host}:{port}")
+        webbrowser.open(f"http://{browser_host}:{port}")
 
     t = threading.Thread(target=open_browser, daemon=True)
     t.start()
