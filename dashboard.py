@@ -932,10 +932,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
+class _StrictHTTPServer(HTTPServer):
+    # HTTPServer sets allow_reuse_address = True, which lets bind() succeed
+    # silently when another process already owns the port (SO_REUSEADDR). Disable
+    # it so we get a clear EADDRINUSE error instead of a silent no-op server.
+    allow_reuse_address = False
+
+
 def serve(host=None, port=None):
+    import errno
+    import sys
+
     host = host or os.environ.get("HOST", "localhost")
     port = port or int(os.environ.get("PORT", "8080"))
-    server = HTTPServer((host, port), DashboardHandler)
+
+    try:
+        server = _StrictHTTPServer((host, port), DashboardHandler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            print(f"Error: port {port} is already in use.")
+            print(f"  Stop the other server, or set a different port: PORT=9000 python cli.py dashboard")
+            sys.exit(1)
+        raise
+
     print(f"Dashboard running at http://{host}:{port}")
     print("Press Ctrl+C to stop.")
     try:
