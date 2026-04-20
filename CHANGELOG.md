@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add `1h`, `5h`, `1d` range buttons and a `Custom` date range picker (max 90-day span); `7d / 30d / 90d / All` remain unchanged
+- Add hourly and 5-minute aggregations to `/api/data` (`hourly_by_model`, `fivemin_by_model`) so sub-day charts bucket at the right granularity
+- Fix timestamp comparison format mismatch (ISO `T` vs datetime space separator) that could cause off-by-timezone results on daily filters
+- `daily_by_model` rows now use a `bucket` field (ISO timestamp) instead of `day` (date only) to share the schema used by the new series; sessions include a `last_iso` field for precise sub-day filtering
+
 ## 2026-04-09
 
 - Fix token counts inflated ~2x by deduplicating streaming events that share the same message ID
