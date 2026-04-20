@@ -70,19 +70,24 @@ def get_dashboard_data(db_path=DB_PATH, tz_offset_minutes=0):
         ORDER BY last_timestamp DESC
     """).fetchall()
 
+    from datetime import timedelta
+    tz_delta = timedelta(minutes=tz_offset_minutes)
+
     sessions_all = []
     for r in session_rows:
         try:
             t1 = datetime.fromisoformat(r["first_timestamp"].replace("Z", "+00:00"))
             t2 = datetime.fromisoformat(r["last_timestamp"].replace("Z", "+00:00"))
             duration_min = round((t2 - t1).total_seconds() / 60, 1)
+            last_date = (t2 + tz_delta).date().isoformat()
         except Exception:
             duration_min = 0
+            last_date = (r["last_timestamp"] or "")[:10]
         sessions_all.append({
             "session_id":    r["session_id"][:8],
             "project":       r["project_name"] or "unknown",
-            "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
-            "last_date":     (r["last_timestamp"] or "")[:10],
+            "last_raw":      r["last_timestamp"] or "",
+            "last_date":     last_date,
             "duration_min":  duration_min,
             "model":         r["model"] or "unknown",
             "turns":         r["turn_count"] or 0,
@@ -298,7 +303,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <thead><tr>
         <th>Session</th>
         <th>Project</th>
-        <th class="sortable" onclick="setSessionSort('last')">Last Active <span class="sort-icon" id="sort-icon-last"></span></th>
+        <th class="sortable" onclick="setSessionSort('last_raw')">Last Active <span class="sort-icon" id="sort-icon-last_raw"></span></th>
         <th class="sortable" onclick="setSessionSort('duration_min')">Duration <span class="sort-icon" id="sort-icon-duration_min"></span></th>
         <th>Model</th>
         <th class="sortable" onclick="setSessionSort('turns')">Turns <span class="sort-icon" id="sort-icon-turns"></span></th>
@@ -346,6 +351,17 @@ function esc(s) {
   return d.innerHTML;
 }
 
+function fmtLocalTime(isoUtc) {
+  if (!isoUtc) return '';
+  const d = new Date(isoUtc);
+  const Y = d.getFullYear();
+  const M = String(d.getMonth() + 1).padStart(2, '0');
+  const D = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  return `${Y}-${M}-${D} ${h}:${m}`;
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
 let rawData = null;
 let selectedModels = new Set();
@@ -356,7 +372,7 @@ let selectedRange = '30d';
 let customStart = null;
 let customEnd = null;
 let charts = {};
-let sessionSortCol = 'last';
+let sessionSortCol = 'last_raw';
 let modelSortCol = 'cost';
 let modelSortDir = 'desc';
 let projectSortCol = 'cost';
@@ -543,7 +559,7 @@ function getAllProjects() {
   const totals = {}, latest = {};
   for (const s of rawData.sessions_all) {
     totals[s.project] = (totals[s.project] || 0) + s.input + s.output;
-    if (!latest[s.project] || s.last > latest[s.project]) latest[s.project] = s.last;
+    if (!latest[s.project] || s.last_raw > latest[s.project]) latest[s.project] = s.last_raw;
   }
   const keys = Object.keys(totals);
   if (projectSortMode === 'alpha') return keys.sort((a, b) => a.localeCompare(b));
@@ -876,7 +892,7 @@ function renderSessionsTable(sessions) {
     return `<tr>
       <td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>
       <td>${esc(s.project)}</td>
-      <td class="muted">${esc(s.last)}</td>
+      <td class="muted">${esc(fmtLocalTime(s.last_raw))}</td>
       <td class="muted">${esc(s.duration_min)}m</td>
       <td><span class="model-tag">${esc(s.model)}</span></td>
       <td class="num">${s.turns}</td>
@@ -1011,7 +1027,7 @@ function exportSessionsCSV() {
   const header = ['Session', 'Project', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
   const rows = lastFilteredSessions.map(s => {
     const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
-    return [s.session_id, s.project, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
+    return [s.session_id, s.project, fmtLocalTime(s.last_raw), s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
   });
   downloadCSV('sessions', header, rows);
 }
