@@ -112,7 +112,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claude Code Usage Dashboard</title>
+<title>Claude Code Usage</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   :root {
@@ -128,12 +128,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
 
-  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
-  header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
-  header .meta { color: var(--muted); font-size: 12px; }
-  #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
-  #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
-  #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  header h1 { font-size: 18px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+  header .meta { color: var(--muted); font-size: 12px; flex: 1; }
+  header .meta select { background: transparent; border: none; color: var(--muted); font-size: 12px; font-family: inherit; cursor: pointer; padding: 0; }
+  header .meta select:hover { color: var(--text); }
+  header .header-btns { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .header-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .header-btn:hover { color: var(--text); border-color: var(--accent); }
+  .header-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
   #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 6px 24px; display: flex; flex-direction: column; align-items: stretch; gap: 0; }
   .filter-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; flex-wrap: wrap; }
@@ -210,9 +213,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>Claude Code Usage Dashboard</h1>
-  <div class="meta" id="meta">Loading...</div>
-  <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
+  <h1>Claude Code Usage</h1>
+  <div class="meta"><span id="meta-updated">Loading...</span> &middot; Auto-refresh:&nbsp;<select id="refresh-select" onchange="onRefreshIntervalChange(this.value)"><option value="manual">Manual</option><option value="30s" selected>30s</option><option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option><option value="1h">1h</option></select></div>
+  <div class="header-btns">
+    <button class="header-btn" id="rebuild-btn" onclick="triggerRebuild()" title="Delete and rebuild the database from scratch. Use if data looks corrupt.">Rebuild DB</button>
+    <button class="header-btn" id="refresh-btn" onclick="triggerRefresh()" title="Scan for new conversations and refresh all panels.">&#x21bb; Refresh</button>
+  </div>
 </header>
 
 <div id="filter-bar">
@@ -1040,21 +1046,59 @@ function exportProjectsCSV() {
   downloadCSV('projects', header, rows);
 }
 
-// ── Rescan ────────────────────────────────────────────────────────────────
-async function triggerRescan() {
-  const btn = document.getElementById('rescan-btn');
+// ── Refresh / Rebuild ─────────────────────────────────────────────────────
+const INTERVAL_MS = { '30s': 30000, '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000 };
+let _refreshTimer = null;
+let refreshInterval = '30s';
+
+function resetRefreshTimer() {
+  if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; }
+  const ms = INTERVAL_MS[refreshInterval];
+  if (ms) _refreshTimer = setInterval(doRefresh, ms);
+}
+
+function onRefreshIntervalChange(val) {
+  refreshInterval = val;
+  savePrefs();
+  resetRefreshTimer();
+}
+
+async function doRefresh() {
+  try {
+    await fetch('/api/rescan', { method: 'POST' });
+    await loadData();
+  } catch(e) { console.error(e); }
+}
+
+async function triggerRefresh() {
+  const btn = document.getElementById('refresh-btn');
   btn.disabled = true;
   btn.textContent = '\u21bb Scanning...';
   try {
     const resp = await fetch('/api/rescan', { method: 'POST' });
     const d = await resp.json();
-    btn.textContent = '\u21bb Rescan (' + d.new + ' new, ' + d.updated + ' updated)';
+    btn.textContent = '\u21bb ' + d.new + ' new, ' + d.updated + ' updated';
     await loadData();
   } catch(e) {
-    btn.textContent = '\u21bb Rescan (error)';
+    btn.textContent = '\u21bb Refresh (error)';
     console.error(e);
   }
-  setTimeout(() => { btn.textContent = '\u21bb Rescan'; btn.disabled = false; }, 3000);
+  setTimeout(() => { btn.textContent = '\u21bb Refresh'; btn.disabled = false; }, 3000);
+}
+
+async function triggerRebuild() {
+  const btn = document.getElementById('rebuild-btn');
+  btn.disabled = true;
+  btn.textContent = 'Rebuilding...';
+  try {
+    await fetch('/api/rebuild', { method: 'POST' });
+    await loadData();
+    btn.textContent = 'Rebuild DB';
+  } catch(e) {
+    btn.textContent = 'Rebuild DB (error)';
+    console.error(e);
+  }
+  btn.disabled = false;
 }
 
 // ── Preferences ───────────────────────────────────────────────────────────
@@ -1064,11 +1108,12 @@ function savePrefs() {
   clearTimeout(_prefsSaveTimer);
   _prefsSaveTimer = setTimeout(() => {
     const prefs = {
-      range:       selectedRange,
-      models:      Array.from(selectedModels),
-      projects:    Array.from(selectedProjects),
-      customStart: customStart || undefined,
-      customEnd:   customEnd   || undefined,
+      range:           selectedRange,
+      models:          Array.from(selectedModels),
+      projects:        Array.from(selectedProjects),
+      customStart:     customStart || undefined,
+      customEnd:       customEnd   || undefined,
+      refreshInterval: refreshInterval,
     };
     fetch('/api/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prefs) })
       .catch(() => {});
@@ -1082,6 +1127,11 @@ async function loadPrefsIntoURL() {
   try {
     const resp = await fetch('/api/prefs');
     const prefs = await resp.json();
+    if (prefs.refreshInterval && INTERVAL_MS[prefs.refreshInterval] !== undefined || prefs.refreshInterval === 'manual') {
+      refreshInterval = prefs.refreshInterval;
+      const sel = document.getElementById('refresh-select');
+      if (sel) sel.value = refreshInterval;
+    }
     if (!prefs.range) return;
     const params = new URLSearchParams(window.location.search);
     if (!params.has('range') && prefs.range !== '30d') params.set('range', prefs.range);
@@ -1104,7 +1154,7 @@ async function loadData() {
       document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + esc(d.error) + '</div>';
       return;
     }
-    document.getElementById('meta').textContent = 'Updated: ' + d.generated_at + ' \u00b7 Auto-refresh in 30s';
+    document.getElementById('meta-updated').textContent = 'Updated: ' + d.generated_at;
 
     const isFirstLoad = rawData === null;
     if (isFirstLoad) await loadPrefsIntoURL();
@@ -1144,8 +1194,11 @@ async function loadData() {
   }
 }
 
-loadData();
-setInterval(loadData, 30000);
+async function init() {
+  await loadData();
+  resetRefreshTimer();
+}
+init();
 </script>
 </body>
 </html>
@@ -1209,9 +1262,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
         elif self.path == "/api/rescan":
-            # Full rebuild: delete DB and rescan from scratch
-            if DB_PATH.exists():
-                DB_PATH.unlink()
+            # Incremental scan: only processes new/changed JSONL files
             from scanner import scan
             result = scan(verbose=False)
             body = json.dumps(result).encode("utf-8")
@@ -1220,6 +1271,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        elif self.path == "/api/rebuild":
+            # Full rebuild: delete DB and rescan from scratch
+            if DB_PATH.exists():
+                DB_PATH.unlink()
+            from scanner import scan
+            scan(verbose=False)
+            self.send_response(204)
+            self.end_headers()
         else:
             self.send_response(404)
             self.end_headers()
