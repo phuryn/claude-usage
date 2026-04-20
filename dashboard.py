@@ -9,10 +9,11 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
 
-DB_PATH = Path.home() / ".claude" / "usage.db"
+DB_PATH    = Path.home() / ".claude" / "usage.db"
+PREFS_PATH = Path.home() / ".claude" / "dashboard_prefs.json"
 
 
-def get_dashboard_data(db_path=DB_PATH):
+def get_dashboard_data(db_path=DB_PATH, tz_offset_minutes=0):
     if not db_path.exists():
         return {"error": "Database not found. Run: python cli.py scan"}
 
@@ -29,23 +30,29 @@ def get_dashboard_data(db_path=DB_PATH):
     all_models = [r["model"] for r in model_rows]
 
     # ── Daily per-model, ALL history (client filters by range) ────────────────
+    # Timestamps are stored in UTC; adjust to local time before bucketing by day
+    # so that "today" in the browser matches "today" in the user's timezone.
+    tz_modifier = f"{tz_offset_minutes:+d} minutes"
     daily_rows = conn.execute("""
         SELECT
-            substr(timestamp, 1, 10)   as day,
-            COALESCE(model, 'unknown') as model,
-            SUM(input_tokens)          as input,
-            SUM(output_tokens)         as output,
-            SUM(cache_read_tokens)     as cache_read,
-            SUM(cache_creation_tokens) as cache_creation,
-            COUNT(*)                   as turns
-        FROM turns
-        GROUP BY day, model
-        ORDER BY day, model
-    """).fetchall()
+            date(datetime(t.timestamp, ?))     as day,
+            COALESCE(t.model, 'unknown')        as model,
+            COALESCE(s.project_name, 'unknown') as project,
+            SUM(t.input_tokens)                 as input,
+            SUM(t.output_tokens)                as output,
+            SUM(t.cache_read_tokens)            as cache_read,
+            SUM(t.cache_creation_tokens)        as cache_creation,
+            COUNT(*)                            as turns
+        FROM turns t
+        LEFT JOIN sessions s ON t.session_id = s.session_id
+        GROUP BY 1, 2, 3
+        ORDER BY 1, 2, 3
+    """, (tz_modifier,)).fetchall()
 
     daily_by_model = [{
         "day":            r["day"],
         "model":          r["model"],
+        "project":        r["project"],
         "input":          r["input"] or 0,
         "output":         r["output"] or 0,
         "cache_read":     r["cache_read"] or 0,
@@ -63,19 +70,24 @@ def get_dashboard_data(db_path=DB_PATH):
         ORDER BY last_timestamp DESC
     """).fetchall()
 
+    from datetime import timedelta
+    tz_delta = timedelta(minutes=tz_offset_minutes)
+
     sessions_all = []
     for r in session_rows:
         try:
             t1 = datetime.fromisoformat(r["first_timestamp"].replace("Z", "+00:00"))
             t2 = datetime.fromisoformat(r["last_timestamp"].replace("Z", "+00:00"))
             duration_min = round((t2 - t1).total_seconds() / 60, 1)
+            last_date = (t2 + tz_delta).date().isoformat()
         except Exception:
             duration_min = 0
+            last_date = (r["last_timestamp"] or "")[:10]
         sessions_all.append({
             "session_id":    r["session_id"][:8],
             "project":       r["project_name"] or "unknown",
-            "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
-            "last_date":     (r["last_timestamp"] or "")[:10],
+            "last_raw":      r["last_timestamp"] or "",
+            "last_date":     last_date,
             "duration_min":  duration_min,
             "model":         r["model"] or "unknown",
             "turns":         r["turn_count"] or 0,
@@ -100,7 +112,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claude Code Usage Dashboard</title>
+<title>Claude Code Usage</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   :root {
@@ -116,17 +128,25 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
 
-  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
-  header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
-  header .meta { color: var(--muted); font-size: 12px; }
-  #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
-  #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
-  #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  header h1 { font-size: 18px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+  header .meta { color: var(--muted); font-size: 12px; flex: 1; }
+  header .meta select { background: transparent; border: none; color: var(--muted); font-size: 12px; font-family: inherit; cursor: pointer; padding: 0; }
+  header .meta select:hover { color: var(--text); }
+  header .header-btns { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .header-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .header-btn:hover { color: var(--text); border-color: var(--accent); }
+  .header-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 6px 24px; display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+  .filter-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; flex-wrap: wrap; }
+  .filter-row.accordion-content { padding: 4px 0 6px 20px; }
+  .accordion-header { display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 2px 6px 2px 0; border-radius: 4px; background: transparent; border: none; }
+  .accordion-header:hover .filter-label { color: var(--text); }
+  .accordion-chevron { font-size: 9px; color: var(--muted); display: inline-block; transition: transform 0.2s; line-height: 1; }
+  .accordion-chevron.open { transform: rotate(90deg); }
   .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
-  .filter-sep { width: 1px; height: 22px; background: var(--border); flex-shrink: 0; }
-  #model-checkboxes { display: flex; flex-wrap: wrap; gap: 6px; }
+  #model-checkboxes, #project-checkboxes { display: flex; flex-wrap: wrap; gap: 6px; }
   .model-cb-label { display: flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; border: 1px solid var(--border); cursor: pointer; font-size: 12px; color: var(--muted); transition: border-color 0.15s, color 0.15s, background 0.15s; user-select: none; }
   .model-cb-label:hover { border-color: var(--accent); color: var(--text); }
   .model-cb-label.checked { background: rgba(217,119,87,0.12); border-color: var(--accent); color: var(--text); }
@@ -138,6 +158,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .range-btn:last-child { border-right: none; }
   .range-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
   .range-btn.active { background: rgba(217,119,87,0.15); color: var(--accent); font-weight: 600; }
+  .datetime-input { background: var(--card); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 12px; padding: 3px 8px; cursor: pointer; }
+  .datetime-input:focus { outline: none; border-color: var(--accent); }
+  .datetime-input::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+  .sort-toggle { display: flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; flex-shrink: 0; margin-right: 4px; }
+  .sort-btn { padding: 2px 9px; background: transparent; border: none; border-right: 1px solid var(--border); color: var(--muted); font-size: 11px; cursor: pointer; transition: background 0.15s, color 0.15s; }
+  .sort-btn:last-child { border-right: none; }
+  .sort-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+  .sort-btn.active { background: rgba(217,119,87,0.15); color: var(--accent); font-weight: 600; }
 
   .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
   .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
@@ -185,23 +213,62 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>Claude Code Usage Dashboard</h1>
-  <div class="meta" id="meta">Loading...</div>
-  <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
+  <h1>Claude Code Usage</h1>
+  <div class="meta"><span id="meta-updated">Loading...</span> &middot; Auto-refresh:&nbsp;<select id="refresh-select" onchange="onRefreshIntervalChange(this.value)"><option value="manual">Manual</option><option value="30s" selected>30s</option><option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option><option value="1h">1h</option></select></div>
+  <div class="header-btns">
+    <button class="header-btn" id="rebuild-btn" onclick="triggerRebuild()" title="Delete and rebuild the database from scratch. Use if data looks corrupt.">Rebuild DB</button>
+    <button class="header-btn" id="refresh-btn" onclick="triggerRefresh()" title="Scan for new conversations and refresh all panels.">&#x21bb; Refresh</button>
+  </div>
 </header>
 
 <div id="filter-bar">
-  <div class="filter-label">Models</div>
-  <div id="model-checkboxes"></div>
-  <button class="filter-btn" onclick="selectAllModels()">All</button>
-  <button class="filter-btn" onclick="clearAllModels()">None</button>
-  <div class="filter-sep"></div>
-  <div class="filter-label">Range</div>
-  <div class="range-group">
-    <button class="range-btn" data-range="7d"  onclick="setRange('7d')">7d</button>
-    <button class="range-btn" data-range="30d" onclick="setRange('30d')">30d</button>
-    <button class="range-btn" data-range="90d" onclick="setRange('90d')">90d</button>
-    <button class="range-btn" data-range="all" onclick="setRange('all')">All</button>
+  <div class="filter-row">
+    <button class="accordion-header" onclick="toggleAccordion('models')" aria-expanded="false" aria-controls="models-content">
+      <span class="filter-label">Models</span>
+      <span class="accordion-chevron" id="models-chevron">&#9658;</span>
+    </button>
+  </div>
+  <div class="filter-row accordion-content" id="models-content" style="display:none">
+    <div class="sort-toggle">
+      <button class="sort-btn" onclick="selectAllModels()">Select all</button>
+      <button class="sort-btn" onclick="clearAllModels()">Clear</button>
+    </div>
+    <div id="model-checkboxes"></div>
+  </div>
+  <div class="filter-row">
+    <button class="accordion-header" onclick="toggleAccordion('projects')" aria-expanded="false" aria-controls="projects-content">
+      <span class="filter-label">Projects</span>
+      <span class="accordion-chevron" id="projects-chevron">&#9658;</span>
+    </button>
+  </div>
+  <div class="filter-row accordion-content" id="projects-content" style="display:none">
+    <div class="sort-toggle">
+      <button class="sort-btn active" id="proj-sort-date" onclick="setProjectSortMode('date')">Recent</button>
+      <button class="sort-btn"        id="proj-sort-alpha" onclick="setProjectSortMode('alpha')">A&#8211;Z</button>
+    </div>
+    <div class="sort-toggle">
+      <button class="sort-btn" onclick="selectAllProjects()">Select all</button>
+      <button class="sort-btn" onclick="clearAllProjects()">Clear</button>
+    </div>
+    <div id="project-checkboxes"></div>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">Range</span>
+    <div class="range-group">
+      <button class="range-btn" data-range="today"  onclick="setRange('today')">Today</button>
+      <button class="range-btn" data-range="1d"     onclick="setRange('1d')">1d</button>
+      <button class="range-btn" data-range="7d"     onclick="setRange('7d')">7d</button>
+      <button class="range-btn" data-range="30d"    onclick="setRange('30d')">30d</button>
+      <button class="range-btn" data-range="90d"    onclick="setRange('90d')">90d</button>
+      <button class="range-btn" data-range="all"    onclick="setRange('all')">All</button>
+      <button class="range-btn" data-range="custom" onclick="setRange('custom')">Custom</button>
+    </div>
+  </div>
+  <div class="filter-row" id="custom-range-row" style="display:none">
+    <span class="filter-label">From</span>
+    <input type="datetime-local" id="custom-start" class="datetime-input" onchange="applyCustomRange()">
+    <span class="filter-label">To</span>
+    <input type="datetime-local" id="custom-end" class="datetime-input" onchange="applyCustomRange()">
   </div>
 </div>
 
@@ -237,12 +304,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </table>
   </div>
   <div class="table-card">
-    <div class="section-header"><div class="section-title">Recent Sessions</div><button class="export-btn" onclick="exportSessionsCSV()" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
+    <div class="section-header"><div><div class="section-title">Recent Sessions</div><div style="font-size:11px;color:var(--muted);margin-top:2px">Token counts are session lifetime totals, not period-filtered</div></div><button class="export-btn" onclick="exportSessionsCSV()" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
         <th>Session</th>
         <th>Project</th>
-        <th class="sortable" onclick="setSessionSort('last')">Last Active <span class="sort-icon" id="sort-icon-last"></span></th>
+        <th class="sortable" onclick="setSessionSort('last_raw')">Last Active <span class="sort-icon" id="sort-icon-last_raw"></span></th>
         <th class="sortable" onclick="setSessionSort('duration_min')">Duration <span class="sort-icon" id="sort-icon-duration_min"></span></th>
         <th>Model</th>
         <th class="sortable" onclick="setSessionSort('turns')">Turns <span class="sort-icon" id="sort-icon-turns"></span></th>
@@ -290,12 +357,28 @@ function esc(s) {
   return d.innerHTML;
 }
 
+function fmtLocalTime(isoUtc) {
+  if (!isoUtc) return '';
+  const d = new Date(isoUtc);
+  const Y = d.getFullYear();
+  const M = String(d.getMonth() + 1).padStart(2, '0');
+  const D = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  return `${Y}-${M}-${D} ${h}:${m}`;
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
 let rawData = null;
 let selectedModels = new Set();
+let selectedProjects = new Set();
+let projectSortMode = 'date';
+let userHasFilteredProjects = false; // true once user explicitly deselects a project
 let selectedRange = '30d';
+let customStart = null;
+let customEnd = null;
 let charts = {};
-let sessionSortCol = 'last';
+let sessionSortCol = 'last_raw';
 let modelSortCol = 'cost';
 let modelSortDir = 'desc';
 let projectSortCol = 'cost';
@@ -365,20 +448,27 @@ const TOKEN_COLORS = {
 const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
 
 // ── Time range ─────────────────────────────────────────────────────────────
-const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
-const RANGE_TICKS  = { '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+const RANGE_LABELS = { 'today': 'Today', '1d': 'Last 24 Hours', '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time', 'custom': 'Custom Range' };
+const RANGE_TICKS  = { 'today': 1, '1d': 2, '7d': 7, '30d': 15, '90d': 13, 'all': 12, 'custom': 10 };
 
 function getRangeCutoff(range) {
   if (range === 'all') return null;
-  const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
+  if (range === 'today') return new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
+  if (range === 'custom') return customStart ? customStart.slice(0, 10) : null;
+  const days = range === '1d' ? 1 : range === '7d' ? 7 : range === '30d' ? 30 : 90;
   const d = new Date();
   d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
+  return d.toLocaleDateString('en-CA'); // local date, not UTC
+}
+
+function getRangeEndDate() {
+  if (selectedRange === 'custom' && customEnd) return customEnd.slice(0, 10);
+  return null; // no upper bound for preset ranges
 }
 
 function readURLRange() {
   const p = new URLSearchParams(window.location.search).get('range');
-  return ['7d', '30d', '90d', 'all'].includes(p) ? p : '30d';
+  return ['today', '1d', '7d', '30d', '90d', 'all', 'custom'].includes(p) ? p : '30d';
 }
 
 function setRange(range) {
@@ -386,6 +476,30 @@ function setRange(range) {
   document.querySelectorAll('.range-btn').forEach(btn =>
     btn.classList.toggle('active', btn.dataset.range === range)
   );
+  const customRow = document.getElementById('custom-range-row');
+  if (range === 'custom') {
+    customRow.style.display = '';
+    // Set defaults if not already set
+    if (!customStart) {
+      const today = new Date().toLocaleDateString('en-CA');
+      customStart = today + 'T00:00';
+      document.getElementById('custom-start').value = customStart;
+    }
+    if (!customEnd) {
+      const today = new Date().toLocaleDateString('en-CA');
+      customEnd = today + 'T23:59';
+      document.getElementById('custom-end').value = customEnd;
+    }
+  } else {
+    customRow.style.display = 'none';
+  }
+  updateURL();
+  applyFilter();
+}
+
+function applyCustomRange() {
+  customStart = document.getElementById('custom-start').value || null;
+  customEnd   = document.getElementById('custom-end').value   || null;
   updateURL();
   applyFilter();
 }
@@ -436,6 +550,67 @@ function onModelToggle(cb) {
   applyFilter();
 }
 
+// ── Accordion ─────────────────────────────────────────────────────────────
+function toggleAccordion(section) {
+  const content  = document.getElementById(section + '-content');
+  const chevron  = document.getElementById(section + '-chevron');
+  const isOpen   = content.style.display !== 'none';
+  content.style.display = isOpen ? 'none' : '';
+  chevron.classList.toggle('open', !isOpen);
+}
+
+// ── Project filter ─────────────────────────────────────────────────────────
+function getAllProjects() {
+  if (!rawData) return [];
+  const totals = {}, latest = {};
+  for (const s of rawData.sessions_all) {
+    totals[s.project] = (totals[s.project] || 0) + s.input + s.output;
+    if (!latest[s.project] || s.last_raw > latest[s.project]) latest[s.project] = s.last_raw;
+  }
+  const keys = Object.keys(totals);
+  if (projectSortMode === 'alpha') return keys.sort((a, b) => a.localeCompare(b));
+  return keys.sort((a, b) => (latest[b] || '').localeCompare(latest[a] || '')); // most recent first
+}
+
+function setProjectSortMode(mode) {
+  projectSortMode = mode;
+  document.getElementById('proj-sort-date').classList.toggle('active', mode === 'date');
+  document.getElementById('proj-sort-alpha').classList.toggle('active', mode === 'alpha');
+  const allProjects = getAllProjects();
+  const container = document.getElementById('project-checkboxes');
+  container.innerHTML = allProjects.map(p => {
+    const checked = selectedProjects.has(p);
+    return `<label class="model-cb-label ${checked ? 'checked' : ''}" data-project="${esc(p)}">
+      <input type="checkbox" value="${esc(p)}" ${checked ? 'checked' : ''} onchange="onProjectToggle(this)">
+      ${esc(p)}</label>`;
+  }).join('');
+}
+
+function readURLProjects(allProjects) {
+  const param = new URLSearchParams(window.location.search).get('projects');
+  if (!param) return new Set(allProjects);
+  const fromURL = new Set(param.split(',').map(s => s.trim()).filter(Boolean));
+  return new Set(allProjects.filter(p => fromURL.has(p)));
+}
+
+function isDefaultProjectSelection(allProjects) {
+  if (selectedProjects.size !== allProjects.length) return false;
+  return allProjects.every(p => selectedProjects.has(p));
+}
+
+function buildProjectFilterUI() {
+  const allProjects = getAllProjects();
+  selectedProjects = readURLProjects(allProjects);
+  const container = document.getElementById('project-checkboxes');
+  container.innerHTML = allProjects.map(p => {
+    const checked = selectedProjects.has(p);
+    return `<label class="model-cb-label ${checked ? 'checked' : ''}" data-project="${esc(p)}">
+      <input type="checkbox" value="${esc(p)}" ${checked ? 'checked' : ''} onchange="onProjectToggle(this)">
+      ${esc(p)}
+    </label>`;
+  }).join('');
+}
+
 function selectAllModels() {
   document.querySelectorAll('#model-checkboxes input').forEach(cb => {
     cb.checked = true; selectedModels.add(cb.value); cb.closest('label').classList.add('checked');
@@ -450,14 +625,42 @@ function clearAllModels() {
   updateURL(); applyFilter();
 }
 
+function selectAllProjects() {
+  document.querySelectorAll('#project-checkboxes input').forEach(cb => {
+    cb.checked = true; selectedProjects.add(cb.value); cb.closest('label').classList.add('checked');
+  });
+  updateURL(); applyFilter();
+}
+
+function clearAllProjects() {
+  userHasFilteredProjects = true;
+  document.querySelectorAll('#project-checkboxes input').forEach(cb => {
+    cb.checked = false; selectedProjects.delete(cb.value); cb.closest('label').classList.remove('checked');
+  });
+  updateURL(); applyFilter();
+}
+
+function onProjectToggle(cb) {
+  const label = cb.closest('label');
+  if (cb.checked) { selectedProjects.add(cb.value);    label.classList.add('checked'); }
+  else            { selectedProjects.delete(cb.value); label.classList.remove('checked'); userHasFilteredProjects = true; }
+  updateURL();
+  applyFilter();
+}
+
 // ── URL persistence ────────────────────────────────────────────────────────
 function updateURL() {
-  const allModels = Array.from(document.querySelectorAll('#model-checkboxes input')).map(cb => cb.value);
+  const allModels   = Array.from(document.querySelectorAll('#model-checkboxes input')).map(cb => cb.value);
+  const allProjects = getAllProjects();
   const params = new URLSearchParams();
   if (selectedRange !== '30d') params.set('range', selectedRange);
-  if (!isDefaultModelSelection(allModels)) params.set('models', Array.from(selectedModels).join(','));
+  if (selectedRange === 'custom' && customStart) params.set('start', customStart);
+  if (selectedRange === 'custom' && customEnd)   params.set('end',   customEnd);
+  if (!isDefaultModelSelection(allModels))   params.set('models',   Array.from(selectedModels).join(','));
+  if (!isDefaultProjectSelection(allProjects)) params.set('projects', Array.from(selectedProjects).join(','));
   const search = params.toString() ? '?' + params.toString() : '';
   history.replaceState(null, '', window.location.pathname + search);
+  savePrefs();
 }
 
 // ── Session sort ───────────────────────────────────────────────────────────
@@ -501,11 +704,15 @@ function sortSessions(sessions) {
 function applyFilter() {
   if (!rawData) return;
 
-  const cutoff = getRangeCutoff(selectedRange);
+  const cutoff  = getRangeCutoff(selectedRange);
+  const endDate = getRangeEndDate();
 
-  // Filter daily rows by model + date range
+  // Filter daily rows by model + project + date range
   const filteredDaily = rawData.daily_by_model.filter(r =>
-    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+    selectedModels.has(r.model) &&
+    selectedProjects.has(r.project) &&
+    (!cutoff  || r.day >= cutoff) &&
+    (!endDate || r.day <= endDate)
   );
 
   // Daily chart: aggregate by day
@@ -532,9 +739,12 @@ function applyFilter() {
     m.turns          += r.turns;
   }
 
-  // Filter sessions by model + date range
+  // Filter sessions by model + project + date range
   const filteredSessions = rawData.sessions_all.filter(s =>
-    selectedModels.has(s.model) && (!cutoff || s.last_date >= cutoff)
+    selectedModels.has(s.model) &&
+    selectedProjects.has(s.project) &&
+    (!cutoff  || s.last_date >= cutoff) &&
+    (!endDate || s.last_date <= endDate)
   );
 
   // Add session counts into modelMap
@@ -544,18 +754,22 @@ function applyFilter() {
 
   const byModel = Object.values(modelMap).sort((a, b) => (b.input + b.output) - (a.input + a.output));
 
-  // By project: aggregate from filtered sessions
+  // By project: aggregate token/turn/cost from filteredDaily so numbers match
+  // the period + model + project filters (session rows carry lifetime totals, not period totals)
   const projMap = {};
+  for (const r of filteredDaily) {
+    if (!projMap[r.project]) projMap[r.project] = { project: r.project, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0, sessions: 0, cost: 0 };
+    const p = projMap[r.project];
+    p.input          += r.input;
+    p.output         += r.output;
+    p.cache_read     += r.cache_read;
+    p.cache_creation += r.cache_creation;
+    p.turns          += r.turns;
+    p.cost += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation);
+  }
+  // Session counts still come from filteredSessions (per-session model/project/date match)
   for (const s of filteredSessions) {
-    if (!projMap[s.project]) projMap[s.project] = { project: s.project, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0, sessions: 0, cost: 0 };
-    const p = projMap[s.project];
-    p.input          += s.input;
-    p.output         += s.output;
-    p.cache_read     += s.cache_read;
-    p.cache_creation += s.cache_creation;
-    p.turns          += s.turns;
-    p.sessions++;
-    p.cost += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    if (projMap[s.project]) projMap[s.project].sessions++;
   }
   const byProject = Object.values(projMap).sort((a, b) => (b.input + b.output) - (a.input + a.output));
 
@@ -581,7 +795,7 @@ function applyFilter() {
   lastByProject = sortProjects(byProject);
   renderSessionsTable(lastFilteredSessions.slice(0, 20));
   renderModelCostTable(byModel);
-  renderProjectCostTable(lastByProject.slice(0, 20));
+  renderProjectCostTable(lastByProject);
 }
 
 // ── Renderers ──────────────────────────────────────────────────────────────
@@ -684,7 +898,7 @@ function renderSessionsTable(sessions) {
     return `<tr>
       <td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>
       <td>${esc(s.project)}</td>
-      <td class="muted">${esc(s.last)}</td>
+      <td class="muted">${esc(fmtLocalTime(s.last_raw))}</td>
       <td class="muted">${esc(s.duration_min)}m</td>
       <td><span class="model-tag">${esc(s.model)}</span></td>
       <td class="num">${s.turns}</td>
@@ -775,7 +989,7 @@ function sortProjects(byProject) {
 }
 
 function renderProjectCostTable(byProject) {
-  document.getElementById('project-cost-body').innerHTML = sortProjects(byProject).map(p => {
+  document.getElementById('project-cost-body').innerHTML = sortProjects(byProject).slice(0, 20).map(p => {
     return `<tr>
       <td>${esc(p.project)}</td>
       <td class="num">${p.sessions}</td>
@@ -819,7 +1033,7 @@ function exportSessionsCSV() {
   const header = ['Session', 'Project', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
   const rows = lastFilteredSessions.map(s => {
     const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
-    return [s.session_id, s.project, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
+    return [s.session_id, s.project, fmtLocalTime(s.last_raw), s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
   });
   downloadCSV('sessions', header, rows);
 }
@@ -832,45 +1046,143 @@ function exportProjectsCSV() {
   downloadCSV('projects', header, rows);
 }
 
-// ── Rescan ────────────────────────────────────────────────────────────────
-async function triggerRescan() {
-  const btn = document.getElementById('rescan-btn');
+// ── Refresh / Rebuild ─────────────────────────────────────────────────────
+const INTERVAL_MS = { '30s': 30000, '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000 };
+let _refreshTimer = null;
+let refreshInterval = '30s';
+
+function resetRefreshTimer() {
+  if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; }
+  const ms = INTERVAL_MS[refreshInterval];
+  if (ms) _refreshTimer = setInterval(doRefresh, ms);
+}
+
+function onRefreshIntervalChange(val) {
+  refreshInterval = val;
+  savePrefs();
+  resetRefreshTimer();
+}
+
+async function doRefresh() {
+  try {
+    await fetch('/api/rescan', { method: 'POST' });
+    await loadData();
+  } catch(e) { console.error(e); }
+}
+
+async function triggerRefresh() {
+  const btn = document.getElementById('refresh-btn');
   btn.disabled = true;
   btn.textContent = '\u21bb Scanning...';
   try {
     const resp = await fetch('/api/rescan', { method: 'POST' });
     const d = await resp.json();
-    btn.textContent = '\u21bb Rescan (' + d.new + ' new, ' + d.updated + ' updated)';
+    btn.textContent = '\u21bb ' + d.new + ' new, ' + d.updated + ' updated';
     await loadData();
   } catch(e) {
-    btn.textContent = '\u21bb Rescan (error)';
+    btn.textContent = '\u21bb Refresh (error)';
     console.error(e);
   }
-  setTimeout(() => { btn.textContent = '\u21bb Rescan'; btn.disabled = false; }, 3000);
+  setTimeout(() => { btn.textContent = '\u21bb Refresh'; btn.disabled = false; }, 3000);
+}
+
+async function triggerRebuild() {
+  const btn = document.getElementById('rebuild-btn');
+  btn.disabled = true;
+  btn.textContent = 'Rebuilding...';
+  try {
+    await fetch('/api/rebuild', { method: 'POST' });
+    await loadData();
+    btn.textContent = 'Rebuild DB';
+  } catch(e) {
+    btn.textContent = 'Rebuild DB (error)';
+    console.error(e);
+  }
+  btn.disabled = false;
+}
+
+// ── Preferences ───────────────────────────────────────────────────────────
+let _prefsSaveTimer = null;
+
+function savePrefs() {
+  clearTimeout(_prefsSaveTimer);
+  _prefsSaveTimer = setTimeout(() => {
+    const prefs = {
+      range:           selectedRange,
+      models:          Array.from(selectedModels),
+      projects:        Array.from(selectedProjects),
+      customStart:     customStart || undefined,
+      customEnd:       customEnd   || undefined,
+      refreshInterval: refreshInterval,
+    };
+    fetch('/api/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prefs) })
+      .catch(() => {});
+  }, 500);
+}
+
+async function loadPrefsIntoURL() {
+  // Merge saved prefs into the URL, but never overwrite params already present.
+  // This lets bookmarked URLs (e.g. ?range=7d) keep their explicit values while
+  // still restoring other saved prefs (e.g. saved project selection).
+  try {
+    const resp = await fetch('/api/prefs');
+    const prefs = await resp.json();
+    if (prefs.refreshInterval && INTERVAL_MS[prefs.refreshInterval] !== undefined || prefs.refreshInterval === 'manual') {
+      refreshInterval = prefs.refreshInterval;
+      const sel = document.getElementById('refresh-select');
+      if (sel) sel.value = refreshInterval;
+    }
+    if (!prefs.range) return;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('range') && prefs.range !== '30d') params.set('range', prefs.range);
+    if (!params.has('start') && prefs.customStart) params.set('start', prefs.customStart);
+    if (!params.has('end')   && prefs.customEnd)   params.set('end',   prefs.customEnd);
+    if (!params.has('models')   && prefs.models   && prefs.models.length)   params.set('models',   prefs.models.join(','));
+    if (!params.has('projects') && prefs.projects && prefs.projects.length) params.set('projects', prefs.projects.join(','));
+    const search = params.toString() ? '?' + params.toString() : '';
+    history.replaceState(null, '', window.location.pathname + (search || ''));
+  } catch(e) {}
 }
 
 // ── Data loading ───────────────────────────────────────────────────────────
 async function loadData() {
   try {
-    const resp = await fetch('/api/data');
+    const tzOffset = -new Date().getTimezoneOffset();
+    const resp = await fetch('/api/data?tz_offset=' + tzOffset);
     const d = await resp.json();
     if (d.error) {
       document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + esc(d.error) + '</div>';
       return;
     }
-    document.getElementById('meta').textContent = 'Updated: ' + d.generated_at + ' \u00b7 Auto-refresh in 30s';
+    document.getElementById('meta-updated').textContent = 'Updated: ' + d.generated_at;
 
     const isFirstLoad = rawData === null;
+    if (isFirstLoad) await loadPrefsIntoURL();
     rawData = d;
 
+    if (!isFirstLoad && !userHasFilteredProjects) {
+      // Auto-add projects that appeared since init so they aren't silently excluded
+      getAllProjects().forEach(p => selectedProjects.add(p));
+    }
+
     if (isFirstLoad) {
-      // Restore range from URL, mark active button
+      // Restore range from URL (or prefs, already merged into URL above)
       selectedRange = readURLRange();
       document.querySelectorAll('.range-btn').forEach(btn =>
         btn.classList.toggle('active', btn.dataset.range === selectedRange)
       );
-      // Build model filter (reads URL for model selection too)
+      // Restore custom range inputs from URL if applicable
+      if (selectedRange === 'custom') {
+        const p = new URLSearchParams(window.location.search);
+        customStart = p.get('start') || null;
+        customEnd   = p.get('end')   || null;
+        document.getElementById('custom-range-row').style.display = '';
+        if (customStart) document.getElementById('custom-start').value = customStart;
+        if (customEnd)   document.getElementById('custom-end').value   = customEnd;
+      }
+      // Build model + project filters (read URL state)
       buildFilterUI(d.all_models);
+      buildProjectFilterUI();
       updateSortIcons();
       updateModelSortIcons();
       updateProjectSortIcons();
@@ -882,8 +1194,11 @@ async function loadData() {
   }
 }
 
-loadData();
-setInterval(loadData, 30000);
+async function init() {
+  await loadData();
+  resetRefreshTimer();
+}
+init();
 </script>
 </body>
 </html>
@@ -901,8 +1216,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
 
-        elif self.path == "/api/data":
-            data = get_dashboard_data()
+        elif self.path == "/api/prefs":
+            try:
+                body = PREFS_PATH.read_bytes() if PREFS_PATH.exists() else b"{}"
+                if not body:   # guard against zero-byte file from a bad write
+                    body = b"{}"
+                json.loads(body)  # validate before sending; fall back to {} if corrupt
+            except (ValueError, Exception):
+                body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path.startswith("/api/data"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                tz_offset = int(qs.get("tz_offset", ["0"])[0])
+            except ValueError:
+                tz_offset = 0
+            data = get_dashboard_data(tz_offset_minutes=tz_offset)
             body = json.dumps(data).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -915,10 +1250,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
-        if self.path == "/api/rescan":
-            # Full rebuild: delete DB and rescan from scratch
-            if DB_PATH.exists():
-                DB_PATH.unlink()
+        if self.path == "/api/prefs":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                json.loads(body)   # validate before touching the file
+                PREFS_PATH.write_bytes(body)
+            except (ValueError, Exception):
+                pass               # ignore malformed requests; keep existing prefs
+            self.send_response(204)
+            self.end_headers()
+
+        elif self.path == "/api/rescan":
+            # Incremental scan: only processes new/changed JSONL files
             from scanner import scan
             result = scan(verbose=False)
             body = json.dumps(result).encode("utf-8")
@@ -927,16 +1271,48 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        elif self.path == "/api/rebuild":
+            # Full rebuild: delete DB and rescan from scratch
+            if DB_PATH.exists():
+                DB_PATH.unlink()
+            from scanner import scan
+            scan(verbose=False)
+            self.send_response(204)
+            self.end_headers()
         else:
             self.send_response(404)
             self.end_headers()
 
 
+class _StrictHTTPServer(HTTPServer):
+    # HTTPServer sets allow_reuse_address = True, which lets bind() succeed
+    # silently when another process already owns the port (SO_REUSEADDR). Disable
+    # it so we get a clear EADDRINUSE error instead of a silent no-op server.
+    allow_reuse_address = False
+
+
 def serve(host=None, port=None):
+    import errno
+    import sys
+
     host = host or os.environ.get("HOST", "localhost")
     port = port or int(os.environ.get("PORT", "8080"))
-    server = HTTPServer((host, port), DashboardHandler)
-    print(f"Dashboard running at http://{host}:{port}")
+
+    try:
+        server = _StrictHTTPServer((host, port), DashboardHandler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            print(f"Error: port {port} is already in use.")
+            print(f"  Stop the other server, or set a different port: PORT=9000 python cli.py dashboard")
+            sys.exit(1)
+        raise
+
+    _WILDCARD_TO_LOOPBACK = {"0.0.0.0": "127.0.0.1", "::": "[::1]"}
+    display_host = _WILDCARD_TO_LOOPBACK.get(host, host)
+    if ":" in display_host and not display_host.startswith("["):
+        display_host = f"[{display_host}]"
+    print(f"Dashboard running at http://{display_host}:{port}")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
