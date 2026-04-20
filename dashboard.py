@@ -13,7 +13,7 @@ DB_PATH    = Path.home() / ".claude" / "usage.db"
 PREFS_PATH = Path.home() / ".claude" / "dashboard_prefs.json"
 
 
-def get_dashboard_data(db_path=DB_PATH):
+def get_dashboard_data(db_path=DB_PATH, tz_offset_minutes=0):
     if not db_path.exists():
         return {"error": "Database not found. Run: python cli.py scan"}
 
@@ -30,9 +30,12 @@ def get_dashboard_data(db_path=DB_PATH):
     all_models = [r["model"] for r in model_rows]
 
     # ── Daily per-model, ALL history (client filters by range) ────────────────
+    # Timestamps are stored in UTC; adjust to local time before bucketing by day
+    # so that "today" in the browser matches "today" in the user's timezone.
+    tz_modifier = f"{tz_offset_minutes:+d} minutes"
     daily_rows = conn.execute("""
         SELECT
-            substr(t.timestamp, 1, 10)         as day,
+            date(datetime(t.timestamp, ?))     as day,
             COALESCE(t.model, 'unknown')        as model,
             COALESCE(s.project_name, 'unknown') as project,
             SUM(t.input_tokens)                 as input,
@@ -44,7 +47,7 @@ def get_dashboard_data(db_path=DB_PATH):
         LEFT JOIN sessions s ON t.session_id = s.session_id
         GROUP BY 1, 2, 3
         ORDER BY 1, 2, 3
-    """).fetchall()
+    """, (tz_modifier,)).fetchall()
 
     daily_by_model = [{
         "day":            r["day"],
@@ -1078,7 +1081,8 @@ async function loadPrefsIntoURL() {
 // ── Data loading ───────────────────────────────────────────────────────────
 async function loadData() {
   try {
-    const resp = await fetch('/api/data');
+    const tzOffset = -new Date().getTimezoneOffset();
+    const resp = await fetch('/api/data?tz_offset=' + tzOffset);
     const d = await resp.json();
     if (d.error) {
       document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + esc(d.error) + '</div>';
@@ -1157,8 +1161,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
 
-        elif self.path == "/api/data":
-            data = get_dashboard_data()
+        elif self.path.startswith("/api/data"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                tz_offset = int(qs.get("tz_offset", ["0"])[0])
+            except ValueError:
+                tz_offset = 0
+            data = get_dashboard_data(tz_offset_minutes=tz_offset)
             body = json.dumps(data).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
