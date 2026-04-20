@@ -72,9 +72,25 @@ class TestGetDashboardData(unittest.TestCase):
         data = get_dashboard_data(db_path=self.db_path)
         self.assertGreater(len(data["daily_by_model"]), 0)
         day = data["daily_by_model"][0]
-        self.assertIn("day", day)
+        # Bucket is an ISO timestamp (midnight for daily rows) so it shares the
+        # schema used by hourly_by_model and fivemin_by_model.
+        self.assertIn("bucket", day)
+        self.assertRegex(day["bucket"], r"^\d{4}-\d{2}-\d{2}T00:00:00$")
         self.assertIn("model", day)
         self.assertIn("input", day)
+
+    def test_hourly_and_fivemin_series_present(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertIn("hourly_by_model", data)
+        self.assertIn("fivemin_by_model", data)
+
+    def test_session_has_last_iso(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        session = data["sessions_all"][0]
+        # last_iso is a 19-char ISO timestamp (no "Z") so it string-compares
+        # cleanly against bucket keys on the client.
+        self.assertIn("last_iso", session)
+        self.assertRegex(session["last_iso"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
 
     def test_missing_db_returns_error(self):
         data = get_dashboard_data(db_path=Path("/nonexistent/path/usage.db"))

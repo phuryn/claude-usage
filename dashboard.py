@@ -44,7 +44,7 @@ def get_dashboard_data(db_path=DB_PATH):
     """).fetchall()
 
     daily_by_model = [{
-        "day":            r["day"],
+        "bucket":         r["day"] + "T00:00:00",
         "model":          r["model"],
         "input":          r["input"] or 0,
         "output":         r["output"] or 0,
@@ -52,6 +52,60 @@ def get_dashboard_data(db_path=DB_PATH):
         "cache_creation": r["cache_creation"] or 0,
         "turns":          r["turns"] or 0,
     } for r in daily_rows]
+
+    # ── Hourly per-model, last 7 days (for 1d view) ───────────────────────────
+    hourly_rows = conn.execute("""
+        SELECT
+            substr(timestamp, 1, 13) || ':00:00' as bucket,
+            COALESCE(model, 'unknown')           as model,
+            SUM(input_tokens)                    as input,
+            SUM(output_tokens)                   as output,
+            SUM(cache_read_tokens)               as cache_read,
+            SUM(cache_creation_tokens)           as cache_creation,
+            COUNT(*)                             as turns
+        FROM turns
+        WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
+        GROUP BY bucket, model
+        ORDER BY bucket, model
+    """).fetchall()
+
+    hourly_by_model = [{
+        "bucket":         r["bucket"],
+        "model":          r["model"],
+        "input":          r["input"] or 0,
+        "output":         r["output"] or 0,
+        "cache_read":     r["cache_read"] or 0,
+        "cache_creation": r["cache_creation"] or 0,
+        "turns":          r["turns"] or 0,
+    } for r in hourly_rows]
+
+    # ── 5-minute per-model, last 24 hours (for 1h and 5h views) ───────────────
+    fivemin_rows = conn.execute("""
+        SELECT
+            strftime('%Y-%m-%dT%H:', timestamp)
+              || substr('00' || (CAST(strftime('%M', timestamp) AS INTEGER) / 5 * 5), -2, 2)
+              || ':00'                          as bucket,
+            COALESCE(model, 'unknown')          as model,
+            SUM(input_tokens)                   as input,
+            SUM(output_tokens)                  as output,
+            SUM(cache_read_tokens)              as cache_read,
+            SUM(cache_creation_tokens)          as cache_creation,
+            COUNT(*)                            as turns
+        FROM turns
+        WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')
+        GROUP BY bucket, model
+        ORDER BY bucket, model
+    """).fetchall()
+
+    fivemin_by_model = [{
+        "bucket":         r["bucket"],
+        "model":          r["model"],
+        "input":          r["input"] or 0,
+        "output":         r["output"] or 0,
+        "cache_read":     r["cache_read"] or 0,
+        "cache_creation": r["cache_creation"] or 0,
+        "turns":          r["turns"] or 0,
+    } for r in fivemin_rows]
 
     # ── All sessions (client filters by range and model) ──────────────────────
     session_rows = conn.execute("""
@@ -75,7 +129,7 @@ def get_dashboard_data(db_path=DB_PATH):
             "session_id":    r["session_id"][:8],
             "project":       r["project_name"] or "unknown",
             "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
-            "last_date":     (r["last_timestamp"] or "")[:10],
+            "last_iso":      (r["last_timestamp"] or "")[:19],
             "duration_min":  duration_min,
             "model":         r["model"] or "unknown",
             "turns":         r["turn_count"] or 0,
@@ -88,10 +142,12 @@ def get_dashboard_data(db_path=DB_PATH):
     conn.close()
 
     return {
-        "all_models":     all_models,
-        "daily_by_model": daily_by_model,
-        "sessions_all":   sessions_all,
-        "generated_at":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "all_models":       all_models,
+        "daily_by_model":   daily_by_model,
+        "hourly_by_model":  hourly_by_model,
+        "fivemin_by_model": fivemin_by_model,
+        "sessions_all":     sessions_all,
+        "generated_at":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
@@ -198,10 +254,22 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="filter-sep"></div>
   <div class="filter-label">Range</div>
   <div class="range-group">
-    <button class="range-btn" data-range="7d"  onclick="setRange('7d')">7d</button>
-    <button class="range-btn" data-range="30d" onclick="setRange('30d')">30d</button>
-    <button class="range-btn" data-range="90d" onclick="setRange('90d')">90d</button>
-    <button class="range-btn" data-range="all" onclick="setRange('all')">All</button>
+    <button class="range-btn" data-range="1h"     onclick="setRange('1h')">1h</button>
+    <button class="range-btn" data-range="5h"     onclick="setRange('5h')">5h</button>
+    <button class="range-btn" data-range="1d"     onclick="setRange('1d')">1d</button>
+    <button class="range-btn" data-range="7d"     onclick="setRange('7d')">7d</button>
+    <button class="range-btn" data-range="30d"    onclick="setRange('30d')">30d</button>
+    <button class="range-btn" data-range="90d"    onclick="setRange('90d')">90d</button>
+    <button class="range-btn" data-range="all"    onclick="setRange('all')">All</button>
+    <button class="range-btn" data-range="custom" onclick="toggleCustomRange()">Custom</button>
+  </div>
+  <div id="custom-range-panel" style="display:none; margin-left:12px; align-items:center; gap:8px;">
+    <span style="color:var(--muted); font-size:12px;">From</span>
+    <input type="datetime-local" id="custom-from" style="background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:3px 6px; font-size:12px;">
+    <span style="color:var(--muted); font-size:12px;">To</span>
+    <input type="datetime-local" id="custom-to" style="background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:3px 6px; font-size:12px;">
+    <button class="filter-btn" onclick="applyCustomRange()">Apply</button>
+    <span id="custom-range-error" style="color:#f87171; font-size:12px;"></span>
   </div>
 </div>
 
@@ -365,20 +433,95 @@ const TOKEN_COLORS = {
 const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
 
 // ── Time range ─────────────────────────────────────────────────────────────
-const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
-const RANGE_TICKS  = { '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+const RANGE_LABELS = {
+  '1h':  'Last 1 Hour',
+  '5h':  'Last 5 Hours',
+  '1d':  'Last 24 Hours',
+  '7d':  'Last 7 Days',
+  '30d': 'Last 30 Days',
+  '90d': 'Last 90 Days',
+  'all': 'All Time',
+  'custom': 'Custom Range',
+};
+const RANGE_TICKS = { '1h': 12, '5h': 10, '1d': 12, '7d': 7, '30d': 15, '90d': 13, 'all': 12, 'custom': 12 };
+const VALID_RANGES = ['1h', '5h', '1d', '7d', '30d', '90d', 'all', 'custom'];
 
-function getRangeCutoff(range) {
-  if (range === 'all') return null;
-  const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
+// Custom range state (ISO strings without timezone, e.g. "2026-04-20T12:00:00")
+let customFrom = null;
+let customTo   = null;
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+// Returns UTC ISO string without trailing Z, 19 chars — matches server bucket format.
+function toUtcISO(d) { return d.toISOString().slice(0, 19); }
+// Converts UTC ISO string ("2026-04-20T16:00:00") to the format a datetime-local input expects
+// ("YYYY-MM-DDTHH:MM" in local time).
+function utcIsoToLocalInput(utcIso) {
+  const d = new Date(utcIso + 'Z');
+  return d.getFullYear() + '-' + pad2(d.getMonth()+1) + '-' + pad2(d.getDate())
+       + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
+
+// Returns { from, to, dataKey, bucketMs, tickFormat }
+// - from/to: ISO strings (local, 19 chars) — inclusive lower, exclusive upper
+// - dataKey: 'fivemin_by_model' | 'hourly_by_model' | 'daily_by_model'
+// - bucketMs: milliseconds per bucket (for label generation)
+// - tickFormat: 'hm' | 'dm' | 'date' — how to format x-axis labels
+function getRangeInfo(range) {
+  const now = new Date();
+  let fromDate, toDate;
+  if (range === 'all') {
+    // "All time" — use epoch as the lower bound so every bucket passes the filter.
+    fromDate = new Date(0);
+    toDate   = now;
+  } else if (range === 'custom') {
+    if (!customFrom || !customTo) {
+      fromDate = new Date(now.getTime() - 24*60*60*1000);
+      toDate   = now;
+    } else {
+      fromDate = new Date(customFrom + 'Z');
+      toDate   = new Date(customTo   + 'Z');
+    }
+  } else {
+    const hours = { '1h': 1, '5h': 5, '1d': 24, '7d': 24*7, '30d': 24*30, '90d': 24*90 }[range];
+    fromDate = new Date(now.getTime() - hours*60*60*1000);
+    toDate   = now;
+  }
+  const spanHours = (toDate - fromDate) / (60*60*1000);
+  let dataKey, tickFormat;
+  if (spanHours <= 6) {
+    dataKey = 'fivemin_by_model'; tickFormat = 'hm';
+  } else if (spanHours <= 72) {
+    dataKey = 'hourly_by_model'; tickFormat = (spanHours <= 30 ? 'hm' : 'dm');
+  } else {
+    dataKey = 'daily_by_model'; tickFormat = 'date';
+  }
+  return {
+    from: toUtcISO(fromDate),
+    to:   toUtcISO(toDate),
+    dataKey: dataKey,
+    tickFormat: tickFormat,
+  };
+}
+
+function formatBucketLabel(isoStr, tickFormat) {
+  // Server bucket strings are UTC but lack trailing Z — force UTC parse, then display in local tz.
+  const d = new Date(isoStr + 'Z');
+  if (tickFormat === 'hm') return pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  if (tickFormat === 'dm') return (d.getMonth()+1) + '/' + d.getDate() + ' ' + pad2(d.getHours()) + ':00';
+  // 'date' — use the UTC date portion directly; user ranges ≥ 3 days so tz shift is negligible.
+  return isoStr.slice(0, 10);
 }
 
 function readURLRange() {
   const p = new URLSearchParams(window.location.search).get('range');
-  return ['7d', '30d', '90d', 'all'].includes(p) ? p : '30d';
+  return VALID_RANGES.includes(p) ? p : '30d';
+}
+
+function readURLCustom() {
+  const params = new URLSearchParams(window.location.search);
+  const f = params.get('from');
+  const t = params.get('to');
+  if (f && t) { customFrom = f; customTo = t; }
 }
 
 function setRange(range) {
@@ -386,6 +529,36 @@ function setRange(range) {
   document.querySelectorAll('.range-btn').forEach(btn =>
     btn.classList.toggle('active', btn.dataset.range === range)
   );
+  const panel = document.getElementById('custom-range-panel');
+  panel.style.display = (range === 'custom') ? 'flex' : 'none';
+  updateURL();
+  applyFilter();
+}
+
+function toggleCustomRange() {
+  const now = new Date();
+  const yesterday = new Date(now.getTime() - 24*60*60*1000);
+  const fromInput = document.getElementById('custom-from');
+  const toInput   = document.getElementById('custom-to');
+  if (!fromInput.value) fromInput.value = utcIsoToLocalInput(toUtcISO(yesterday));
+  if (!toInput.value)   toInput.value   = utcIsoToLocalInput(toUtcISO(now));
+  setRange('custom');
+}
+
+function applyCustomRange() {
+  const errEl = document.getElementById('custom-range-error');
+  errEl.textContent = '';
+  const fromVal = document.getElementById('custom-from').value;
+  const toVal   = document.getElementById('custom-to').value;
+  if (!fromVal || !toVal) { errEl.textContent = 'Pick both dates.'; return; }
+  // datetime-local inputs are parsed as LOCAL time — the Date object then converts to UTC for storage.
+  const fromDate = new Date(fromVal);
+  const toDate   = new Date(toVal);
+  if (!(toDate > fromDate)) { errEl.textContent = 'To must be after From.'; return; }
+  const spanDays = (toDate - fromDate) / (24*60*60*1000);
+  if (spanDays > 90) { errEl.textContent = 'Max range is 90 days.'; return; }
+  customFrom = toUtcISO(fromDate);
+  customTo   = toUtcISO(toDate);
   updateURL();
   applyFilter();
 }
@@ -455,6 +628,10 @@ function updateURL() {
   const allModels = Array.from(document.querySelectorAll('#model-checkboxes input')).map(cb => cb.value);
   const params = new URLSearchParams();
   if (selectedRange !== '30d') params.set('range', selectedRange);
+  if (selectedRange === 'custom' && customFrom && customTo) {
+    params.set('from', customFrom);
+    params.set('to',   customTo);
+  }
   if (!isDefaultModelSelection(allModels)) params.set('models', Array.from(selectedModels).join(','));
   const search = params.toString() ? '?' + params.toString() : '';
   history.replaceState(null, '', window.location.pathname + search);
@@ -501,28 +678,29 @@ function sortSessions(sessions) {
 function applyFilter() {
   if (!rawData) return;
 
-  const cutoff = getRangeCutoff(selectedRange);
+  const info = getRangeInfo(selectedRange);
+  const sourceRows = rawData[info.dataKey] || [];
 
-  // Filter daily rows by model + date range
-  const filteredDaily = rawData.daily_by_model.filter(r =>
-    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+  // Filter bucketed rows by model + range
+  const filteredBuckets = sourceRows.filter(r =>
+    selectedModels.has(r.model) && r.bucket >= info.from && r.bucket < info.to
   );
 
-  // Daily chart: aggregate by day
-  const dailyMap = {};
-  for (const r of filteredDaily) {
-    if (!dailyMap[r.day]) dailyMap[r.day] = { day: r.day, input: 0, output: 0, cache_read: 0, cache_creation: 0 };
-    const d = dailyMap[r.day];
+  // Time chart: aggregate by bucket
+  const bucketMap = {};
+  for (const r of filteredBuckets) {
+    if (!bucketMap[r.bucket]) bucketMap[r.bucket] = { bucket: r.bucket, input: 0, output: 0, cache_read: 0, cache_creation: 0 };
+    const d = bucketMap[r.bucket];
     d.input          += r.input;
     d.output         += r.output;
     d.cache_read     += r.cache_read;
     d.cache_creation += r.cache_creation;
   }
-  const daily = Object.values(dailyMap).sort((a, b) => a.day.localeCompare(b.day));
+  const series = Object.values(bucketMap).sort((a, b) => a.bucket.localeCompare(b.bucket));
 
-  // By model: aggregate tokens + turns from daily data
+  // By model: aggregate tokens + turns from bucketed data
   const modelMap = {};
-  for (const r of filteredDaily) {
+  for (const r of filteredBuckets) {
     if (!modelMap[r.model]) modelMap[r.model] = { model: r.model, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0, sessions: 0 };
     const m = modelMap[r.model];
     m.input          += r.input;
@@ -532,9 +710,9 @@ function applyFilter() {
     m.turns          += r.turns;
   }
 
-  // Filter sessions by model + date range
+  // Filter sessions by model + range (compare last_iso against ISO cutoffs)
   const filteredSessions = rawData.sessions_all.filter(s =>
-    selectedModels.has(s.model) && (!cutoff || s.last_date >= cutoff)
+    selectedModels.has(s.model) && s.last_iso >= info.from && s.last_iso < info.to
   );
 
   // Add session counts into modelMap
@@ -570,11 +748,11 @@ function applyFilter() {
     cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0),
   };
 
-  // Update daily chart title
-  document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
+  // Update chart title (use label appropriate to selected range)
+  document.getElementById('daily-chart-title').textContent = 'Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
 
   renderStats(totals);
-  renderDailyChart(daily);
+  renderDailyChart(series, info);
   renderModelChart(byModel);
   renderProjectChart(byProject);
   lastFilteredSessions = sortSessions(filteredSessions);
@@ -605,18 +783,19 @@ function renderStats(t) {
   `).join('');
 }
 
-function renderDailyChart(daily) {
+function renderDailyChart(series, info) {
   const ctx = document.getElementById('chart-daily').getContext('2d');
   if (charts.daily) charts.daily.destroy();
+  const fmtLabel = info ? (b => formatBucketLabel(b, info.tickFormat)) : (b => b);
   charts.daily = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: daily.map(d => d.day),
+      labels: series.map(d => fmtLabel(d.bucket)),
       datasets: [
-        { label: 'Input',          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens' },
-        { label: 'Output',         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens' },
-        { label: 'Cache Read',     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens' },
-        { label: 'Cache Creation', data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens' },
+        { label: 'Input',          data: series.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens' },
+        { label: 'Output',         data: series.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens' },
+        { label: 'Cache Read',     data: series.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens' },
+        { label: 'Cache Creation', data: series.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens' },
       ]
     },
     options: {
@@ -866,9 +1045,16 @@ async function loadData() {
     if (isFirstLoad) {
       // Restore range from URL, mark active button
       selectedRange = readURLRange();
+      readURLCustom();
       document.querySelectorAll('.range-btn').forEach(btn =>
         btn.classList.toggle('active', btn.dataset.range === selectedRange)
       );
+      if (selectedRange === 'custom') {
+        const panel = document.getElementById('custom-range-panel');
+        panel.style.display = 'flex';
+        if (customFrom) document.getElementById('custom-from').value = utcIsoToLocalInput(customFrom);
+        if (customTo)   document.getElementById('custom-to').value   = utcIsoToLocalInput(customTo);
+      }
       // Build model filter (reads URL for model selection too)
       buildFilterUI(d.all_models);
       updateSortIcons();
