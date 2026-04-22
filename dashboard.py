@@ -5,11 +5,212 @@ dashboard.py - Local web dashboard served on localhost:8080.
 import json
 import os
 import sqlite3
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from datetime import datetime
+from datetime import date, datetime
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
+MODEL_CONTEXT_LIMIT = 200_000
+
+PRICING = {
+    "claude-opus-4-6":   {"input": 5.00, "output": 25.00},
+    "claude-opus-4-5":   {"input": 5.00, "output": 25.00},
+    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
+    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
+    "claude-haiku-4-5":  {"input": 1.00, "output":  5.00},
+    "claude-haiku-4-6":  {"input": 1.00, "output":  5.00},
+}
+
+
+def _get_pricing(model):
+    if not model:
+        return None
+    if model in PRICING:
+        return PRICING[model]
+    for k, v in PRICING.items():
+        if model.startswith(k):
+            return v
+    m = model.lower()
+    if "opus"   in m: return PRICING["claude-opus-4-6"]
+    if "sonnet" in m: return PRICING["claude-sonnet-4-6"]
+    if "haiku"  in m: return PRICING["claude-haiku-4-5"]
+    return None
+
+
+def _calc_cost(model, inp, out, cr, cc):
+    p = _get_pricing(model)
+    if not p:
+        return 0.0
+    return (
+        inp * p["input"]  / 1_000_000 +
+        out * p["output"] / 1_000_000 +
+        cr  * p["input"]  * 0.10 / 1_000_000 +
+        cc  * p["input"]  * 1.25 / 1_000_000
+    )
+
+
+def get_active_session(db_path=DB_PATH):
+    """Return live stats for the most recent session."""
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        sess = conn.execute("""
+            SELECT session_id, project_name, first_timestamp, last_timestamp, model,
+                   total_input_tokens, total_output_tokens,
+                   total_cache_read, total_cache_creation, turn_count
+            FROM sessions ORDER BY last_timestamp DESC LIMIT 1
+        """).fetchone()
+        if not sess:
+            conn.close()
+            return None
+        last_turn = conn.execute("""
+            SELECT input_tokens FROM turns
+            WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1
+        """, (sess["session_id"],)).fetchone()
+        conn.close()
+    except Exception:
+        return None
+
+    context_tokens = last_turn["input_tokens"] if last_turn else 0
+    context_pct = round(context_tokens / MODEL_CONTEXT_LIMIT * 100, 1)
+
+    try:
+        t1 = datetime.fromisoformat(sess["first_timestamp"].replace("Z", "+00:00"))
+        t2 = datetime.fromisoformat(sess["last_timestamp"].replace("Z", "+00:00"))
+        duration_min = round((t2 - t1).total_seconds() / 60, 1)
+        start_str = t1.strftime("%H:%M")
+    except Exception:
+        duration_min = 0.0
+        start_str = "—"
+
+    return {
+        "session_id":     sess["session_id"][:8],
+        "project":        sess["project_name"] or "unknown",
+        "model":          sess["model"] or "unknown",
+        "turns":          sess["turn_count"] or 0,
+        "cost":           round(_calc_cost(
+            sess["model"],
+            sess["total_input_tokens"]   or 0,
+            sess["total_output_tokens"]  or 0,
+            sess["total_cache_read"]     or 0,
+            sess["total_cache_creation"] or 0,
+        ), 4),
+        "duration_min":   duration_min,
+        "context_tokens": context_tokens,
+        "context_pct":    context_pct,
+        "start_str":      start_str,
+    }
+
+
+def get_session_detail(session_id, db_path=DB_PATH):
+    """Return turn history + session info for a given session_id prefix."""
+    if not db_path.exists():
+        return {"error": "Database not found"}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+
+        # Match by prefix (session_id in DB is full UUID, UI shows 8-char prefix)
+        sess = conn.execute("""
+            SELECT session_id, project_name, first_timestamp, last_timestamp,
+                   git_branch, model, turn_count
+            FROM sessions WHERE session_id LIKE ? LIMIT 1
+        """, (session_id + "%",)).fetchone()
+
+        if not sess:
+            conn.close()
+            return {"error": f"Session {session_id!r} not found"}
+
+        turns = conn.execute("""
+            SELECT timestamp, model, input_tokens, output_tokens,
+                   cache_read_tokens, cache_creation_tokens, tool_name
+            FROM turns WHERE session_id = ?
+            ORDER BY timestamp ASC
+        """, (sess["session_id"],)).fetchall()
+        conn.close()
+    except Exception as e:
+        return {"error": str(e)}
+
+    turn_list = [{
+        "timestamp":       (r["timestamp"] or "")[:19].replace("T", " "),
+        "model":           r["model"] or "unknown",
+        "input_tokens":    r["input_tokens"] or 0,
+        "output_tokens":   r["output_tokens"] or 0,
+        "cache_read":      r["cache_read_tokens"] or 0,
+        "cache_creation":  r["cache_creation_tokens"] or 0,
+        "tool_name":       r["tool_name"] or "",
+    } for r in turns]
+
+    return {
+        "session_id":      sess["session_id"],
+        "project":         sess["project_name"] or "unknown",
+        "first_timestamp": (sess["first_timestamp"] or "")[:19].replace("T", " "),
+        "last_timestamp":  (sess["last_timestamp"]  or "")[:19].replace("T", " "),
+        "git_branch":      sess["git_branch"] or "",
+        "model":           sess["model"] or "unknown",
+        "turn_count":      sess["turn_count"] or 0,
+        "turns":           turn_list,
+    }
+
+
+def get_pace_data(db_path=DB_PATH):
+    """Return daily pacing: today spend, budget %, projected EOD."""
+    try:
+        from alert_config import load_config
+        cfg = load_config()
+    except Exception:
+        cfg = {"daily": {"budget_usd": 10.00}}
+
+    today = date.today().isoformat()
+    today_cost = 0.0
+    sessions_today = 0
+    avg_cost_per_session = 0.0
+
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT COALESCE(model,'unknown') as model,
+                       SUM(input_tokens) as inp, SUM(output_tokens) as out,
+                       SUM(cache_read_tokens) as cr, SUM(cache_creation_tokens) as cc
+                FROM turns WHERE substr(timestamp,1,10) = ?
+                GROUP BY model
+            """, (today,)).fetchall()
+            today_cost = sum(
+                _calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+                for r in rows
+            )
+            sess_row = conn.execute("""
+                SELECT COUNT(DISTINCT session_id) as cnt FROM turns
+                WHERE substr(timestamp,1,10) = ?
+            """, (today,)).fetchone()
+            sessions_today = sess_row["cnt"] if sess_row else 0
+            conn.close()
+        except Exception:
+            pass
+
+    budget = cfg.get("daily", {}).get("budget_usd", 10.00)
+    budget_pct = round(today_cost / budget * 100, 1) if budget > 0 else 0
+
+    now = datetime.now()
+    elapsed_frac = (now.hour * 3600 + now.minute * 60 + now.second) / 86400
+    projected_eod = round(today_cost / elapsed_frac, 4) if elapsed_frac > 0.01 else 0.0
+
+    avg_cost_per_session = round(today_cost / sessions_today, 4) if sessions_today > 0 else 0.0
+
+    return {
+        "today_cost":          round(today_cost, 4),
+        "budget_usd":          budget,
+        "budget_pct":          budget_pct,
+        "projected_eod":       projected_eod,
+        "sessions_today":      sessions_today,
+        "avg_cost_per_session": avg_cost_per_session,
+    }
 
 
 def get_dashboard_data(db_path=DB_PATH):
@@ -119,9 +320,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
   header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
   header .meta { color: var(--muted); font-size: 12px; }
-  #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
+  header .header-btns { display: flex; gap: 8px; align-items: center; }
+  #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
   #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
   #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  #settings-link { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; font-size: 12px; text-decoration: none; }
+  #settings-link:hover { color: var(--text); border-color: var(--accent); }
 
   #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
@@ -180,14 +384,54 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .footer-content a { color: var(--blue); text-decoration: none; }
   .footer-content a:hover { text-decoration: underline; }
 
-  @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } }
+  @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } .live-row { grid-template-columns: 1fr; } }
+
+  /* ── Live cards ────────────────────────────────────────────────────── */
+  .live-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .gauge-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+  .gauge-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 14px; }
+  .gauge-row { display: flex; align-items: center; gap: 20px; }
+  .gauge-wrap { flex-shrink: 0; }
+  .gauge-info { flex: 1; min-width: 0; }
+  .gauge-info .big { font-size: 22px; font-weight: 700; white-space: nowrap; }
+  .gauge-info .detail { color: var(--muted); font-size: 12px; margin-top: 6px; line-height: 1.7; }
+  .gauge-info .detail span.ok   { color: var(--green); }
+  .gauge-info .detail span.warn { color: #fbbf24; }
+  .gauge-info .detail span.crit { color: #f87171; }
+  .gauge-nav { float: right; color: var(--muted); font-size: 12px; text-decoration: none; }
+  .gauge-nav:hover { color: var(--accent); }
+
+  /* ── Settings page ─────────────────────────────────────────────────── */
+  .settings-wrap { max-width: 600px; margin: 40px auto; }
+  .settings-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 28px; margin-bottom: 20px; }
+  .settings-card h2 { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  .field-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .field-row:last-child { margin-bottom: 0; }
+  .field-label { font-size: 13px; color: var(--text); }
+  .field-hint  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .field-input { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 5px 10px; font-size: 13px; width: 120px; text-align: right; }
+  .field-input:focus { outline: none; border-color: var(--accent); }
+  .toggle-wrap { display: flex; align-items: center; gap: 8px; }
+  .toggle { position: relative; width: 36px; height: 20px; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider { position: absolute; inset: 0; background: var(--border); border-radius: 20px; cursor: pointer; transition: background 0.2s; }
+  .toggle-slider:before { content: ''; position: absolute; height: 14px; width: 14px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: transform 0.2s; }
+  .toggle input:checked + .toggle-slider { background: var(--accent); }
+  .toggle input:checked + .toggle-slider:before { transform: translateX(16px); }
+  .save-btn { width: 100%; padding: 10px; background: var(--accent); color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 4px; }
+  .save-btn:hover { opacity: 0.9; }
+  .save-msg { text-align: center; font-size: 13px; margin-top: 10px; color: var(--green); min-height: 20px; }
+  select.field-input { width: 130px; }
 </style>
 </head>
 <body>
 <header>
   <h1>Claude Code Usage Dashboard</h1>
   <div class="meta" id="meta">Loading...</div>
-  <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
+  <div class="header-btns">
+    <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
+    <a id="settings-link" href="/settings">&#x2699; Settings</a>
+  </div>
 </header>
 
 <div id="filter-bar">
@@ -206,6 +450,42 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <div class="container">
+  <div class="live-row">
+    <div class="gauge-card" id="pacing-card">
+      <div class="gauge-title">Daily Pacing <a class="gauge-nav" href="/settings">edit thresholds &rsaquo;</a></div>
+      <div class="gauge-row">
+        <div class="gauge-wrap">
+          <svg id="pace-gauge" viewBox="0 0 110 70" width="110" height="70">
+            <path d="M 15,60 A 45,45 0 0,1 95,60" stroke="#2a2d3a" stroke-width="10" fill="none" stroke-linecap="round"/>
+            <path id="pace-arc" d="M 15,60 A 45,45 0 0,1 95,60" stroke="#4ade80" stroke-width="10" fill="none" stroke-linecap="round"
+                  stroke-dasharray="0 141.37" style="transition:stroke-dasharray 0.6s ease,stroke 0.4s ease"/>
+            <text id="pace-pct-text" x="55" y="57" text-anchor="middle" fill="#e2e8f0" font-size="14" font-weight="700">—</text>
+          </svg>
+        </div>
+        <div class="gauge-info">
+          <div class="big" id="pace-spend">—</div>
+          <div class="detail" id="pace-detail">Loading&hellip;</div>
+        </div>
+      </div>
+    </div>
+    <div class="gauge-card" id="session-card">
+      <div class="gauge-title">Active Session</div>
+      <div class="gauge-row">
+        <div class="gauge-wrap">
+          <svg id="ctx-gauge" viewBox="0 0 110 70" width="110" height="70">
+            <path d="M 15,60 A 45,45 0 0,1 95,60" stroke="#2a2d3a" stroke-width="10" fill="none" stroke-linecap="round"/>
+            <path id="ctx-arc" d="M 15,60 A 45,45 0 0,1 95,60" stroke="#4ade80" stroke-width="10" fill="none" stroke-linecap="round"
+                  stroke-dasharray="0 141.37" style="transition:stroke-dasharray 0.6s ease,stroke 0.4s ease"/>
+            <text id="ctx-pct-text" x="55" y="57" text-anchor="middle" fill="#e2e8f0" font-size="14" font-weight="700">—</text>
+          </svg>
+        </div>
+        <div class="gauge-info">
+          <div class="big" id="ctx-pct">—</div>
+          <div class="detail" id="ctx-detail">Loading&hellip;</div>
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="stats-row" id="stats-row"></div>
   <div class="charts-grid">
     <div class="chart-card wide">
@@ -882,8 +1162,221 @@ async function loadData() {
   }
 }
 
+// ── Arc gauge helper ──────────────────────────────────────────────────────
+const ARC_TOTAL = 141.37; // half-circumference of radius-45 arc
+
+function gaugeColor(pct) {
+  if (pct >= 80) return '#f87171';
+  if (pct >= 60) return '#fbbf24';
+  return '#4ade80';
+}
+
+function setGauge(arcId, textId, pct) {
+  const fill = Math.min(pct / 100, 1) * ARC_TOTAL;
+  const arc  = document.getElementById(arcId);
+  const txt  = document.getElementById(textId);
+  if (!arc || !txt) return;
+  arc.setAttribute('stroke-dasharray', `${fill.toFixed(2)} ${ARC_TOTAL}`);
+  arc.setAttribute('stroke', gaugeColor(pct));
+  txt.textContent = pct > 0 ? Math.round(pct) + '%' : '—';
+}
+
+function statusSpan(val, ok, warn) {
+  const cls = val >= warn ? 'crit' : val >= ok ? 'warn' : 'ok';
+  return `<span class="${cls}">${esc(String(val))}</span>`;
+}
+
+// ── Live card updates ─────────────────────────────────────────────────────
+async function loadLive() {
+  try {
+    const [paceResp, activeResp] = await Promise.all([
+      fetch('/api/pace'),
+      fetch('/api/active'),
+    ]);
+    if (paceResp.ok) {
+      const p = await paceResp.json();
+      setGauge('pace-arc', 'pace-pct-text', p.budget_pct);
+      document.getElementById('pace-spend').textContent = '$' + p.today_cost.toFixed(2);
+      document.getElementById('pace-detail').innerHTML =
+        `Budget: $${p.budget_usd.toFixed(2)}<br>` +
+        `Projected EOD: $${p.projected_eod.toFixed(2)}<br>` +
+        `Sessions today: ${p.sessions_today} &middot; avg $${p.avg_cost_per_session.toFixed(2)}`;
+    }
+    if (activeResp.ok) {
+      const a = await activeResp.json();
+      if (a && !a.error) {
+        setGauge('ctx-arc', 'ctx-pct-text', a.context_pct);
+        document.getElementById('ctx-pct').textContent = a.context_pct.toFixed(1) + '% ctx';
+        document.getElementById('ctx-detail').innerHTML =
+          `${esc(a.project)}<br>` +
+          `Turns: ${statusSpan(a.turns, 40, 45)} &middot; Cost: $${a.cost.toFixed(2)}<br>` +
+          `Duration: ${a.duration_min}min &middot; Start: ${esc(a.start_str)}`;
+      } else {
+        document.getElementById('ctx-pct').textContent = 'No session';
+        document.getElementById('ctx-detail').textContent = 'No active session found.';
+        setGauge('ctx-arc', 'ctx-pct-text', 0);
+      }
+    }
+  } catch(e) { /* non-fatal */ }
+}
+
 loadData();
+loadLive();
 setInterval(loadData, 30000);
+setInterval(loadLive, 15000);
+</script>
+</body>
+</html>
+"""
+
+
+SETTINGS_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Alert Settings &mdash; Claude Usage</title>
+<style>
+  :root { --bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--muted:#8892a4;--accent:#d97757;--blue:#4f8ef7;--green:#4ade80; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px}
+  header{background:var(--card);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
+  header h1{font-size:18px;font-weight:600;color:var(--accent)}
+  .back{color:var(--muted);font-size:12px;text-decoration:none}
+  .back:hover{color:var(--text)}
+  .settings-wrap{max-width:560px;margin:40px auto;padding:0 24px}
+  .settings-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:28px;margin-bottom:20px}
+  .settings-card h2{font-size:13px;font-weight:600;color:var(--text);margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:12px;text-transform:uppercase;letter-spacing:.05em}
+  .field-row{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:18px}
+  .field-row:last-child{margin-bottom:0}
+  .field-label{font-size:13px;color:var(--text)}
+  .field-hint{font-size:11px;color:var(--muted);margin-top:3px}
+  .field-input{background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:5px 10px;font-size:13px;width:120px;text-align:right}
+  .field-input:focus{outline:none;border-color:var(--accent)}
+  select.field-input{width:130px;text-align:left}
+  .toggle-wrap{display:flex;align-items:center;gap:8px;margin-top:2px}
+  .toggle{position:relative;width:36px;height:20px}
+  .toggle input{opacity:0;width:0;height:0}
+  .slider{position:absolute;inset:0;background:var(--border);border-radius:20px;cursor:pointer;transition:background .2s}
+  .slider:before{content:'';position:absolute;height:14px;width:14px;left:3px;bottom:3px;background:white;border-radius:50%;transition:transform .2s}
+  .toggle input:checked+.slider{background:var(--accent)}
+  .toggle input:checked+.slider:before{transform:translateX(16px)}
+  .save-btn{width:100%;padding:10px;background:var(--accent);color:white;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer}
+  .save-btn:hover{opacity:.9}
+  .save-msg{text-align:center;font-size:13px;margin-top:12px;color:var(--green);min-height:20px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Alert Settings</h1>
+  <a class="back" href="/">&larr; Back to Dashboard</a>
+</header>
+<div class="settings-wrap">
+  <div class="settings-card">
+    <h2>Daily Budget</h2>
+    <div class="field-row">
+      <div><div class="field-label">Budget (USD/day)</div><div class="field-hint">Daily spend target</div></div>
+      <input class="field-input" type="number" id="daily_budget" step="0.5" min="0">
+    </div>
+    <div class="field-row">
+      <div><div class="field-label">Warn at %</div><div class="field-hint">Alert when daily spend hits this %</div></div>
+      <input class="field-input" type="number" id="daily_warn_pct" step="5" min="0" max="100">
+    </div>
+  </div>
+  <div class="settings-card">
+    <h2>Session Thresholds</h2>
+    <div class="field-row">
+      <div><div class="field-label">Max cost (USD)</div><div class="field-hint">Alert when session cost exceeds</div></div>
+      <input class="field-input" type="number" id="session_cost" step="0.25" min="0">
+    </div>
+    <div class="field-row">
+      <div><div class="field-label">Max turns</div><div class="field-hint">Alert when turns exceed</div></div>
+      <input class="field-input" type="number" id="session_turns" step="5" min="1">
+    </div>
+    <div class="field-row">
+      <div><div class="field-label">Max duration (min)</div><div class="field-hint">Alert when session exceeds</div></div>
+      <input class="field-input" type="number" id="session_duration" step="15" min="1">
+    </div>
+    <div class="field-row">
+      <div><div class="field-label">Context fill %</div><div class="field-hint">Alert when context window fills to</div></div>
+      <input class="field-input" type="number" id="session_ctx_pct" step="5" min="10" max="100">
+    </div>
+  </div>
+  <div class="settings-card">
+    <h2>Notifications</h2>
+    <div class="field-row">
+      <div><div class="field-label">OS notifications</div><div class="field-hint">Desktop toast alerts</div></div>
+      <div class="toggle-wrap">
+        <label class="toggle"><input type="checkbox" id="os_notif"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="field-row">
+      <div><div class="field-label">Plan</div><div class="field-hint">Used for budget presets</div></div>
+      <select class="field-input" id="plan">
+        <option value="pro">Pro</option>
+        <option value="max">Max</option>
+        <option value="team">Team</option>
+        <option value="enterprise">Enterprise</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <div><div class="field-label">Alert cooldown (min)</div><div class="field-hint">Min time between repeated alerts</div></div>
+      <input class="field-input" type="number" id="cooldown" step="5" min="1">
+    </div>
+  </div>
+  <button class="save-btn" onclick="saveSettings()">Save Settings</button>
+  <div class="save-msg" id="save-msg"></div>
+</div>
+<script>
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/config');
+    const cfg = await r.json();
+    document.getElementById('daily_budget').value    = cfg.daily.budget_usd;
+    document.getElementById('daily_warn_pct').value  = cfg.daily.warn_at_percent;
+    document.getElementById('session_cost').value    = cfg.session.cost_usd;
+    document.getElementById('session_turns').value   = cfg.session.turns;
+    document.getElementById('session_duration').value = cfg.session.duration_minutes;
+    document.getElementById('session_ctx_pct').value  = cfg.session.context_fill_percent;
+    document.getElementById('os_notif').checked      = cfg.os_notifications;
+    document.getElementById('plan').value            = cfg.plan;
+    document.getElementById('cooldown').value        = cfg.notification_cooldown_minutes;
+  } catch(e) { console.error(e); }
+}
+
+async function saveSettings() {
+  const cfg = {
+    os_notifications: document.getElementById('os_notif').checked,
+    plan: document.getElementById('plan').value,
+    notification_cooldown_minutes: parseFloat(document.getElementById('cooldown').value) || 10,
+    daily: {
+      budget_usd:       parseFloat(document.getElementById('daily_budget').value)   || 10,
+      warn_at_percent:  parseFloat(document.getElementById('daily_warn_pct').value) || 80,
+    },
+    session: {
+      cost_usd:             parseFloat(document.getElementById('session_cost').value)     || 1,
+      turns:                parseInt(document.getElementById('session_turns').value)      || 50,
+      duration_minutes:     parseFloat(document.getElementById('session_duration').value) || 60,
+      context_fill_percent: parseFloat(document.getElementById('session_ctx_pct').value)  || 80,
+    },
+  };
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(cfg),
+    });
+    const d = await r.json();
+    const msg = document.getElementById('save-msg');
+    msg.textContent = d.ok ? 'Saved.' : 'Error: ' + d.error;
+    msg.style.color = d.ok ? '#4ade80' : '#f87171';
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+  } catch(e) {
+    document.getElementById('save-msg').textContent = 'Network error.';
+  }
+}
+
+loadSettings();
 </script>
 </body>
 </html>
@@ -910,6 +1403,55 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
 
+        elif self.path == "/api/active":
+            data = get_active_session() or {"error": "no session"}
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path.startswith("/api/session"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            sid = qs.get("session_id", [""])[0]
+            data = get_session_detail(sid) if sid else {"error": "session_id required"}
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path == "/api/pace":
+            data = get_pace_data()
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path == "/api/config":
+            try:
+                from alert_config import load_config
+                cfg = load_config()
+            except Exception:
+                cfg = {}
+            body = json.dumps(cfg).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path == "/settings":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(SETTINGS_TEMPLATE.encode("utf-8"))
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -927,15 +1469,59 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        elif self.path == "/api/config":
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length)
+            try:
+                cfg = json.loads(raw)
+                from alert_config import save_config
+                save_config(cfg)
+                resp = json.dumps({"ok": True}).encode("utf-8")
+                self.send_response(200)
+            except Exception as e:
+                resp = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
+                self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+
         else:
             self.send_response(404)
             self.end_headers()
+
+
+def _monitor_loop():
+    """Background thread: check active session every 15s, fire OS notifications."""
+    while True:
+        try:
+            from alert_config import load_config
+            from notifier import send_notification
+            cfg = load_config()
+            if cfg.get("os_notifications"):
+                sess = get_active_session()
+                if sess:
+                    from session_alert_hook import check_thresholds
+                    alerts = check_thresholds(sess, cfg)
+                    if alerts:
+                        cooldown = cfg.get("notification_cooldown_minutes", 10)
+                        title = "Claude Session Alert"
+                        msg = f"{', '.join(alerts[:2])} — {sess['project']}"
+                        send_notification(title, msg, cooldown_minutes=cooldown, alert_key="session_monitor")
+        except Exception:
+            pass
+        time.sleep(15)
 
 
 def serve(host=None, port=None):
     host = host or os.environ.get("HOST", "localhost")
     port = port or int(os.environ.get("PORT", "8080"))
     server = HTTPServer((host, port), DashboardHandler)
+
+    monitor = threading.Thread(target=_monitor_loop, daemon=True, name="session-monitor")
+    monitor.start()
+
     print(f"Dashboard running at http://{host}:{port}")
     print("Press Ctrl+C to stop.")
     try:
