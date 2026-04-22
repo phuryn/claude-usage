@@ -216,6 +216,9 @@ function _inl(s) {
   .panel-body .suggestions hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
   .panel-body .suggestions strong { color: var(--text); font-weight: 600; }
   .panel-footer { padding: 12px 20px; border-top: 1px solid var(--border); flex-shrink: 0; display: flex; gap: 8px; }
+  #deep-dive-btn { flex: 1; background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  #deep-dive-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  #deep-dive-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   #rerun-btn { background: var(--accent); color: white; border: none; padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
   #rerun-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -318,6 +321,7 @@ function _inl(s) {
   <div class="panel-status" id="panel-status">Ready.</div>
   <div class="panel-body"><div class="suggestions" id="panel-suggestions"></div></div>
   <div class="panel-footer">
+    <button id="deep-dive-btn" onclick="launchDeepDive()" disabled>&#x1F50D; Open Deep Dive</button>
     <button id="rerun-btn" onclick="analyzeClick()">&#x21bb; Re-run</button>
   </div>
 </div>
@@ -1071,6 +1075,7 @@ function runAnalysis() {
 function openPanel() {
   document.getElementById('analyzer-panel').classList.add('open');
   document.getElementById('panel-suggestions').innerHTML = '';
+  document.getElementById('deep-dive-btn').disabled = true;
   setStatus('Starting analysis...');
 }
 
@@ -1112,6 +1117,7 @@ function startSSE() {
         var inp = d.input_tokens || 0, out = d.output_tokens || 0;
         var est = ((inp * 3 + out * 15) / 1000000).toFixed(4);
         setStatus('Done · ' + inp.toLocaleString() + ' in / ' + out.toLocaleString() + ' out · est $' + est);
+        document.getElementById('deep-dive-btn').disabled = false;
         document.getElementById('rerun-btn').disabled = false;
         es.close(); activeSSE = null;
       } else if (d.type === 'error') {
@@ -1127,9 +1133,24 @@ function startSSE() {
     if (has) renderMd();
     setStatus(has ? 'Stream closed.' : 'Connection error.');
     document.getElementById('rerun-btn').disabled = false;
+    if (has) document.getElementById('deep-dive-btn').disabled = false;
     es.close(); activeSSE = null;
   };
   setStatus('Running: claude --print --output-format stream-json ...');
+}
+
+async function launchDeepDive() {
+  var btn = document.getElementById('deep-dive-btn');
+  btn.disabled = true; btn.textContent = 'Launching...';
+  try {
+    var r = await fetch('/api/analyzer/launch-deep-dive', {method: 'POST'});
+    var d = await r.json();
+    setStatus(d.ok ? 'Deep dive launched in terminal.' : 'Launch failed: ' + d.detail);
+  } catch(e) {
+    setStatus('Launch error: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '🔍 Open Deep Dive';
+  }
 }
 
 initAnalyzer();
@@ -1277,6 +1298,71 @@ def _stream_analyzer(snapshot, wfile):
         sse({"type": "error", "message": str(e)})
 
 
+def _launch_deep_dive(snapshot):
+    """Write launch script and spawn terminal. Returns (ok, detail_str)."""
+    import sys as _sys
+    import subprocess
+    from analyzer import build_prompt
+
+    tmp_dir = Path.home() / ".claude" / "analyzer-tmp"
+    tmp_dir.mkdir(exist_ok=True)
+
+    ts       = datetime.now().strftime("%Y%m%d-%H%M%S")
+    ctx_file = tmp_dir / f"analyzer-context-{ts}.md"
+    ctx_file.write_text(build_prompt(snapshot), encoding="utf-8")
+
+    platform = _sys.platform
+    try:
+        if platform == "win32":
+            # PS here-string (@'...'@) — literal, handles em-dash/$/$backticks/pipes/quotes.
+            # UTF-8 BOM (utf-8-sig) so PowerShell reads as UTF-8 not cp1252.
+            # claude "$msg" passes prompt as single interactive first-turn argument.
+            prompt_text = ctx_file.read_text(encoding="utf-8")
+            ps1 = tmp_dir / f"launch-{ts}.ps1"
+            ps1.write_text(
+                'Write-Host "=== Claude Usage Analyzer - Deep Dive ===" -ForegroundColor Cyan\n'
+                'Write-Host "Session uses your claude CLI + auth."\n'
+                'Write-Host "Tokens billed to your plan."\n'
+                'Write-Host ""\n'
+                '$msg = @\'\n'
+                + prompt_text +
+                '\n\'@\n'
+                'claude "$msg"\n'
+                f'Remove-Item "{ctx_file}" -ErrorAction SilentlyContinue\n',
+                encoding="utf-8-sig"
+            )
+            subprocess.Popen(
+                ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(ps1)],
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+            return True, str(ps1)
+        elif platform == "darwin":
+            sh = tmp_dir / f"launch-{ts}.command"
+            sh.write_text(
+                f'#!/bin/bash\necho "=== Claude Usage Analyzer - Deep Dive ==="\n'
+                f'claude "$(cat \'{ctx_file}\')" \nrm -f "{ctx_file}" "$0"\n',
+                encoding="utf-8"
+            )
+            sh.chmod(0o755)
+            subprocess.Popen(["open", "-a", "Terminal", str(sh)])
+            return True, str(sh)
+        else:
+            sh = tmp_dir / f"launch-{ts}.sh"
+            sh.write_text(
+                f'#!/bin/bash\necho "=== Claude Usage Analyzer - Deep Dive ==="\n'
+                f'cat "{ctx_file}" | claude\nrm -f "{ctx_file}"\n',
+                encoding="utf-8"
+            )
+            sh.chmod(0o755)
+            import shutil
+            for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"]:
+                if shutil.which(term):
+                    subprocess.Popen([term, "-e", str(sh)])
+                    return True, str(sh)
+            return False, f"No terminal detected. Run manually:\n  bash {sh}"
+    except Exception as e:
+        return False, str(e)
+
 
 class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -1360,6 +1446,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        elif self.path == "/api/analyzer/launch-deep-dive":
+            snap = _get_analyzer_snapshot()
+            if snap is None:
+                resp = json.dumps({"ok": False, "error": "No database found"}).encode("utf-8")
+                self.send_response(404)
+            else:
+                ok, detail = _launch_deep_dive(snap)
+                resp = json.dumps({"ok": ok, "detail": detail}).encode("utf-8")
+                self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
 
         else:
             self.send_response(404)
