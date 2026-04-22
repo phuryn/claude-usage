@@ -130,6 +130,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Code Usage Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
 <style>
   :root {
     --bg: #0f1117;
@@ -177,7 +178,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .panel-close:hover { color: var(--text); }
   .panel-status { padding: 10px 20px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted); flex-shrink: 0; min-height: 36px; }
   .panel-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
-  .panel-body .suggestions { font-size: 13px; color: var(--text); line-height: 1.6; white-space: pre-wrap; }
+  .panel-body .suggestions { font-size: 13px; color: var(--text); line-height: 1.6; }
+  .panel-body .suggestions h2 { font-size: 13px; font-weight: 700; color: var(--accent); margin: 18px 0 6px; border: none; padding: 0; }
+  .panel-body .suggestions h2:first-child { margin-top: 0; }
+  .panel-body .suggestions p { margin: 0 0 6px; }
+  .panel-body .suggestions code { background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; font-size: 11px; color: var(--green); font-family: monospace; }
+  .panel-body .suggestions pre { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 8px 10px; overflow-x: auto; margin: 6px 0; }
+  .panel-body .suggestions pre code { background: none; border: none; padding: 0; font-size: 11px; }
+  .panel-body .suggestions hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+  .panel-body .suggestions strong { color: var(--text); font-weight: 600; }
   .panel-footer { padding: 12px 20px; border-top: 1px solid var(--border); flex-shrink: 0; display: flex; gap: 8px; }
   #deep-dive-btn { flex: 1; background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
   #deep-dive-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
@@ -1358,7 +1367,7 @@ function runAnalysis() {
 
 function openPanel() {
   document.getElementById('analyzer-panel').classList.add('open');
-  document.getElementById('panel-suggestions').textContent = '';
+  document.getElementById('panel-suggestions').innerHTML = '';
   document.getElementById('deep-dive-btn').disabled = true;
   setStatus('Starting analysis...');
 }
@@ -1374,15 +1383,30 @@ function startSSE() {
   if (activeSSE) activeSSE.close();
   document.getElementById('rerun-btn').disabled = true;
   var sugEl = document.getElementById('panel-suggestions');
-  sugEl.textContent = '';
+  sugEl.innerHTML = '';
   var es = new EventSource('/api/analyzer/stream');
   activeSSE = es;
+  var rawText = '';
+  var renderTimer = null;
+
+  function renderMd() {
+    if (typeof marked !== 'undefined') {
+      sugEl.innerHTML = marked.parse(rawText);
+    } else {
+      sugEl.textContent = rawText;
+    }
+  }
+
   es.onmessage = function(e) {
     try {
       var d = JSON.parse(e.data);
       if (d.type === 'chunk') {
-        sugEl.textContent += d.text;
+        rawText += d.text;
+        // Throttle re-renders to every 200ms while streaming
+        if (!renderTimer) renderTimer = setTimeout(function() { renderMd(); renderTimer = null; }, 200);
       } else if (d.type === 'done') {
+        if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+        renderMd();
         var inp = d.input_tokens || 0, out = d.output_tokens || 0;
         var est = ((inp * 3 + out * 15) / 1000000).toFixed(4);
         setStatus('Done · ' + inp.toLocaleString() + ' in / ' + out.toLocaleString() + ' out · est $' + est);
@@ -1397,7 +1421,9 @@ function startSSE() {
     } catch(ex) {}
   };
   es.onerror = function() {
-    var has = sugEl.textContent.length > 0;
+    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+    var has = rawText.length > 0;
+    if (has) renderMd();
     setStatus(has ? 'Stream closed.' : 'Connection error.');
     document.getElementById('rerun-btn').disabled = false;
     if (has) document.getElementById('deep-dive-btn').disabled = false;
@@ -1514,7 +1540,7 @@ def _stream_analyzer(snapshot, wfile):
             ["claude", "--print", "--output-format", "stream-json",
              "--verbose", "--include-partial-messages"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, bufsize=1,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
         )
         proc.stdin.write(prompt)
         proc.stdin.close()
