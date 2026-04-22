@@ -85,13 +85,35 @@ def get_dashboard_data(db_path=DB_PATH):
             "cache_creation": r["total_cache_creation"] or 0,
         })
 
+    # ── Hourly per-model, ALL history (client filters by range + model) ──────
+    hourly_rows = conn.execute("""
+        SELECT
+            substr(timestamp, 1, 10)                  as day,
+            CAST(substr(timestamp, 12, 2) AS INTEGER) as hour,
+            COALESCE(model, 'unknown')                as model,
+            COUNT(*)                                  as turns,
+            SUM(output_tokens)                        as output
+        FROM turns
+        GROUP BY day, hour, model
+        ORDER BY day, hour, model
+    """).fetchall()
+
+    hourly_by_model = [{
+        "day":    r["day"],
+        "hour":   r["hour"],
+        "model":  r["model"],
+        "turns":  r["turns"] or 0,
+        "output": r["output"] or 0,
+    } for r in hourly_rows]
+
     conn.close()
 
     return {
-        "all_models":     all_models,
-        "daily_by_model": daily_by_model,
-        "sessions_all":   sessions_all,
-        "generated_at":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "all_models":      all_models,
+        "daily_by_model":  daily_by_model,
+        "hourly_by_model": hourly_by_model,
+        "sessions_all":    sessions_all,
+        "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
@@ -180,6 +202,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .footer-content a { color: var(--blue); text-decoration: none; }
   .footer-content a:hover { text-decoration: underline; }
 
+  .chart-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .chart-card-header h2 { margin-bottom: 0; }
+  .tz-toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
+  .tz-btn { padding: 4px 13px; background: transparent; border: none; border-right: 1px solid var(--border); color: var(--muted); font-size: 12px; cursor: pointer; transition: background 0.15s, color 0.15s; }
+  .tz-btn:last-child { border-right: none; }
+  .tz-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+  .tz-btn.active { background: rgba(217,119,87,0.15); color: var(--accent); font-weight: 600; }
+
   @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } }
 </style>
 </head>
@@ -209,8 +239,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="stats-row" id="stats-row"></div>
   <div class="charts-grid">
     <div class="chart-card wide">
-      <h2 id="daily-chart-title">Daily Token Usage</h2>
+      <div class="chart-card-header">
+        <h2 id="daily-chart-title">Daily Token Usage</h2>
+        <div class="tz-toggle">
+          <button class="tz-btn" data-tz="local" onclick="setHourlyTz('local')">Local</button>
+          <button class="tz-btn active" data-tz="utc" onclick="setHourlyTz('utc')">UTC</button>
+        </div>
+      </div>
       <div class="chart-wrap tall"><canvas id="chart-daily"></canvas></div>
+    </div>
+    <div class="chart-card wide">
+      <div class="chart-card-header">
+        <h2 id="hourly-chart-title">Average Hourly Distribution</h2>
+        <div class="tz-toggle">
+          <button class="tz-btn" data-tz="local" onclick="setHourlyTz('local')">Local</button>
+          <button class="tz-btn active" data-tz="utc" onclick="setHourlyTz('utc')">UTC</button>
+        </div>
+      </div>
+      <div class="chart-wrap tall"><canvas id="chart-hourly"></canvas></div>
     </div>
     <div class="chart-card">
       <h2>By Model</h2>
@@ -295,6 +341,7 @@ let rawData = null;
 let selectedModels = new Set();
 let selectedRange = '30d';
 let charts = {};
+let hourlyTz = 'utc';
 let sessionSortCol = 'last';
 let modelSortCol = 'cost';
 let modelSortDir = 'desc';
@@ -363,6 +410,118 @@ const TOKEN_COLORS = {
   cache_creation: 'rgba(251,191,36,0.6)',
 };
 const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
+
+// ── Peak hours (Anthropic US throttling: Mon–Fri 05:00–11:00 PT = 12:00–18:00 UTC) ──
+const PEAK_UTC_START = 12;
+const PEAK_UTC_END   = 18;
+
+function isPeakUtcHour(h) { return h >= PEAK_UTC_START && h < PEAK_UTC_END; }
+
+// ── Hourly chart ───────────────────────────────────────────────────────────
+function setHourlyTz(tz) {
+  hourlyTz = tz;
+  document.querySelectorAll('.tz-btn').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.tz === tz)
+  );
+  applyFilter();
+}
+
+function renderHourlyChart() {
+  if (!rawData || !rawData.hourly_by_model) return;
+
+  const cutoff = getRangeCutoff(selectedRange);
+
+  const filtered = rawData.hourly_by_model.filter(r =>
+    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+  );
+
+  const days = new Set(filtered.map(r => r.day));
+  const numDays = days.size;
+
+  // Accumulate totals per UTC hour
+  const byUtcHour = Array.from({ length: 24 }, () => ({ turns: 0, output: 0 }));
+  for (const r of filtered) {
+    byUtcHour[r.hour].turns  += r.turns;
+    byUtcHour[r.hour].output += r.output;
+  }
+
+  // Timezone offset in whole hours (local − UTC)
+  const tzOffset = hourlyTz === 'local'
+    ? Math.round(-new Date().getTimezoneOffset() / 60)
+    : 0;
+
+  const avgTurns  = Array(24).fill(0);
+  const avgOutput = Array(24).fill(0);
+  for (let utcH = 0; utcH < 24; utcH++) {
+    const localH = (utcH + tzOffset + 24) % 24;
+    avgTurns[localH]  = numDays > 0 ? byUtcHour[utcH].turns  / numDays : 0;
+    avgOutput[localH] = numDays > 0 ? byUtcHour[utcH].output / numDays : 0;
+  }
+
+  const labels     = [];
+  const barColors  = [];
+  for (let h = 0; h < 24; h++) {
+    const utcH   = (h - tzOffset + 24) % 24;
+    const isPeak = isPeakUtcHour(utcH);
+    labels.push((isPeak ? '\u26a1 ' : '') + String(h).padStart(2, '0') + ':00');
+    barColors.push(isPeak ? 'rgba(239,68,68,0.75)' : 'rgba(217,119,87,0.75)');
+  }
+
+  const rangeLabel = RANGE_LABELS[selectedRange];
+  const tzLabel    = hourlyTz === 'utc'
+    ? 'UTC'
+    : (Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local');
+  document.getElementById('hourly-chart-title').textContent =
+    `Average Hourly Distribution \u2014 ${rangeLabel} (${numDays} days) \u2014 ${tzLabel}`;
+
+  const ctx = document.getElementById('chart-hourly').getContext('2d');
+  if (charts.hourly) charts.hourly.destroy();
+  charts.hourly = new Chart(ctx, {
+    data: {
+      labels,
+      datasets: [
+        {
+          type: 'bar', label: 'Avg Turns', data: avgTurns,
+          backgroundColor: barColors, yAxisID: 'yTurns', order: 2,
+        },
+        {
+          type: 'line', label: 'Avg Output Tokens', data: avgOutput,
+          borderColor: 'rgba(167,139,250,0.9)', backgroundColor: 'rgba(167,139,250,0.15)',
+          pointBackgroundColor: 'rgba(167,139,250,0.9)', pointRadius: 4,
+          tension: 0.3, yAxisID: 'yOutput', order: 1,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index' },
+      plugins: {
+        legend: { labels: { color: '#8892a4', boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            afterBody(items) {
+              const utcH = (items[0]?.dataIndex - tzOffset + 24) % 24;
+              return isPeakUtcHour(utcH) ? ['Peak \u2014 Anthropic US hours'] : [];
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8892a4', font: { size: 11 } }, grid: { color: '#2a2d3a' } },
+        yTurns: {
+          type: 'linear', position: 'left',
+          ticks: { color: '#d97757' }, grid: { color: '#2a2d3a' },
+          title: { display: true, text: 'Avg Turns', color: '#d97757', font: { size: 11 } },
+        },
+        yOutput: {
+          type: 'linear', position: 'right',
+          ticks: { color: '#a78bfa', callback: v => fmt(v) }, grid: { drawOnChartArea: false },
+          title: { display: true, text: 'Avg Output Tokens', color: '#a78bfa', font: { size: 11 } },
+        },
+      }
+    }
+  });
+}
 
 // ── Time range ─────────────────────────────────────────────────────────────
 const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
@@ -571,10 +730,13 @@ function applyFilter() {
   };
 
   // Update daily chart title
-  document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
+  const _tzLabel = hourlyTz === 'utc' ? 'UTC' : (Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local');
+  document.getElementById('daily-chart-title').textContent =
+    'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange] + ' \u2014 ' + _tzLabel;
 
   renderStats(totals);
   renderDailyChart(daily);
+  renderHourlyChart();
   renderModelChart(byModel);
   renderProjectChart(byProject);
   lastFilteredSessions = sortSessions(filteredSessions);
