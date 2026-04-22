@@ -130,7 +130,61 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Code Usage Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+<script>
+// Minimal inline markdown renderer — handles the analyzer output format only.
+// Patterns: ## heading, **bold**, `inline code`, ```fenced block```, ---, paragraph.
+var marked = {
+  parse: function(md) {
+    var lines = md.split('\n');
+    var html = '';
+    var i = 0;
+    while (i < lines.length) {
+      var l = lines[i];
+      // fenced code block
+      if (l.trimStart().startsWith('```')) {
+        var lang = l.trim().slice(3);
+        var code = [];
+        i++;
+        while (i < lines.length && !lines[i].trim().startsWith('```')) {
+          code.push(lines[i]); i++;
+        }
+        i++;
+        html += '<pre><code>' + _esc(code.join('\n')) + '</code></pre>';
+        continue;
+      }
+      // h2
+      if (l.startsWith('## ')) {
+        html += '<h2>' + _inl(l.slice(3)) + '</h2>';
+        i++; continue;
+      }
+      // h3
+      if (l.startsWith('### ')) {
+        html += '<h3>' + _inl(l.slice(4)) + '</h3>';
+        i++; continue;
+      }
+      // hr
+      if (/^---+$/.test(l.trim())) {
+        html += '<hr>'; i++; continue;
+      }
+      // blank line
+      if (!l.trim()) { i++; continue; }
+      // paragraph
+      html += '<p>' + _inl(l) + '</p>';
+      i++;
+    }
+    return html;
+  }
+};
+function _esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function _inl(s) {
+  // **bold**
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // `code`
+  s = s.replace(/`([^`]+)`/g, function(_,c){ return '<code>' + _esc(c) + '</code>'; });
+  // escape remaining HTML entities outside tags
+  return s;
+}
+</script>
 <style>
   :root {
     --bg: #0f1117;
@@ -188,9 +242,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .panel-body .suggestions hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
   .panel-body .suggestions strong { color: var(--text); font-weight: 600; }
   .panel-footer { padding: 12px 20px; border-top: 1px solid var(--border); flex-shrink: 0; display: flex; gap: 8px; }
-  #deep-dive-btn { flex: 1; background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
-  #deep-dive-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-  #deep-dive-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   #rerun-btn { background: var(--accent); color: white; border: none; padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
   #rerun-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -304,7 +355,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="panel-status" id="panel-status">Ready.</div>
   <div class="panel-body"><div class="suggestions" id="panel-suggestions"></div></div>
   <div class="panel-footer">
-    <button id="deep-dive-btn" onclick="launchDeepDive()" disabled>&#x1F50D; Open Deep Dive</button>
     <button id="rerun-btn" onclick="analyzeClick()">&#x21bb; Re-run</button>
   </div>
 </div>
@@ -1368,7 +1418,6 @@ function runAnalysis() {
 function openPanel() {
   document.getElementById('analyzer-panel').classList.add('open');
   document.getElementById('panel-suggestions').innerHTML = '';
-  document.getElementById('deep-dive-btn').disabled = true;
   setStatus('Starting analysis...');
 }
 
@@ -1410,7 +1459,6 @@ function startSSE() {
         var inp = d.input_tokens || 0, out = d.output_tokens || 0;
         var est = ((inp * 3 + out * 15) / 1000000).toFixed(4);
         setStatus('Done · ' + inp.toLocaleString() + ' in / ' + out.toLocaleString() + ' out · est $' + est);
-        document.getElementById('deep-dive-btn').disabled = false;
         document.getElementById('rerun-btn').disabled = false;
         es.close(); activeSSE = null;
       } else if (d.type === 'error') {
@@ -1426,24 +1474,9 @@ function startSSE() {
     if (has) renderMd();
     setStatus(has ? 'Stream closed.' : 'Connection error.');
     document.getElementById('rerun-btn').disabled = false;
-    if (has) document.getElementById('deep-dive-btn').disabled = false;
     es.close(); activeSSE = null;
   };
   setStatus('Running: claude --print --output-format stream-json ...');
-}
-
-async function launchDeepDive() {
-  var btn = document.getElementById('deep-dive-btn');
-  btn.disabled = true; btn.textContent = 'Launching...';
-  try {
-    var r = await fetch('/api/analyzer/launch-deep-dive', {method: 'POST'});
-    var d = await r.json();
-    setStatus(d.ok ? 'Deep dive launched in terminal.' : 'Launch failed: ' + d.detail);
-  } catch(e) {
-    setStatus('Launch error: ' + e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = '🔍 Open Deep Dive';
-  }
 }
 
 initAnalyzer();
@@ -1540,14 +1573,14 @@ def _stream_analyzer(snapshot, wfile):
             ["claude", "--print", "--output-format", "stream-json",
              "--verbose", "--include-partial-messages"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
+            stderr=subprocess.PIPE,
         )
-        proc.stdin.write(prompt)
+        proc.stdin.write(prompt.encode("utf-8"))
         proc.stdin.close()
 
         suggestions = ""
-        for line in proc.stdout:
-            line = line.strip()
+        for raw_line in proc.stdout:
+            line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
             try:
@@ -1590,72 +1623,6 @@ def _stream_analyzer(snapshot, wfile):
     except Exception as e:
         sse({"type": "error", "message": str(e)})
 
-
-def _launch_deep_dive(snapshot):
-    """Write launch script and spawn terminal. Returns (ok, detail_str)."""
-    import sys as _sys
-    import subprocess
-    from analyzer import build_prompt
-
-    tmp_dir = Path.home() / ".claude" / "analyzer-tmp"
-    tmp_dir.mkdir(exist_ok=True)
-
-    ts       = datetime.now().strftime("%Y%m%d-%H%M%S")
-    ctx_file = tmp_dir / f"analyzer-context-{ts}.md"
-    ctx_file.write_text(build_prompt(snapshot), encoding="utf-8")
-
-    platform = _sys.platform
-    try:
-        if platform == "win32":
-            # Use a PS here-string (@'...'@) — literal, no escape needed, handles
-            # all special chars including em-dash, $, backticks, pipes, quotes.
-            # Write with UTF-8 BOM (utf-8-sig) so PowerShell reads as UTF-8 not cp1252.
-            # claude "$msg" passes the variable as a single argument (interactive session).
-            prompt_text = ctx_file.read_text(encoding="utf-8")
-            ps1 = tmp_dir / f"launch-{ts}.ps1"
-            ps1.write_text(
-                'Write-Host "=== Claude Usage Analyzer - Deep Dive ===" -ForegroundColor Cyan\n'
-                'Write-Host "Session uses your claude CLI + auth."\n'
-                'Write-Host "Tokens billed to your plan."\n'
-                'Write-Host ""\n'
-                '$msg = @\'\n'
-                + prompt_text +
-                '\n\'@\n'
-                'claude "$msg"\n'
-                f'Remove-Item "{ctx_file}" -ErrorAction SilentlyContinue\n',
-                encoding="utf-8-sig"  # BOM ensures PowerShell reads as UTF-8
-            )
-            subprocess.Popen(
-                ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(ps1)],
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-            )
-            return True, str(ps1)
-        elif platform == "darwin":
-            sh = tmp_dir / f"launch-{ts}.command"
-            sh.write_text(
-                f'#!/bin/bash\necho "=== Claude Usage Analyzer - Deep Dive ==="\n'
-                f'claude "$(cat \'{ctx_file}\')" \nrm -f "{ctx_file}" "$0"\n',
-                encoding="utf-8"
-            )
-            sh.chmod(0o755)
-            subprocess.Popen(["open", "-a", "Terminal", str(sh)])
-            return True, str(sh)
-        else:
-            sh = tmp_dir / f"launch-{ts}.sh"
-            sh.write_text(
-                f'#!/bin/bash\necho "=== Claude Usage Analyzer - Deep Dive ==="\n'
-                f'cat "{ctx_file}" | claude\nrm -f "{ctx_file}"\n',
-                encoding="utf-8"
-            )
-            sh.chmod(0o755)
-            import shutil
-            for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"]:
-                if shutil.which(term):
-                    subprocess.Popen([term, "-e", str(sh)])
-                    return True, str(sh)
-            return False, f"No terminal detected. Run manually:\n  bash {sh}"
-    except Exception as e:
-        return False, str(e)
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -1748,20 +1715,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-
-        elif self.path == "/api/analyzer/launch-deep-dive":
-            snap = _get_analyzer_snapshot()
-            if snap is None:
-                resp = json.dumps({"ok": False, "error": "No database found"}).encode("utf-8")
-                self.send_response(404)
-            else:
-                ok, detail = _launch_deep_dive(snap)
-                resp = json.dumps({"ok": ok, "detail": detail}).encode("utf-8")
-                self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(resp)))
-            self.end_headers()
-            self.wfile.write(resp)
 
         else:
             self.send_response(404)

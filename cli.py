@@ -403,14 +403,14 @@ def cmd_analyze():
             ["claude", "--print", "--output-format", "stream-json",
              "--verbose", "--include-partial-messages"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
+            stderr=subprocess.PIPE,
         )
-        proc.stdin.write(prompt)
+        proc.stdin.write(prompt.encode("utf-8"))
         proc.stdin.close()
 
         import json as _json
-        for line in proc.stdout:
-            line = line.strip()
+        for raw_line in proc.stdout:
+            line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
             try:
