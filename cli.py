@@ -283,16 +283,181 @@ def cmd_dashboard(projects_dir=None):
     serve(host=host, port=port)
 
 
+# ── Theme command ──────────────────────────────────────────────────────────────
+
+def cmd_theme():
+    import urllib.request
+    import urllib.error
+    from dashboard import BUNDLED_THEMES, AWESOME_CATALOG, THEMES_DIR
+
+    sub = sys.argv[2] if len(sys.argv) > 2 else None
+
+    if sub == "list":
+        installed = {t["id"] for t in BUNDLED_THEMES}
+        THEMES_DIR.mkdir(parents=True, exist_ok=True)
+        for f in THEMES_DIR.glob("*.json"):
+            try:
+                t = json.load(open(f))
+                if "id" in t:
+                    installed.add(t["id"])
+            except Exception:
+                pass
+        all_ids = {c["id"] for c in AWESOME_CATALOG} | installed
+        print(f"\n{'ID':<20} {'NAME':<22} {'CATEGORY':<28} STATUS")
+        print("-" * 80)
+        for entry in sorted(AWESOME_CATALOG + [t for t in BUNDLED_THEMES if t["id"] not in {c["id"] for c in AWESOME_CATALOG}], key=lambda x: x["name"]):
+            status = "installed" if entry["id"] in installed else "available"
+            print(f"{entry['id']:<20} {entry['name']:<22} {entry['category']:<28} {status}")
+        print()
+
+    elif sub == "add":
+        theme_id = sys.argv[3] if len(sys.argv) > 3 else None
+        if not theme_id:
+            print("Usage: python cli.py theme add <id>")
+            print("Run 'python cli.py theme list' to see available theme IDs.")
+            sys.exit(1)
+
+        # Check it's in the catalog
+        catalog_entry = next((c for c in AWESOME_CATALOG if c["id"] == theme_id), None)
+        if not catalog_entry:
+            print(f"Unknown theme '{theme_id}'. Run 'python cli.py theme list' to see valid IDs.")
+            sys.exit(1)
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            print("ANTHROPIC_API_KEY environment variable is required to generate themes.")
+            print("Export it and re-run: export ANTHROPIC_API_KEY=sk-ant-...")
+            sys.exit(1)
+
+        # Fetch the DESIGN.md from awesome-design-md
+        design_url = f"https://raw.githubusercontent.com/VoltAgent/awesome-design-md/main/design-md/{theme_id}/README.md"
+        print(f"Fetching design system for '{theme_id}'...")
+        try:
+            with urllib.request.urlopen(design_url, timeout=15) as r:
+                design_md = r.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            print(f"Could not fetch design file (HTTP {e.code}). The theme may have a different path in the repo.")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Network error: {e}")
+            sys.exit(1)
+
+        print("Generating CSS with Claude API...")
+        prompt = f"""You are converting a design system description into CSS custom properties for a data dashboard.
+
+Given the DESIGN.md below, produce a CSS :root {{ }} block with EXACTLY these variables:
+  --bg            page background color
+  --card          card / surface background
+  --border        border color (prefer rgba with low opacity)
+  --text          primary text color
+  --muted         secondary / muted text color (prefer rgba)
+  --accent        primary interactive / accent color
+  --green         positive number color (for financial figures)
+  --shadow        box-shadow value for cards
+  --chart-label   color for chart axis labels (must be legible on --bg)
+  --chart-grid    color for chart grid lines (subtle, low opacity)
+
+Output ONLY the :root {{ }} block — no explanation, no markdown fences, no other text.
+
+DESIGN.md:
+{design_md[:8000]}"""
+
+        payload = json.dumps({
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 512,
+            "messages": [{"role": "user", "content": prompt}]
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                result = json.loads(r.read())
+        except Exception as e:
+            print(f"API error: {e}")
+            sys.exit(1)
+
+        css = result["content"][0]["text"].strip()
+        if not css.startswith(":root"):
+            # Try to extract :root block if wrapped in markdown
+            import re
+            m = re.search(r":root\s*\{[^}]+\}", css, re.DOTALL)
+            css = m.group(0) if m else css
+
+        # Extract preview colors from the CSS
+        import re
+        def extract_var(css_text, var):
+            m = re.search(rf"--{var}\s*:\s*([^;]+);", css_text)
+            return m.group(1).strip() if m else "#888888"
+
+        preview = {
+            "bg":     extract_var(css, "bg"),
+            "card":   extract_var(css, "card"),
+            "text":   extract_var(css, "text"),
+            "accent": extract_var(css, "accent"),
+            "muted":  extract_var(css, "border"),
+        }
+
+        theme = {
+            "id":       theme_id,
+            "name":     catalog_entry["name"],
+            "category": catalog_entry["category"],
+            "dark":     False,
+            "bundled":  False,
+            "preview":  preview,
+            "css":      css,
+        }
+
+        THEMES_DIR.mkdir(parents=True, exist_ok=True)
+        out = THEMES_DIR / f"{theme_id}.json"
+        out.write_text(json.dumps(theme, indent=2))
+        print(f"✓ Theme '{catalog_entry['name']}' installed to {out}")
+        print("  Reload the dashboard to see it in Appearance.")
+
+    elif sub == "remove":
+        theme_id = sys.argv[3] if len(sys.argv) > 3 else None
+        if not theme_id:
+            print("Usage: python cli.py theme remove <id>")
+            sys.exit(1)
+        f = THEMES_DIR / f"{theme_id}.json"
+        if f.exists():
+            f.unlink()
+            print(f"Removed theme '{theme_id}'.")
+        else:
+            print(f"Theme '{theme_id}' is not installed (or is a bundled theme and cannot be removed).")
+
+    else:
+        print("""
+Theme management:
+
+  python cli.py theme list               List all installed and available themes
+  python cli.py theme add <id>           Generate and install a theme (requires ANTHROPIC_API_KEY)
+  python cli.py theme remove <id>        Remove a user-installed theme
+
+Example:
+  python cli.py theme add spotify
+  python cli.py theme add tesla
+""")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 USAGE = """
 Claude Code Usage Dashboard
 
 Usage:
-  python cli.py scan [--projects-dir PATH]   Scan JSONL files and update database
-  python cli.py today                        Show today's usage summary
-  python cli.py stats                        Show all-time statistics
+  python cli.py scan [--projects-dir PATH]       Scan JSONL files and update database
+  python cli.py today                            Show today's usage summary
+  python cli.py stats                            Show all-time statistics
   python cli.py dashboard [--projects-dir PATH]  Scan + start dashboard
+  python cli.py theme <list|add|remove>          Manage UI themes
 """
 
 COMMANDS = {
@@ -300,6 +465,7 @@ COMMANDS = {
     "today": cmd_today,
     "stats": cmd_stats,
     "dashboard": cmd_dashboard,
+    "theme": cmd_theme,
 }
 
 def parse_projects_dir(args):
@@ -315,9 +481,12 @@ if __name__ == "__main__":
         sys.exit(0)
 
     command = sys.argv[1]
-    projects_dir = parse_projects_dir(sys.argv[2:])
 
-    if command in ("scan", "dashboard") and projects_dir:
-        COMMANDS[command](projects_dir=projects_dir)
+    if command == "theme":
+        cmd_theme()
     else:
-        COMMANDS[command]()
+        projects_dir = parse_projects_dir(sys.argv[2:])
+        if command in ("scan", "dashboard") and projects_dir:
+            COMMANDS[command](projects_dir=projects_dir)
+        else:
+            COMMANDS[command]()
