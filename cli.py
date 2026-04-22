@@ -306,7 +306,7 @@ def cmd_analyze():
             ["claude", "--print", "--output-format", "stream-json",
              "--verbose", "--include-partial-messages"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, bufsize=1,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
         )
         proc.stdin.write(prompt)
         proc.stdin.close()
