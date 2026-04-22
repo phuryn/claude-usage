@@ -260,6 +260,51 @@ def cmd_stats():
     conn.close()
 
 
+def cmd_install_hook():
+    import copy
+
+    settings_path = Path.home() / ".claude" / "settings.json"
+    hook_script = str(Path(__file__).parent / "session_alert_hook.py")
+    # Normalise to forward slashes for cross-platform readability
+    hook_script = hook_script.replace("\\", "/")
+    hook_command = f'python "{hook_script}"'
+
+    if settings_path.exists():
+        try:
+            with open(settings_path, encoding="utf-8") as f:
+                settings = json.load(f)
+        except Exception as e:
+            print(f"Error reading {settings_path}: {e}")
+            sys.exit(1)
+    else:
+        settings = {}
+
+    settings.setdefault("hooks", {})
+    existing_hooks = settings["hooks"].get("PostToolUse", [])
+
+    # Idempotency: check if hook command already registered
+    for group in existing_hooks:
+        for h in group.get("hooks", []):
+            if h.get("command") == hook_command:
+                print("Hook already installed — no changes made.")
+                print(f"  Command: {hook_command}")
+                return
+
+    new_entry = {"hooks": [{"type": "command", "command": hook_command}]}
+    settings["hooks"].setdefault("PostToolUse", [])
+    settings["hooks"]["PostToolUse"].append(new_entry)
+
+    with open(settings_path, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+
+    print("Hook installed successfully.")
+    print(f"  Settings: {settings_path}")
+    print(f"  Command:  {hook_command}")
+    print("  Event:    PostToolUse")
+    print()
+    print("To uninstall, remove the PostToolUse entry from ~/.claude/settings.json")
+
+
 def cmd_dashboard(projects_dir=None):
     import webbrowser
     import threading
@@ -293,6 +338,7 @@ Usage:
   python cli.py today                        Show today's usage summary
   python cli.py stats                        Show all-time statistics
   python cli.py dashboard [--projects-dir PATH]  Scan + start dashboard
+  python cli.py install-hook                 Register PostToolUse alert hook
 """
 
 COMMANDS = {
@@ -300,6 +346,7 @@ COMMANDS = {
     "today": cmd_today,
     "stats": cmd_stats,
     "dashboard": cmd_dashboard,
+    "install-hook": cmd_install_hook,
 }
 
 def parse_projects_dir(args):
@@ -319,5 +366,7 @@ if __name__ == "__main__":
 
     if command in ("scan", "dashboard") and projects_dir:
         COMMANDS[command](projects_dir=projects_dir)
+    elif command == "install-hook":
+        cmd_install_hook()
     else:
         COMMANDS[command]()
