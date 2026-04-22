@@ -1097,9 +1097,9 @@ function startSSE() {
   var renderTimer = null;
 
   function renderMd() {
-    if (typeof marked !== 'undefined') {
+    try {
       sugEl.innerHTML = marked.parse(rawText);
-    } else {
+    } catch(e) {
       sugEl.textContent = rawText;
     }
   }
