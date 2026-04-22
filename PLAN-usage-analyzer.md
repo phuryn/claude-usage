@@ -1,7 +1,7 @@
 # PLAN: Usage Analyzer
 
 ## Status
-Draft — not started
+In PR — https://github.com/phuryn/claude-usage/pull/66
 
 ## Tool
 Claude Code

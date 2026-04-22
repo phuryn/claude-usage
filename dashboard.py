@@ -1260,25 +1260,34 @@ def _launch_deep_dive(snapshot):
     platform = _sys.platform
     try:
         if platform == "win32":
-            bat = tmp_dir / f"launch-{ts}.bat"
-            bat.write_text(
-                f'@echo off\r\n'
-                f'echo === Claude Usage Analyzer - Deep Dive ===\r\n'
-                f'echo Session uses your claude CLI + auth.\r\n'
-                f'echo Tokens billed to your plan.\r\n'
-                f'echo.\r\n'
-                f'type "{ctx_file}" | claude\r\n'
-                f'del "{ctx_file}"\r\n'
-                f'pause\r\n',
-                encoding="utf-8"
+            # Use a PS here-string (@'...'@) — literal, no escape needed, handles
+            # all special chars including em-dash, $, backticks, pipes, quotes.
+            # Write with UTF-8 BOM (utf-8-sig) so PowerShell reads as UTF-8 not cp1252.
+            # claude "$msg" passes the variable as a single argument (interactive session).
+            prompt_text = ctx_file.read_text(encoding="utf-8")
+            ps1 = tmp_dir / f"launch-{ts}.ps1"
+            ps1.write_text(
+                'Write-Host "=== Claude Usage Analyzer - Deep Dive ===" -ForegroundColor Cyan\n'
+                'Write-Host "Session uses your claude CLI + auth."\n'
+                'Write-Host "Tokens billed to your plan."\n'
+                'Write-Host ""\n'
+                '$msg = @\'\n'
+                + prompt_text +
+                '\n\'@\n'
+                'claude "$msg"\n'
+                f'Remove-Item "{ctx_file}" -ErrorAction SilentlyContinue\n',
+                encoding="utf-8-sig"  # BOM ensures PowerShell reads as UTF-8
             )
-            os.startfile(str(bat))
-            return True, str(bat)
+            subprocess.Popen(
+                ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(ps1)],
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+            return True, str(ps1)
         elif platform == "darwin":
             sh = tmp_dir / f"launch-{ts}.command"
             sh.write_text(
                 f'#!/bin/bash\necho "=== Claude Usage Analyzer - Deep Dive ==="\n'
-                f'cat "{ctx_file}" | claude\nrm -f "{ctx_file}" "$0"\n',
+                f'claude "$(cat \'{ctx_file}\')" \nrm -f "{ctx_file}" "$0"\n',
                 encoding="utf-8"
             )
             sh.chmod(0o755)
