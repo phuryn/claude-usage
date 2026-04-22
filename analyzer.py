@@ -280,7 +280,20 @@ def build_prompt(snapshot):
 
     return f"""# Claude Code Usage Analysis
 
-## Snapshot (last 30 days — project paths hashed for privacy)
+## Step 1 — Research (do this first)
+
+Search the web for current best practices before generating suggestions. Run these searches:
+
+1. Search: "Claude Code prompt caching optimization 2025"
+2. Search: "Claude Code model selection cost reduction tips"
+3. Fetch: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+4. Fetch: https://docs.anthropic.com/en/docs/claude-code/costs
+
+Use findings to inform your Fix recommendations — cite specific techniques you find. If web tools are unavailable, use your training knowledge on these topics.
+
+---
+
+## Step 2 — Snapshot (last 30 days — project paths hashed for privacy)
 
 **Cache Hit Rate:** {cache_pct:.1f}% (target: 80%)
 **Est. Savings at 80% Cache Rate:** {savings_str}
@@ -297,20 +310,19 @@ def build_prompt(snapshot):
 
 ---
 
-## Rules
+## Step 3 — Generate Suggestions
 
+Rules:
 1. Every suggestion MUST cite a specific metric from the snapshot
 2. Rank by estimated $/month saved (highest first)
 3. Provide EXACTLY 5 suggestions
-4. Use this format for each:
+4. Where web research found a relevant technique, reference it in the Fix
+5. Use this format for each:
 
 ## [Title]
 Impact: ~$X/mo
 Metric: [exact number from snapshot]
 Fix: [concrete, copy-paste-ready action]
 
-5. No generic advice — ground every suggestion in the numbers above
-6. Focus on: prompt caching, model selection, session hygiene, tool usage patterns, context management
-
-Provide exactly 5 ranked suggestions now.
+No generic advice. Ground every suggestion in the numbers above.
 """
