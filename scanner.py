@@ -57,6 +57,15 @@ def init_db(conn):
             lines   INTEGER
         );
 
+        CREATE TABLE IF NOT EXISTS analyses (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp           TEXT,
+            snapshot_json       TEXT,
+            suggestions_md      TEXT,
+            cache_rate          REAL,
+            est_monthly_waste   REAL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
         CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
         CREATE INDEX IF NOT EXISTS idx_sessions_first ON sessions(first_timestamp);
