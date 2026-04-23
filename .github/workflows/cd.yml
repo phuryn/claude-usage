@@ -1,0 +1,135 @@
+name: CD
+
+# Triggers:
+#   1. Automatically when a PR is merged into main (reads PR labels for version bump)
+#   2. Manually via workflow_dispatch with an explicit increment choice
+#
+# Label → version bump mapping:
+#   "breaking change"  → major
+#   "feature"          → minor
+#   "bug" | "fix"      → patch
+#   (none matched)     → no-increment
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version_increment:
+        description: Version increment type
+        required: true
+        default: patch
+        type: choice
+        options:
+          - no-increment
+          - patch
+          - minor
+          - major
+
+jobs:
+  deploy:
+    # Run only on merged PRs or manual triggers; skip closed-but-not-merged PRs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true)
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write   # push version tags
+      packages: write   # push to ghcr.io
+
+    steps:
+      # ── Checkout (full history so `git tag -l | sort -V` works) ────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── Python setup ────────────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ── Unit tests (required to pass before any deployment) ─────────────────
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      # ── Resolve increment type ───────────────────────────────────────────────
+      # For workflow_dispatch: use the selected input.
+      # For PR merge: inspect labels on the merged PR.
+      #   ${{ contains(...) }} resolves to the literal string "true"/"false" at
+      #   template time; bash treats those as commands (exit 0 / exit 1).
+      - name: Determine version increment
+        id: increment
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "type=${{ github.event.inputs.version_increment }}" >> "$GITHUB_OUTPUT"
+          elif ${{ contains(github.event.pull_request.labels.*.name, 'breaking change') }}; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+          elif ${{ contains(github.event.pull_request.labels.*.name, 'feature') }}; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+          elif ${{ contains(github.event.pull_request.labels.*.name, 'bug') ||
+                   contains(github.event.pull_request.labels.*.name, 'fix') ||
+                   contains(github.event.pull_request.labels.*.name, 'bug/fix') }}; then
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=no-increment" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Compute next semver tag ──────────────────────────────────────────────
+      - name: Compute new version
+        id: version
+        run: |
+          latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)
+          [ -z "$latest" ] && latest="v0.0.0"
+
+          version="${latest#v}"
+          IFS='.' read -r major minor patch <<< "$version"
+
+          case "${{ steps.increment.outputs.type }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+            no-increment) ;;
+          esac
+
+          echo "tag=v${major}.${minor}.${patch}" >> "$GITHUB_OUTPUT"
+
+      # ── Create and push the git version tag (skipped for no-increment) ───────
+      - name: Push version tag
+        if: steps.increment.outputs.type != 'no-increment'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      # ── Docker build & push ──────────────────────────────────────────────────
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Prepare image name (lowercase)
+        id: image
+        run: |
+          repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "name=ghcr.io/${repo}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ steps.version.outputs.tag }}
+            ${{ steps.image.outputs.name }}:latest
