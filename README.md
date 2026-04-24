@@ -65,6 +65,9 @@ python cli.py scan
 # Show today's usage summary by model (in terminal)
 python cli.py today
 
+# Show the last 7 days (per-day breakdown + by-model totals)
+python cli.py week
+
 # Show all-time statistics (in terminal)
 python cli.py stats
 

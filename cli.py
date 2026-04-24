@@ -12,7 +12,7 @@ import os
 import sys
 import sqlite3
 from pathlib import Path
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
@@ -138,6 +138,102 @@ def cmd_today():
     print(f"  Sessions today:   {sessions['cnt']}")
     print(f"  Cache read:       {fmt(total_cr)}")
     print(f"  Cache creation:   {fmt(total_cc)}")
+    hr()
+    print()
+    conn.close()
+
+
+def cmd_week():
+    conn = require_db()
+    conn.row_factory = sqlite3.Row
+
+    today_d = date.today()
+    start_d = today_d - timedelta(days=6)
+    start = start_d.isoformat()
+    end = today_d.isoformat()
+
+    by_day_model = conn.execute("""
+        SELECT
+            substr(timestamp, 1, 10)   as day,
+            COALESCE(model, 'unknown') as model,
+            SUM(input_tokens)          as inp,
+            SUM(output_tokens)         as out,
+            SUM(cache_read_tokens)     as cr,
+            SUM(cache_creation_tokens) as cc,
+            COUNT(*)                   as turns
+        FROM turns
+        WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
+        GROUP BY day, model
+    """, (start, end)).fetchall()
+
+    by_model = conn.execute("""
+        SELECT
+            COALESCE(model, 'unknown') as model,
+            SUM(input_tokens)          as inp,
+            SUM(output_tokens)         as out,
+            SUM(cache_read_tokens)     as cr,
+            SUM(cache_creation_tokens) as cc,
+            COUNT(*)                   as turns
+        FROM turns
+        WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
+        GROUP BY model
+        ORDER BY inp + out DESC
+    """, (start, end)).fetchall()
+
+    sessions = conn.execute("""
+        SELECT COUNT(DISTINCT session_id) as cnt
+        FROM turns
+        WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
+    """, (start, end)).fetchone()
+
+    print()
+    hr()
+    print(f"  Weekly Usage  ({start} to {end})")
+    hr()
+
+    if not by_model:
+        print("  No usage recorded in the last 7 days.")
+        print()
+        conn.close()
+        return
+
+    # Aggregate per-day across models (with per-turn cost attribution)
+    per_day = {}
+    for r in by_day_model:
+        d = r["day"]
+        bucket = per_day.setdefault(d, {"turns": 0, "inp": 0, "out": 0, "cost": 0.0})
+        bucket["turns"] += r["turns"]
+        bucket["inp"]   += r["inp"] or 0
+        bucket["out"]   += r["out"] or 0
+        bucket["cost"]  += calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+
+    print("  By Day:")
+    for i in range(7):
+        d = (start_d + timedelta(days=i)).isoformat()
+        b = per_day.get(d, {"turns": 0, "inp": 0, "out": 0, "cost": 0.0})
+        print(f"    {d}  turns={b['turns']:<4}  in={fmt(b['inp']):<8}  out={fmt(b['out']):<8}  cost={fmt_cost(b['cost'])}")
+
+    hr()
+    print("  By Model:")
+
+    total_inp = total_out = total_cr = total_cc = total_turns = 0
+    total_cost = 0.0
+    for r in by_model:
+        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        total_cost  += cost
+        total_inp   += r["inp"] or 0
+        total_out   += r["out"] or 0
+        total_cr    += r["cr"]  or 0
+        total_cc    += r["cc"]  or 0
+        total_turns += r["turns"]
+        print(f"    {r['model']:<30}  turns={r['turns']:<4}  in={fmt(r['inp'] or 0):<8}  out={fmt(r['out'] or 0):<8}  cost={fmt_cost(cost)}")
+
+    hr()
+    print(f"    {'TOTAL':<30}  turns={total_turns:<4}  in={fmt(total_inp):<8}  out={fmt(total_out):<8}  cost={fmt_cost(total_cost)}")
+    print()
+    print(f"  Sessions this week:  {sessions['cnt']}")
+    print(f"  Cache read:          {fmt(total_cr)}")
+    print(f"  Cache creation:      {fmt(total_cc)}")
     hr()
     print()
     conn.close()
@@ -294,6 +390,7 @@ Claude Code Usage Dashboard
 Usage:
   python cli.py scan [--projects-dir PATH]   Scan JSONL files and update database
   python cli.py today                        Show today's usage summary
+  python cli.py week                         Show last 7 days (per-day + by-model)
   python cli.py stats                        Show all-time statistics
   python cli.py dashboard [--projects-dir PATH] [--host HOST] [--port PORT]
                                                  Scan + start dashboard
@@ -302,6 +399,7 @@ Usage:
 COMMANDS = {
     "scan": cmd_scan,
     "today": cmd_today,
+    "week": cmd_week,
     "stats": cmd_stats,
     "dashboard": cmd_dashboard,
 }
