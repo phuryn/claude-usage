@@ -124,6 +124,51 @@ class TestGetDashboardData(unittest.TestCase):
         self.assertTrue(all(r["model"] == "claude-sonnet-4-6" for r in rows))
         self.assertTrue(all(r["day"] == "2026-04-08" for r in rows))
 
+    def test_session_name_field_present(self):
+        """sessions_all entries must always include a session_name key (empty by default)."""
+        data = get_dashboard_data(db_path=self.db_path)
+        session = data["sessions_all"][0]
+        self.assertIn("session_name", session)
+        self.assertEqual(session["session_name"], "")
+
+
+class TestSessionNameInDashboard(unittest.TestCase):
+    """Verify session_name from the sessions table surfaces in dashboard output."""
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        conn = get_db(self.db_path)
+        init_db(conn)
+        conn.execute("""
+            INSERT INTO sessions
+                (session_id, project_name, first_timestamp, last_timestamp,
+                 git_branch, total_input_tokens, total_output_tokens,
+                 total_cache_read, total_cache_creation, model, turn_count,
+                 session_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "named-session-xyz", "user/proj",
+            "2026-04-08T09:00:00Z", "2026-04-08T10:00:00Z",
+            "main", 100, 50, 0, 0, "claude-sonnet-4-6", 1, "clip-research",
+        ))
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_session_name_returned_in_api(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertEqual(data["sessions_all"][0]["session_name"], "clip-research")
+
+    def test_session_id_still_truncated_alongside_name(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        session = data["sessions_all"][0]
+        self.assertEqual(len(session["session_id"]), 8)
+        self.assertEqual(session["session_id"], "named-se")
+
 
 class TestDashboardHTTP(unittest.TestCase):
     """Integration test: start server and make HTTP requests."""
@@ -215,6 +260,14 @@ class TestHTMLTemplate(unittest.TestCase):
     def test_template_is_valid_html(self):
         self.assertIn("<!DOCTYPE html>", HTML_TEMPLATE)
         self.assertIn("</html>", HTML_TEMPLATE)
+
+    def test_template_renders_session_name_when_set(self):
+        """The sessions-table renderer must branch on session_name presence."""
+        self.assertIn("s.session_name", HTML_TEMPLATE)
+        self.assertIn("session-name", HTML_TEMPLATE)
+
+    def test_csv_export_includes_session_name(self):
+        self.assertIn("Session Name", HTML_TEMPLATE)
 
     def test_template_has_esc_function(self):
         """Verify XSS protection is present (PR #10)."""

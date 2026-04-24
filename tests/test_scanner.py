@@ -10,7 +10,24 @@ from pathlib import Path
 from scanner import (
     get_db, init_db, project_name_from_cwd, parse_jsonl_file,
     aggregate_sessions, upsert_sessions, insert_turns, scan,
+    resolve_session_name,
 )
+
+
+def _make_custom_title_record(session_id="sess-1", title="my-session"):
+    return json.dumps({
+        "type": "custom-title",
+        "customTitle": title,
+        "sessionId": session_id,
+    })
+
+
+def _make_agent_name_record(session_id="sess-1", name="my-agent"):
+    return json.dumps({
+        "type": "agent-name",
+        "agentName": name,
+        "sessionId": session_id,
+    })
 
 
 class TestProjectNameFromCwd(unittest.TestCase):
@@ -643,6 +660,227 @@ class TestParseJsonlFileLineCount(unittest.TestCase):
             pass
         _, _, line_count = parse_jsonl_file(path)
         self.assertEqual(line_count, 0)
+
+
+class TestResolveSessionName(unittest.TestCase):
+    def test_prefers_custom_title(self):
+        self.assertEqual(resolve_session_name("ct", "an"), "ct")
+
+    def test_falls_back_to_agent_name(self):
+        self.assertEqual(resolve_session_name(None, "an"), "an")
+
+    def test_empty_custom_title_falls_back(self):
+        self.assertEqual(resolve_session_name("", "an"), "an")
+
+    def test_both_empty_returns_none(self):
+        self.assertIsNone(resolve_session_name(None, None))
+        self.assertIsNone(resolve_session_name("", ""))
+
+
+class TestSessionNameParsing(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def _write_jsonl(self, filename, lines):
+        path = os.path.join(self.tmpdir, filename)
+        with open(path, "w") as f:
+            for line in lines:
+                f.write(line + "\n")
+        return path
+
+    def test_custom_title_captured(self):
+        path = self._write_jsonl("t.jsonl", [
+            _make_user_record(),
+            _make_custom_title_record(title="clip-research"),
+            _make_assistant_record(),
+        ])
+        metas, _, _ = parse_jsonl_file(path)
+        sessions = aggregate_sessions(metas, [])
+        self.assertEqual(sessions[0]["session_name"], "clip-research")
+
+    def test_agent_name_fallback(self):
+        path = self._write_jsonl("t.jsonl", [
+            _make_user_record(),
+            _make_agent_name_record(name="helper-bot"),
+            _make_assistant_record(),
+        ])
+        metas, _, _ = parse_jsonl_file(path)
+        sessions = aggregate_sessions(metas, [])
+        self.assertEqual(sessions[0]["session_name"], "helper-bot")
+
+    def test_custom_title_preferred_over_agent_name(self):
+        path = self._write_jsonl("t.jsonl", [
+            _make_user_record(),
+            _make_agent_name_record(name="agent-first"),
+            _make_custom_title_record(title="chosen-title"),
+            _make_assistant_record(),
+        ])
+        metas, _, _ = parse_jsonl_file(path)
+        sessions = aggregate_sessions(metas, [])
+        self.assertEqual(sessions[0]["session_name"], "chosen-title")
+
+    def test_last_custom_title_wins_after_rename(self):
+        path = self._write_jsonl("t.jsonl", [
+            _make_user_record(),
+            _make_custom_title_record(title="first-name"),
+            _make_assistant_record(),
+            _make_custom_title_record(title="renamed"),
+        ])
+        metas, _, _ = parse_jsonl_file(path)
+        sessions = aggregate_sessions(metas, [])
+        self.assertEqual(sessions[0]["session_name"], "renamed")
+
+    def test_no_rename_records_yields_none(self):
+        path = self._write_jsonl("t.jsonl", [
+            _make_user_record(),
+            _make_assistant_record(),
+        ])
+        metas, _, _ = parse_jsonl_file(path)
+        sessions = aggregate_sessions(metas, [])
+        self.assertIsNone(sessions[0]["session_name"])
+
+    def test_empty_custom_title_ignored(self):
+        path = self._write_jsonl("t.jsonl", [
+            _make_user_record(),
+            _make_custom_title_record(title="real-title"),
+            _make_custom_title_record(title=""),  # empty — must not clobber
+            _make_assistant_record(),
+        ])
+        metas, _, _ = parse_jsonl_file(path)
+        sessions = aggregate_sessions(metas, [])
+        self.assertEqual(sessions[0]["session_name"], "real-title")
+
+
+class TestSessionNameIntegration(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.projects_dir = Path(self.tmpdir) / "projects" / "user" / "proj"
+        self.projects_dir.mkdir(parents=True)
+        self.db_path = Path(self.tmpdir) / "usage.db"
+        self.filepath = self.projects_dir / "sess-1.jsonl"
+
+    def test_session_name_persisted_on_scan(self):
+        with open(self.filepath, "w") as f:
+            f.write(_make_user_record(session_id="sess-1") + "\n")
+            f.write(_make_custom_title_record(session_id="sess-1", title="clip-research") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-1") + "\n")
+
+        scan(projects_dir=self.projects_dir.parent.parent,
+             db_path=self.db_path, verbose=False)
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT session_name FROM sessions WHERE session_id='sess-1'").fetchone()
+        conn.close()
+        self.assertEqual(row["session_name"], "clip-research")
+
+    def test_session_name_preserved_when_incremental_scan_has_no_rename(self):
+        """Appending assistant turns without rename records must not blank out session_name."""
+        # Initial scan: session gets named
+        with open(self.filepath, "w") as f:
+            f.write(_make_user_record(session_id="sess-1") + "\n")
+            f.write(_make_custom_title_record(session_id="sess-1", title="keep-me") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-1") + "\n")
+        scan(projects_dir=self.projects_dir.parent.parent,
+             db_path=self.db_path, verbose=False)
+
+        # Append a turn without any rename record
+        import time
+        time.sleep(0.05)
+        with open(self.filepath, "a") as f:
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-2",
+                                           timestamp="2026-04-08T10:05:00Z") + "\n")
+        scan(projects_dir=self.projects_dir.parent.parent,
+             db_path=self.db_path, verbose=False)
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT session_name FROM sessions WHERE session_id='sess-1'").fetchone()
+        conn.close()
+        self.assertEqual(row["session_name"], "keep-me")
+
+    def test_session_name_updates_on_rename_during_incremental_scan(self):
+        """A rename captured in appended lines should replace the stored session_name."""
+        with open(self.filepath, "w") as f:
+            f.write(_make_user_record(session_id="sess-1") + "\n")
+            f.write(_make_custom_title_record(session_id="sess-1", title="old-name") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-1") + "\n")
+        scan(projects_dir=self.projects_dir.parent.parent,
+             db_path=self.db_path, verbose=False)
+
+        import time
+        time.sleep(0.05)
+        with open(self.filepath, "a") as f:
+            f.write(_make_custom_title_record(session_id="sess-1", title="new-name") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-2",
+                                           timestamp="2026-04-08T10:05:00Z") + "\n")
+        scan(projects_dir=self.projects_dir.parent.parent,
+             db_path=self.db_path, verbose=False)
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT session_name FROM sessions WHERE session_id='sess-1'").fetchone()
+        conn.close()
+        self.assertEqual(row["session_name"], "new-name")
+
+
+class TestSessionNameMigration(unittest.TestCase):
+    """Existing DBs without a session_name column should be upgraded by init_db."""
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_session_name_column_added_to_existing_db(self):
+        # Seed a pre-migration schema (no session_name column). Mirror the legacy
+        # shape init_db expects to find so the upgrade path (ALTER TABLE) runs.
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript("""
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                project_name TEXT,
+                first_timestamp TEXT,
+                last_timestamp TEXT,
+                git_branch TEXT,
+                total_input_tokens INTEGER DEFAULT 0,
+                total_output_tokens INTEGER DEFAULT 0,
+                total_cache_read INTEGER DEFAULT 0,
+                total_cache_creation INTEGER DEFAULT 0,
+                model TEXT,
+                turn_count INTEGER DEFAULT 0
+            );
+            CREATE TABLE turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                timestamp TEXT,
+                model TEXT,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                tool_name TEXT,
+                cwd TEXT
+            );
+            CREATE TABLE processed_files (
+                path TEXT PRIMARY KEY,
+                mtime REAL,
+                lines INTEGER
+            );
+        """)
+        conn.commit()
+        cols_before = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+        self.assertNotIn("session_name", cols_before)
+        conn.close()
+
+        conn = get_db(self.db_path)
+        init_db(conn)
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+        self.assertIn("session_name", cols)
+        conn.close()
 
 
 if __name__ == "__main__":
