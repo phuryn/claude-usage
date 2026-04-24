@@ -200,6 +200,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="filter-sep"></div>
   <div class="filter-label">Range</div>
   <div class="range-group">
+    <button class="range-btn" data-range="week" onclick="setRange('week')">This Week</button>
+    <button class="range-btn" data-range="month" onclick="setRange('month')">This Month</button>
+    <button class="range-btn" data-range="prev-month" onclick="setRange('prev-month')">Prev Month</button>
     <button class="range-btn" data-range="7d"  onclick="setRange('7d')">7d</button>
     <button class="range-btn" data-range="30d" onclick="setRange('30d')">30d</button>
     <button class="range-btn" data-range="90d" onclick="setRange('90d')">90d</button>
@@ -388,20 +391,49 @@ const TOKEN_COLORS = {
 const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
 
 // ── Time range ─────────────────────────────────────────────────────────────
-const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
-const RANGE_TICKS  = { '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+const RANGE_LABELS = { 'week': 'This Week', 'month': 'This Month', 'prev-month': 'Previous Month', '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
+const RANGE_TICKS  = { 'week': 7, 'month': 15, 'prev-month': 15, '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+const VALID_RANGES = Object.keys(RANGE_LABELS);
 
-function getRangeCutoff(range) {
-  if (range === 'all') return null;
+function rangeIncludesToday(range) {
+  if (range === 'all') return true;
+  const { start, end } = getRangeBounds(range);
+  const today = new Date().toISOString().slice(0, 10);
+  if (start && today < start) return false;
+  if (end && today > end) return false;
+  return true;
+}
+
+function getRangeBounds(range) {
+  if (range === 'all') return { start: null, end: null };
+  const today = new Date();
+  const iso = d => d.toISOString().slice(0, 10);
+  if (range === 'week') {
+    const day = today.getDay();
+    const diffToMon = day === 0 ? 6 : day - 1;
+    const mon = new Date(today); mon.setDate(today.getDate() - diffToMon);
+    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+    return { start: iso(mon), end: iso(sun) };
+  }
+  if (range === 'month') {
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    return { start: iso(start), end: iso(end) };
+  }
+  if (range === 'prev-month') {
+    const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const end = new Date(today.getFullYear(), today.getMonth(), 0);
+    return { start: iso(start), end: iso(end) };
+  }
   const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
   const d = new Date();
   d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
+  return { start: iso(d), end: null };
 }
 
 function readURLRange() {
   const p = new URLSearchParams(window.location.search).get('range');
-  return ['7d', '30d', '90d', 'all'].includes(p) ? p : '30d';
+  return VALID_RANGES.includes(p) ? p : '30d';
 }
 
 function setRange(range) {
@@ -411,6 +443,7 @@ function setRange(range) {
   );
   updateURL();
   applyFilter();
+  scheduleAutoRefresh();
 }
 
 // ── Model filter ───────────────────────────────────────────────────────────
@@ -524,11 +557,11 @@ function sortSessions(sessions) {
 function applyFilter() {
   if (!rawData) return;
 
-  const cutoff = getRangeCutoff(selectedRange);
+  const { start, end } = getRangeBounds(selectedRange);
 
   // Filter daily rows by model + date range
   const filteredDaily = rawData.daily_by_model.filter(r =>
-    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+    selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end)
   );
 
   // Daily chart: aggregate by day
@@ -557,7 +590,7 @@ function applyFilter() {
 
   // Filter sessions by model + date range
   const filteredSessions = rawData.sessions_all.filter(s =>
-    selectedModels.has(s.model) && (!cutoff || s.last_date >= cutoff)
+    selectedModels.has(s.model) && (!start || s.last_date >= start) && (!end || s.last_date <= end)
   );
 
   // Add session counts into modelMap
@@ -954,7 +987,8 @@ async function loadData() {
       document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + esc(d.error) + '</div>';
       return;
     }
-    document.getElementById('meta').textContent = 'Updated: ' + d.generated_at + ' \u00b7 Auto-refresh in 30s';
+    const refreshNote = rangeIncludesToday(selectedRange) ? ' \u00b7 Auto-refresh in 30s' : '';
+    document.getElementById('meta').textContent = 'Updated: ' + d.generated_at + refreshNote;
 
     const isFirstLoad = rawData === null;
     rawData = d;
@@ -979,8 +1013,16 @@ async function loadData() {
   }
 }
 
+let autoRefreshTimer = null;
+function scheduleAutoRefresh() {
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  if (rangeIncludesToday(selectedRange)) {
+    autoRefreshTimer = setInterval(loadData, 30000);
+  }
+}
+
 loadData();
-setInterval(loadData, 30000);
+scheduleAutoRefresh();
 </script>
 </body>
 </html>
