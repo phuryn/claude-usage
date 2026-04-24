@@ -34,7 +34,8 @@ def init_db(conn):
             total_cache_read        INTEGER DEFAULT 0,
             total_cache_creation    INTEGER DEFAULT 0,
             model           TEXT,
-            turn_count      INTEGER DEFAULT 0
+            turn_count      INTEGER DEFAULT 0,
+            session_name    TEXT
         );
 
         CREATE TABLE IF NOT EXISTS turns (
@@ -66,12 +67,39 @@ def init_db(conn):
         conn.execute("SELECT message_id FROM turns LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE turns ADD COLUMN message_id TEXT")
+    # Add session_name column if upgrading from older schema
+    try:
+        conn.execute("SELECT session_name FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE sessions ADD COLUMN session_name TEXT")
     # Conditional unique index: only dedup non-null message IDs
     conn.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_message_id
         ON turns(message_id) WHERE message_id IS NOT NULL AND message_id != ''
     """)
     conn.commit()
+
+
+def extract_session_name(record, current_custom, current_agent):
+    """Extract customTitle / agentName from a record, preferring non-empty updates.
+
+    Claude Code logs emit `{"type":"custom-title","customTitle":"..."}` and
+    `{"type":"agent-name","agentName":"..."}` records when a session is renamed
+    via `/rename`. The last non-empty value per session wins, with customTitle
+    taking precedence over agentName at display time.
+    """
+    ct = record.get("customTitle")
+    an = record.get("agentName")
+    if ct:
+        current_custom = ct
+    if an:
+        current_agent = an
+    return current_custom, current_agent
+
+
+def resolve_session_name(custom_title, agent_name):
+    """Return the preferred display name: customTitle first, agentName second."""
+    return custom_title or agent_name or None
 
 
 def project_name_from_cwd(cwd):
@@ -108,36 +136,49 @@ def parse_jsonl_file(filepath):
                 except json.JSONDecodeError:
                     continue
 
-                rtype = record.get("type")
-                if rtype not in ("assistant", "user"):
-                    continue
-
                 session_id = record.get("sessionId")
                 if not session_id:
+                    continue
+
+                # Initialise meta on first sight of a session, regardless of record type
+                if session_id not in session_meta:
+                    session_meta[session_id] = {
+                        "session_id": session_id,
+                        "project_name": project_name_from_cwd(record.get("cwd", "")),
+                        "first_timestamp": record.get("timestamp", ""),
+                        "last_timestamp": record.get("timestamp", ""),
+                        "git_branch": record.get("gitBranch", ""),
+                        "model": None,
+                        "custom_title": None,
+                        "agent_name": None,
+                    }
+
+                # Capture session_name from any record (custom-title / agent-name types
+                # emit it as a top-level field, but the issue notes it can appear opportunistically)
+                meta = session_meta[session_id]
+                meta["custom_title"], meta["agent_name"] = extract_session_name(
+                    record, meta["custom_title"], meta["agent_name"]
+                )
+
+                rtype = record.get("type")
+                if rtype not in ("assistant", "user"):
                     continue
 
                 timestamp = record.get("timestamp", "")
                 cwd = record.get("cwd", "")
                 git_branch = record.get("gitBranch", "")
 
-                # Update session metadata from any record
-                if session_id not in session_meta:
-                    session_meta[session_id] = {
-                        "session_id": session_id,
-                        "project_name": project_name_from_cwd(cwd),
-                        "first_timestamp": timestamp,
-                        "last_timestamp": timestamp,
-                        "git_branch": git_branch,
-                        "model": None,
-                    }
-                else:
-                    meta = session_meta[session_id]
-                    if timestamp and (not meta["first_timestamp"] or timestamp < meta["first_timestamp"]):
-                        meta["first_timestamp"] = timestamp
-                    if timestamp and (not meta["last_timestamp"] or timestamp > meta["last_timestamp"]):
-                        meta["last_timestamp"] = timestamp
-                    if git_branch and not meta["git_branch"]:
-                        meta["git_branch"] = git_branch
+                # Update session metadata from assistant/user records
+                if timestamp and (not meta["first_timestamp"] or timestamp < meta["first_timestamp"]):
+                    meta["first_timestamp"] = timestamp
+                if timestamp and (not meta["last_timestamp"] or timestamp > meta["last_timestamp"]):
+                    meta["last_timestamp"] = timestamp
+                if git_branch and not meta["git_branch"]:
+                    meta["git_branch"] = git_branch
+                # Backfill project_name if the record that created meta lacked cwd
+                # (e.g. a custom-title record preceded the first user/assistant line)
+                if cwd and (not meta["project_name"] or meta["project_name"] == "unknown"):
+                    meta["project_name"] = project_name_from_cwd(cwd)
 
                 if rtype == "assistant":
                     msg = record.get("message", {})
@@ -218,7 +259,11 @@ def aggregate_sessions(session_metas, turns):
     for meta in session_metas:
         sid = meta["session_id"]
         stats = session_stats[sid]
-        result.append({**meta, **stats})
+        merged = {**meta, **stats}
+        merged["session_name"] = resolve_session_name(
+            meta.get("custom_title"), meta.get("agent_name")
+        )
+        result.append(merged)
     return result
 
 
@@ -236,17 +281,20 @@ def upsert_sessions(conn, sessions):
                 INSERT INTO sessions
                     (session_id, project_name, first_timestamp, last_timestamp,
                      git_branch, total_input_tokens, total_output_tokens,
-                     total_cache_read, total_cache_creation, model, turn_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     total_cache_read, total_cache_creation, model, turn_count,
+                     session_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 s["session_id"], s["project_name"], s["first_timestamp"],
                 s["last_timestamp"], s["git_branch"],
                 s["total_input_tokens"], s["total_output_tokens"],
                 s["total_cache_read"], s["total_cache_creation"],
-                s["model"], s["turn_count"]
+                s["model"], s["turn_count"], s.get("session_name")
             ))
         else:
             # Update: add new tokens on top of existing (since we only insert new turns)
+            # session_name: replace only when we have a new non-empty value, to avoid
+            # clobbering an existing name with a later scan that sees no rename records
             conn.execute("""
                 UPDATE sessions SET
                     last_timestamp = MAX(last_timestamp, ?),
@@ -255,13 +303,15 @@ def upsert_sessions(conn, sessions):
                     total_cache_read = total_cache_read + ?,
                     total_cache_creation = total_cache_creation + ?,
                     turn_count = turn_count + ?,
-                    model = COALESCE(?, model)
+                    model = COALESCE(?, model),
+                    session_name = COALESCE(NULLIF(?, ''), session_name)
                 WHERE session_id = ?
             """, (
                 s["last_timestamp"],
                 s["total_input_tokens"], s["total_output_tokens"],
                 s["total_cache_read"], s["total_cache_creation"],
                 s["turn_count"], s["model"],
+                s.get("session_name"),
                 s["session_id"]
             ))
 
@@ -361,31 +411,40 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                         except json.JSONDecodeError:
                             continue
 
-                        rtype = record.get("type")
-                        if rtype not in ("assistant", "user"):
-                            continue
-
                         session_id = record.get("sessionId")
                         if not session_id:
+                            continue
+
+                        # Initialise meta on first sight, regardless of record type
+                        if session_id not in new_session_metas:
+                            new_session_metas[session_id] = {
+                                "session_id": session_id,
+                                "project_name": project_name_from_cwd(record.get("cwd", "")),
+                                "first_timestamp": record.get("timestamp", ""),
+                                "last_timestamp": record.get("timestamp", ""),
+                                "git_branch": record.get("gitBranch", ""),
+                                "model": None,
+                                "custom_title": None,
+                                "agent_name": None,
+                            }
+
+                        # Capture session_name updates from any record
+                        meta = new_session_metas[session_id]
+                        meta["custom_title"], meta["agent_name"] = extract_session_name(
+                            record, meta["custom_title"], meta["agent_name"]
+                        )
+
+                        rtype = record.get("type")
+                        if rtype not in ("assistant", "user"):
                             continue
 
                         timestamp = record.get("timestamp", "")
                         cwd = record.get("cwd", "")
 
-                        # Track session metadata from new lines
-                        if session_id not in new_session_metas:
-                            new_session_metas[session_id] = {
-                                "session_id": session_id,
-                                "project_name": project_name_from_cwd(cwd),
-                                "first_timestamp": timestamp,
-                                "last_timestamp": timestamp,
-                                "git_branch": record.get("gitBranch", ""),
-                                "model": None,
-                            }
-                        else:
-                            meta = new_session_metas[session_id]
-                            if timestamp and (not meta["last_timestamp"] or timestamp > meta["last_timestamp"]):
-                                meta["last_timestamp"] = timestamp
+                        if timestamp and (not meta["last_timestamp"] or timestamp > meta["last_timestamp"]):
+                            meta["last_timestamp"] = timestamp
+                        if cwd and (not meta["project_name"] or meta["project_name"] == "unknown"):
+                            meta["project_name"] = project_name_from_cwd(cwd)
 
                         if rtype == "assistant":
                             msg = record.get("message", {})
