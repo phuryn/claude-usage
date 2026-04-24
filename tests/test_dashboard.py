@@ -129,6 +129,24 @@ class TestDashboardHTTP(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # Redirect DB_PATH + projects dirs to a tempdir so /api/rescan
+        # doesn't unlink the user's real ~/.claude/usage.db or scan their
+        # real transcript directory during tests.
+        import dashboard as _d
+        import scanner as _s
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        tmp = Path(cls._tmpdir.name)
+        tmp_projects = tmp / "projects"
+        tmp_projects.mkdir()
+        cls._patches = {
+            (_d, "DB_PATH"):                (_d.DB_PATH,                tmp / "usage.db"),
+            (_s, "DB_PATH"):                (_s.DB_PATH,                tmp / "usage.db"),
+            (_s, "PROJECTS_DIR"):           (_s.PROJECTS_DIR,           tmp_projects),
+            (_s, "DEFAULT_PROJECTS_DIRS"):  (_s.DEFAULT_PROJECTS_DIRS,  [tmp_projects]),
+        }
+        for (mod, name), (_orig, new) in cls._patches.items():
+            setattr(mod, name, new)
+
         cls.server = HTTPServer(("127.0.0.1", 0), DashboardHandler)
         cls.port = cls.server.server_address[1]
         cls.thread = threading.Thread(target=cls.server.serve_forever)
@@ -138,6 +156,9 @@ class TestDashboardHTTP(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
+        for (mod, name), (orig, _new) in cls._patches.items():
+            setattr(mod, name, orig)
+        cls._tmpdir.cleanup()
 
     def test_index_returns_html(self):
         url = f"http://127.0.0.1:{self.port}/"

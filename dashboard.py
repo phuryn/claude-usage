@@ -1263,11 +1263,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/rescan":
-            # Full rebuild: delete DB and rescan from scratch
-            if DB_PATH.exists():
-                DB_PATH.unlink()
-            from scanner import scan
-            result = scan(verbose=False)
+            # Full rebuild: delete DB and rescan from scratch.
+            # Pass DB_PATH / DEFAULT_PROJECTS_DIRS explicitly so tests that
+            # patch the module globals are honored (scan's defaults are
+            # frozen at def time and would otherwise target the real paths).
+            import scanner
+            db_path = DB_PATH
+            if db_path.exists():
+                db_path.unlink()
+            result = scanner.scan(
+                db_path=db_path,
+                projects_dirs=scanner.DEFAULT_PROJECTS_DIRS,
+                verbose=False,
+            )
             body = json.dumps(result).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
