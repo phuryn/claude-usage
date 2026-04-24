@@ -53,6 +53,29 @@ def get_dashboard_data(db_path=DB_PATH):
         "turns":          r["turns"] or 0,
     } for r in daily_rows]
 
+    # ── Hourly per-day per-model (client filters by range + TZ-shifts) ────────
+    # Timestamps are ISO8601 UTC (e.g. "2026-04-08T09:30:00Z"); chars 12-13 = hour.
+    hourly_rows = conn.execute("""
+        SELECT
+            substr(timestamp, 1, 10)                  as day,
+            CAST(substr(timestamp, 12, 2) AS INTEGER) as hour,
+            COALESCE(model, 'unknown')                as model,
+            SUM(output_tokens)                        as output,
+            COUNT(*)                                  as turns
+        FROM turns
+        WHERE timestamp IS NOT NULL AND length(timestamp) >= 13
+        GROUP BY day, hour, model
+        ORDER BY day, hour, model
+    """).fetchall()
+
+    hourly_by_model = [{
+        "day":    r["day"],
+        "hour":   r["hour"] if r["hour"] is not None else 0,
+        "model":  r["model"],
+        "output": r["output"] or 0,
+        "turns":  r["turns"] or 0,
+    } for r in hourly_rows]
+
     # ── All sessions (client filters by range and model) ──────────────────────
     session_rows = conn.execute("""
         SELECT
@@ -90,10 +113,11 @@ def get_dashboard_data(db_path=DB_PATH):
     conn.close()
 
     return {
-        "all_models":     all_models,
-        "daily_by_model": daily_by_model,
-        "sessions_all":   sessions_all,
-        "generated_at":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "all_models":      all_models,
+        "daily_by_model":  daily_by_model,
+        "hourly_by_model": hourly_by_model,
+        "sessions_all":    sessions_all,
+        "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
@@ -154,6 +178,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .chart-card h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 16px; }
   .chart-wrap { position: relative; height: 240px; }
   .chart-wrap.tall { height: 300px; }
+  .chart-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  .chart-header h2 { margin-bottom: 0; }
+  .chart-header-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .chart-day-count { font-size: 11px; color: var(--muted); }
+  .tz-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .tz-btn { padding: 3px 10px; background: transparent; border: none; border-right: 1px solid var(--border); color: var(--muted); font-size: 11px; cursor: pointer; transition: background 0.15s, color 0.15s; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  .tz-btn:last-child { border-right: none; }
+  .tz-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+  .tz-btn.active { background: rgba(217,119,87,0.15); color: var(--accent); }
+  .peak-legend { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+  .peak-swatch { width: 10px; height: 10px; background: rgba(248,113,113,0.8); border-radius: 2px; display: inline-block; }
 
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
@@ -213,6 +248,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="chart-card wide">
       <h2 id="daily-chart-title">Daily Token Usage</h2>
       <div class="chart-wrap tall"><canvas id="chart-daily"></canvas></div>
+    </div>
+    <div class="chart-card wide">
+      <div class="chart-header">
+        <h2 id="hourly-chart-title">Average Hourly Distribution</h2>
+        <div class="chart-header-right">
+          <span class="peak-legend" title="Mon–Fri 05:00–11:00 PT — Anthropic peak-hour throttling window"><span class="peak-swatch"></span>Peak hours (PT)</span>
+          <span class="chart-day-count" id="hourly-day-count"></span>
+          <div class="tz-group">
+            <button class="tz-btn" data-tz="local" onclick="setHourlyTZ('local')">Local</button>
+            <button class="tz-btn" data-tz="utc"   onclick="setHourlyTZ('utc')">UTC</button>
+          </div>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-hourly"></canvas></div>
     </div>
     <div class="chart-card">
       <h2>By Model</h2>
@@ -323,6 +372,47 @@ let lastFilteredSessions = [];
 let lastByProject = [];
 let lastByProjectBranch = [];
 let sessionSortDir = 'desc';
+let hourlyTZ = 'local';  // 'local' or 'utc'
+
+// ── Peak-hour config ───────────────────────────────────────────────────────
+// Anthropic throttles Mon–Fri 05:00–11:00 PT. We approximate as fixed UTC hours
+// 12–17 (matches PDT; during PST the window shifts by 1h — accepted simplification).
+const PEAK_HOURS_UTC = new Set([12, 13, 14, 15, 16, 17]);
+
+// Local-timezone offset in hours (signed). Fractional offsets (e.g. India UTC+5:30)
+// are rounded to the nearest hour for bucket alignment.
+function localOffsetHours() {
+  return Math.round(-new Date().getTimezoneOffset() / 60);
+}
+
+// Return the UTC hour (0–23) corresponding to a displayed-hour bucket.
+function displayHourToUTC(displayHour, tzMode) {
+  if (tzMode === 'utc') return displayHour;
+  return ((displayHour - localOffsetHours()) % 24 + 24) % 24;
+}
+
+// Return the displayed-hour bucket for a UTC hour.
+function utcHourToDisplay(utcHour, tzMode) {
+  if (tzMode === 'utc') return utcHour;
+  return ((utcHour + localOffsetHours()) % 24 + 24) % 24;
+}
+
+function isPeakHour(displayHour, tzMode) {
+  return PEAK_HOURS_UTC.has(displayHourToUTC(displayHour, tzMode));
+}
+
+function formatHourLabel(h) {
+  return String(h).padStart(2, '0') + ':00';
+}
+
+function tzDisplayName(tzMode) {
+  if (tzMode === 'utc') return 'UTC';
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local';
+  } catch(e) {
+    return 'Local';
+  }
+}
 
 // ── Pricing (Anthropic API, April 2026) ────────────────────────────────────
 const PRICING = {
@@ -410,6 +500,14 @@ function setRange(range) {
     btn.classList.toggle('active', btn.dataset.range === range)
   );
   updateURL();
+  applyFilter();
+}
+
+function setHourlyTZ(mode) {
+  hourlyTZ = mode;
+  document.querySelectorAll('.tz-btn').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.tz === mode)
+  );
   applyFilter();
 }
 
@@ -609,11 +707,19 @@ function applyFilter() {
     cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0),
   };
 
+  // Hourly aggregation (filtered by model + range, then bucketed by UTC hour)
+  const hourlySrc = (rawData.hourly_by_model || []).filter(r =>
+    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+  );
+  const hourlyAgg = aggregateHourly(hourlySrc, hourlyTZ);
+
   // Update daily chart title
   document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('hourly-chart-title').textContent = 'Average Hourly Distribution \u2014 ' + RANGE_LABELS[selectedRange];
 
   renderStats(totals);
   renderDailyChart(daily);
+  renderHourlyChart(hourlyAgg);
   renderModelChart(byModel);
   renderProjectChart(byProject);
   lastFilteredSessions = sortSessions(filteredSessions);
@@ -644,6 +750,104 @@ function renderStats(t) {
       ${s.sub ? `<div class="sub">${esc(s.sub)}</div>` : ''}
     </div>
   `).join('');
+}
+
+// Bucket rows into 24 hours (display-TZ), summing turns + output, and count
+// the unique days in the input so the caller can compute per-day averages.
+function aggregateHourly(rows, tzMode) {
+  const byHour = {};
+  for (let h = 0; h < 24; h++) byHour[h] = { turns: 0, output: 0 };
+  const days = new Set();
+  for (const r of rows) {
+    const displayHour = utcHourToDisplay(r.hour, tzMode);
+    byHour[displayHour].turns  += r.turns  || 0;
+    byHour[displayHour].output += r.output || 0;
+    if (r.day) days.add(r.day);
+  }
+  const dayCount = days.size;
+  const hours = [];
+  for (let h = 0; h < 24; h++) {
+    hours.push({
+      hour:       h,
+      avgTurns:   dayCount ? byHour[h].turns  / dayCount : 0,
+      avgOutput:  dayCount ? byHour[h].output / dayCount : 0,
+      totalTurns: byHour[h].turns,
+      peak:       isPeakHour(h, tzMode),
+    });
+  }
+  return { hours, dayCount };
+}
+
+function renderHourlyChart(agg) {
+  const dayCountEl = document.getElementById('hourly-day-count');
+  dayCountEl.textContent = agg.dayCount
+    ? agg.dayCount + ' day' + (agg.dayCount === 1 ? '' : 's') + ' averaged · ' + tzDisplayName(hourlyTZ)
+    : 'No data · ' + tzDisplayName(hourlyTZ);
+
+  const ctx = document.getElementById('chart-hourly').getContext('2d');
+  if (charts.hourly) charts.hourly.destroy();
+
+  const labels = agg.hours.map(h => (h.peak ? '⚡ ' : '') + formatHourLabel(h.hour));
+  const turns  = agg.hours.map(h => h.avgTurns);
+  const output = agg.hours.map(h => h.avgOutput);
+  const barColors = agg.hours.map(h => h.peak ? 'rgba(248,113,113,0.8)' : TOKEN_COLORS.input);
+
+  charts.hourly = new Chart(ctx, {
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          type: 'bar',
+          label: 'Avg turns / hour',
+          data: turns,
+          backgroundColor: barColors,
+          yAxisID: 'y',
+          order: 2,
+        },
+        {
+          type: 'line',
+          label: 'Avg output tokens / hour',
+          data: output,
+          borderColor: TOKEN_COLORS.output,
+          backgroundColor: 'rgba(167,139,250,0.15)',
+          borderWidth: 2,
+          pointRadius: 2,
+          tension: 0.3,
+          yAxisID: 'y1',
+          order: 1,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#8892a4', boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              if (!items.length) return '';
+              const idx = items[0].dataIndex;
+              const h = agg.hours[idx];
+              const base = formatHourLabel(h.hour) + ' ' + tzDisplayName(hourlyTZ);
+              return h.peak ? base + ' · Peak — Anthropic US hours' : base;
+            },
+            label: (item) => {
+              if (item.dataset.label && item.dataset.label.indexOf('turns') !== -1) {
+                return ' Avg turns: ' + item.parsed.y.toFixed(2);
+              }
+              return ' Avg output: ' + fmt(item.parsed.y);
+            },
+          }
+        },
+      },
+      scales: {
+        x: { ticks: { color: '#8892a4', maxRotation: 0, autoSkip: false, font: { size: 10 } }, grid: { color: '#2a2d3a' } },
+        y:  { position: 'left',  beginAtZero: true, ticks: { color: '#8892a4', callback: v => v.toFixed(1) },     grid: { color: '#2a2d3a' }, title: { display: true, text: 'Avg turns / hour',         color: '#8892a4', font: { size: 11 } } },
+        y1: { position: 'right', beginAtZero: true, ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { drawOnChartArea: false },   title: { display: true, text: 'Avg output tokens / hour', color: '#8892a4', font: { size: 11 } } },
+      }
+    }
+  });
 }
 
 function renderDailyChart(daily) {
@@ -964,6 +1168,10 @@ async function loadData() {
       selectedRange = readURLRange();
       document.querySelectorAll('.range-btn').forEach(btn =>
         btn.classList.toggle('active', btn.dataset.range === selectedRange)
+      );
+      // Mark default TZ button active
+      document.querySelectorAll('.tz-btn').forEach(btn =>
+        btn.classList.toggle('active', btn.dataset.tz === hourlyTZ)
       );
       // Build model filter (reads URL for model selection too)
       buildFilterUI(d.all_models);

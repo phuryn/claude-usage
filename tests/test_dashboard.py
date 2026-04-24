@@ -36,12 +36,20 @@ class TestGetDashboardData(unittest.TestCase):
             "turn_count": 10,
         }]
         upsert_sessions(conn, sessions)
-        turns = [{
-            "session_id": "sess-abc123", "timestamp": "2026-04-08T09:30:00Z",
-            "model": "claude-sonnet-4-6", "input_tokens": 500,
-            "output_tokens": 200, "cache_read_tokens": 50,
-            "cache_creation_tokens": 20, "tool_name": None, "cwd": "/tmp",
-        }]
+        turns = [
+            {
+                "session_id": "sess-abc123", "timestamp": "2026-04-08T09:30:00Z",
+                "model": "claude-sonnet-4-6", "input_tokens": 500,
+                "output_tokens": 200, "cache_read_tokens": 50,
+                "cache_creation_tokens": 20, "tool_name": None, "cwd": "/tmp",
+            },
+            {
+                "session_id": "sess-abc123", "timestamp": "2026-04-08T14:15:00Z",
+                "model": "claude-sonnet-4-6", "input_tokens": 300,
+                "output_tokens": 150, "cache_read_tokens": 0,
+                "cache_creation_tokens": 0, "tool_name": None, "cwd": "/tmp",
+            },
+        ]
         insert_turns(conn, turns)
         conn.commit()
         conn.close()
@@ -90,6 +98,30 @@ class TestGetDashboardData(unittest.TestCase):
         session = data["sessions_all"][0]
         # 1 hour = 60 minutes
         self.assertEqual(session["duration_min"], 60.0)
+
+    def test_hourly_by_model_present(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertIn("hourly_by_model", data)
+        self.assertIsInstance(data["hourly_by_model"], list)
+
+    def test_hourly_by_model_buckets_by_utc_hour(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        rows = data["hourly_by_model"]
+        # Two turns at UTC 09:30 and 14:15 → two hour buckets
+        by_hour = {r["hour"]: r for r in rows}
+        self.assertIn(9, by_hour)
+        self.assertIn(14, by_hour)
+        self.assertEqual(by_hour[9]["turns"], 1)
+        self.assertEqual(by_hour[9]["output"], 200)
+        self.assertEqual(by_hour[14]["turns"], 1)
+        self.assertEqual(by_hour[14]["output"], 150)
+
+    def test_hourly_by_model_carries_day_and_model(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        rows = data["hourly_by_model"]
+        self.assertTrue(all("day" in r and "model" in r for r in rows))
+        self.assertTrue(all(r["model"] == "claude-sonnet-4-6" for r in rows))
+        self.assertTrue(all(r["day"] == "2026-04-08" for r in rows))
 
 
 class TestDashboardHTTP(unittest.TestCase):
@@ -163,6 +195,17 @@ class TestHTMLTemplate(unittest.TestCase):
     def test_unknown_models_return_null(self):
         """Verify getPricing returns null for non-Anthropic models."""
         self.assertIn("return null;", HTML_TEMPLATE)
+
+    def test_hourly_chart_canvas_present(self):
+        """Hourly distribution chart has a canvas + TZ toggle."""
+        self.assertIn('id="chart-hourly"', HTML_TEMPLATE)
+        self.assertIn('data-tz="local"', HTML_TEMPLATE)
+        self.assertIn('data-tz="utc"', HTML_TEMPLATE)
+
+    def test_hourly_peak_hour_constants(self):
+        """Peak-hour set covers UTC 12–17 (Mon–Fri 05:00–11:00 PT)."""
+        self.assertIn('PEAK_HOURS_UTC', HTML_TEMPLATE)
+        self.assertIn('[12, 13, 14, 15, 16, 17]', HTML_TEMPLATE)
 
 
 class TestPricingParity(unittest.TestCase):
