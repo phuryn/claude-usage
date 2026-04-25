@@ -119,6 +119,24 @@ Costs are calculated using **Anthropic API pricing as of April 2026** ([claude.c
 
 ---
 
+## Cowork sessions
+
+Claude Desktop (the agent / Cowork mode in the desktop app) writes a per-session
+audit log to its userData directory:
+
+| OS | Path |
+|---|---|
+| macOS | `~/Library/Application Support/Claude/local-agent-mode-sessions/` |
+| Windows | `%APPDATA%/Claude/local-agent-mode-sessions/` |
+| Linux | `$XDG_CONFIG_HOME/Claude/local-agent-mode-sessions/` (default `~/.config/...`) |
+
+`scan` automatically picks these up alongside `~/.claude/projects/`. Sessions
+appear in the dashboard under project names like `Cowork/<8-char-id>`.
+
+Token totals come from the authoritative `result.modelUsage` blocks (the same
+numbers Anthropic uses for billing), so cost estimates line up with what
+the API reports rather than aggregating per-event streaming chunks.
+
 ## Files
 
 | File | Purpose |
