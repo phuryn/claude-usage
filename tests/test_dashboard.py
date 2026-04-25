@@ -233,16 +233,16 @@ class TestPricingParity(unittest.TestCase):
     """Verify CLI and dashboard pricing tables stay in sync."""
 
     def _extract_js_pricing(self):
-        """Extract pricing values from the dashboard JS PRICING object."""
-        import re
-        prices = {}
-        for match in re.finditer(
-            r"'(claude-[^']+)':\s*\{\s*input:\s*([\d.]+),\s*output:\s*([\d.]+)",
-            HTML_TEMPLATE
-        ):
-            model, inp, out = match.group(1), float(match.group(2)), float(match.group(3))
-            prices[model] = {"input": inp, "output": out}
-        return prices
+        """Decode the JSON-injected PRICING table from the rendered HTML.
+        The HTML_TEMPLATE now carries a placeholder; the real table is
+        injected at request time by render_html()."""
+        import re, json
+        from dashboard import render_html
+        html = render_html().decode("utf-8")
+        m = re.search(r"const PRICING = (\{.*?\});", html, re.DOTALL)
+        if not m:
+            return {}
+        return json.loads(m.group(1))
 
     def test_all_cli_models_in_dashboard(self):
         from cli import PRICING as CLI_PRICING
