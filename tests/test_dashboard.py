@@ -166,6 +166,23 @@ class TestDashboardHTTP(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             self.assertIn("text/html", resp.headers["Content-Type"])
 
+    def test_index_with_query_string_returns_html(self):
+        # Regression: ?range=... and ?models=... must not 404. The dashboard
+        # itself rewrites the URL with these params via history.replaceState,
+        # so anything that reloads or bookmarks the page hits this path.
+        for qs in ("?range=all", "?range=30d&models=claude-opus-4-7"):
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/{qs}") as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertIn(b"Claude Code Usage Dashboard", resp.read())
+
+    def test_api_data_with_query_string(self):
+        # /api/data is fetched without query parameters today, but the route
+        # should be tolerant if any are tacked on (e.g. cache-busting).
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{self.port}/api/data?_=cachebust"
+        ) as resp:
+            self.assertEqual(resp.status, 200)
+
     def test_api_data_returns_json(self):
         url = f"http://127.0.0.1:{self.port}/api/data"
         with urllib.request.urlopen(url) as resp:
