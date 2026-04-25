@@ -9,6 +9,8 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
 
+import cowork
+
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
 DB_PATH = Path.home() / ".claude" / "usage.db"
@@ -332,6 +334,17 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         if verbose:
             print(f"Scanning {d} ...")
         jsonl_files.extend(glob.glob(str(d / "**" / "*.jsonl"), recursive=True))
+
+    # Cowork desktop-app session logs (multi-platform path detection in cowork.py).
+    # Only included on a "default" scan (no explicit projects_dir / projects_dirs);
+    # if a caller passed an override, treat it as "scan exactly this and nothing else".
+    if not projects_dir and not projects_dirs:
+        cowork_dir = cowork.cowork_sessions_dir()
+        if cowork_dir and cowork_dir.exists():
+            if verbose:
+                print(f"Scanning {cowork_dir} (Cowork) ...")
+            jsonl_files.extend(str(p) for p in cowork.find_audit_files(cowork_dir))
+
     jsonl_files.sort()
 
     new_files = 0
@@ -360,9 +373,24 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
             status = "NEW" if is_new else "UPD"
             print(f"  [{status}] {filepath}")
 
-        if is_new:
-            # New file: full parse (single read, returns line count)
-            session_metas, turns, line_count = parse_jsonl_file(filepath)
+        is_cowork = cowork.is_audit_file(filepath)
+        if is_new or is_cowork:
+            # New (or any Cowork) file: full parse. Cowork audit logs always
+            # take this path because their schema doesn't lend itself to
+            # incremental line-by-line updates — `result` events carry
+            # cumulative per-session totals, not deltas, so reparsing is
+            # easier and still cheap (these files are small).
+            if is_cowork:
+                session_metas, turns, line_count = cowork.parse_audit_file(filepath)
+            else:
+                session_metas, turns, line_count = parse_jsonl_file(filepath)
+
+            if is_cowork and not is_new:
+                # Replace existing turns/sessions for these IDs so totals
+                # don't double-count after a Cowork rescan.
+                for sm in session_metas:
+                    conn.execute("DELETE FROM turns WHERE session_id = ?",
+                                 (sm["session_id"],))
 
             if turns or session_metas:
                 sessions = aggregate_sessions(session_metas, turns)
@@ -371,7 +399,10 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                 for s in sessions:
                     total_sessions.add(s["session_id"])
                 total_turns += len(turns)
-                new_files += 1
+                if is_new:
+                    new_files += 1
+                else:
+                    updated_files += 1
 
         else:
             # Updated file: read once, process only new lines
