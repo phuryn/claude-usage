@@ -5,7 +5,7 @@ dashboard.py - Local web dashboard served on localhost:8080.
 import json
 import os
 import sqlite3
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime
 
@@ -742,7 +742,7 @@ function applyFilter() {
 
   // Hourly aggregation (filtered by model + range, then bucketed by UTC hour)
   const hourlySrc = (rawData.hourly_by_model || []).filter(r =>
-    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+    selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end)
   );
   const hourlyAgg = aggregateHourly(hourlySrc, hourlyTZ);
 
@@ -1242,13 +1242,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
 
-        elif self.path == "/api/data":
+        elif path == "/api/data":
             data = get_dashboard_data()
             body = json.dumps(data).encode("utf-8")
             self.send_response(200)
@@ -1262,14 +1263,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
-        if self.path == "/api/rescan":
-            # Full rebuild: delete DB and rescan from scratch.
+        path, _, query = self.path.partition("?")
+        if path == "/api/rescan":
+            # Default: incremental scan (fast, non-destructive).
+            # Opt-in full rebuild with ?full=1 — useful when pricing or
+            # parsing logic changes and historical rows need to be redone.
             # Pass DB_PATH / DEFAULT_PROJECTS_DIRS explicitly so tests that
             # patch the module globals are honored (scan's defaults are
             # frozen at def time and would otherwise target the real paths).
             import scanner
             db_path = DB_PATH
-            if db_path.exists():
+            full = "full=1" in query
+            if full and db_path.exists():
                 db_path.unlink()
             result = scanner.scan(
                 db_path=db_path,
@@ -1290,8 +1295,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def serve(host=None, port=None):
     host = host or os.environ.get("HOST", "localhost")
     port = port or int(os.environ.get("PORT", "8080"))
-    server = HTTPServer((host, port), DashboardHandler)
+    ThreadingHTTPServer.allow_reuse_address = True
+    server = ThreadingHTTPServer((host, port), DashboardHandler)
     print(f"Dashboard running at http://{host}:{port}")
+    if host not in ("localhost", "127.0.0.1", "::1"):
+        print(f"  WARNING: bound to {host} — no authentication. "
+              "Anyone reachable on this interface can read your project history "
+              "and trigger /api/rescan.")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
