@@ -110,6 +110,27 @@ def get_dashboard_data(db_path=DB_PATH):
             "cache_creation": r["total_cache_creation"] or 0,
         })
 
+    # ── Hourly per-model (for hourly activity chart) ────────────────────────
+    hourly_rows = conn.execute("""
+        SELECT
+            CAST(substr(timestamp, 12, 2) AS INTEGER) as hour,
+            COALESCE(model, 'unknown')                as model,
+            substr(timestamp, 1, 10)                  as day,
+            SUM(output_tokens)                        as output,
+            COUNT(*)                                  as turns
+        FROM turns
+        GROUP BY hour, model, day
+        ORDER BY hour, model
+    """).fetchall()
+
+    hourly_by_model = [{
+        "hour":   r["hour"],
+        "model":  r["model"],
+        "day":    r["day"],
+        "output": r["output"] or 0,
+        "turns":  r["turns"] or 0,
+    } for r in hourly_rows]
+
     conn.close()
 
     return {
@@ -273,6 +294,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="chart-card">
       <h2>Top Projects by Tokens</h2>
       <div class="chart-wrap"><canvas id="chart-project"></canvas></div>
+    </div>
+    <div class="chart-card wide">
+      <h2 id="hourly-chart-title">Average Hourly Activity (UTC)</h2>
+      <div class="chart-wrap tall"><canvas id="chart-hourly"></canvas></div>
     </div>
   </div>
   <div class="table-card">
@@ -750,11 +775,20 @@ function applyFilter() {
   document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
   document.getElementById('hourly-chart-title').textContent = 'Average Hourly Distribution \u2014 ' + RANGE_LABELS[selectedRange];
 
+  // Filter hourly rows by model + date range
+  const filteredHourly = rawData.hourly_by_model.filter(r =>
+    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+  );
+  // Count distinct days for averaging
+  const uniqueDays = new Set(filteredHourly.map(r => r.day));
+  const numDays = uniqueDays.size;
+
   renderStats(totals);
   renderDailyChart(daily);
   renderHourlyChart(hourlyAgg);
   renderModelChart(byModel);
   renderProjectChart(byProject);
+  renderHourlyChart(filteredHourly, numDays);
   lastFilteredSessions = sortSessions(filteredSessions);
   lastByProject = sortProjects(byProject);
   lastByProjectBranch = sortProjectBranch(byProjectBranch);
@@ -949,6 +983,94 @@ function renderProjectChart(byProject) {
       scales: {
         x: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
         y: { ticks: { color: '#8892a4', font: { size: 11 } }, grid: { color: '#2a2d3a' } },
+      }
+    }
+  });
+}
+
+// ── Hourly activity chart ──────────────────────────────────────────────
+// Anthropic peak hours: Mon-Fri 12:00-18:00 UTC (05:00-11:00 PT)
+const PEAK_START_UTC = 12;
+const PEAK_END_UTC   = 18;
+
+function renderHourlyChart(hourlyData, numDays) {
+  const ctx = document.getElementById('chart-hourly').getContext('2d');
+  if (charts.hourly) charts.hourly.destroy();
+
+  // Aggregate by hour: average turns and output tokens per day
+  const hourMap = {};
+  for (let h = 0; h < 24; h++) hourMap[h] = { turns: 0, output: 0 };
+  for (const r of hourlyData) {
+    hourMap[r.hour].turns  += r.turns;
+    hourMap[r.hour].output += r.output;
+  }
+
+  const daysDiv = Math.max(1, numDays);
+  const hours = Array.from({length: 24}, (_, i) => i);
+  const avgTurns  = hours.map(h => hourMap[h].turns  / daysDiv);
+  const avgOutput = hours.map(h => hourMap[h].output  / daysDiv);
+
+  // Color bars: red-ish for peak hours, blue for off-peak
+  const barColors = hours.map(h =>
+    h >= PEAK_START_UTC && h < PEAK_END_UTC
+      ? 'rgba(239,68,68,0.7)'
+      : 'rgba(79,142,247,0.7)'
+  );
+
+  const labels = hours.map(h => {
+    const label = String(h).padStart(2, '0') + ':00';
+    return (h >= PEAK_START_UTC && h < PEAK_END_UTC) ? '\u26a1 ' + label : label;
+  });
+
+  document.getElementById('hourly-chart-title').textContent =
+    'Average Hourly Activity (UTC) \u2014 ' + daysDiv + ' day' + (daysDiv !== 1 ? 's' : '');
+
+  charts.hourly = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: 'Avg Turns',
+          data: avgTurns,
+          backgroundColor: barColors,
+          yAxisID: 'y',
+          order: 2,
+        },
+        {
+          label: 'Avg Output Tokens',
+          data: avgOutput,
+          type: 'line',
+          borderColor: 'rgba(167,139,250,0.9)',
+          backgroundColor: 'rgba(167,139,250,0.1)',
+          pointRadius: 3,
+          pointBackgroundColor: 'rgba(167,139,250,1)',
+          fill: false,
+          tension: 0.3,
+          yAxisID: 'y1',
+          order: 1,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#8892a4', boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            afterLabel: function(ctx) {
+              const h = ctx.dataIndex;
+              if (h >= PEAK_START_UTC && h < PEAK_END_UTC) return 'Peak \u2014 Anthropic US hours';
+              return '';
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8892a4', font: { size: 11 } }, grid: { color: '#2a2d3a' } },
+        y:  { position: 'left',  title: { display: true, text: 'Avg Turns', color: '#8892a4' }, ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } },
+        y1: { position: 'right', title: { display: true, text: 'Avg Output Tokens', color: '#8892a4' }, ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { drawOnChartArea: false } },
       }
     }
   });
