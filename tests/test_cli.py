@@ -11,12 +11,24 @@ class TestGetPricing(unittest.TestCase):
         self.assertEqual(p["output"], 25.00)
 
     def test_all_known_models_have_pricing(self):
-        for model in ("claude-opus-4-6", "claude-opus-4-5",
-                       "claude-sonnet-4-6", "claude-sonnet-4-5",
-                       "claude-haiku-4-5", "claude-haiku-4-6"):
+        for model in ("claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
+                       "claude-sonnet-4-7", "claude-sonnet-4-6", "claude-sonnet-4-5",
+                       "claude-haiku-4-7", "claude-haiku-4-6", "claude-haiku-4-5"):
             p = get_pricing(model)
             self.assertGreater(p["input"], 0, f"Missing input price for {model}")
             self.assertGreater(p["output"], 0, f"Missing output price for {model}")
+
+    def test_opus_4_7_has_explicit_entry(self):
+        """Regression guard for issue #61 — Opus 4.7 must be present."""
+        p = get_pricing("claude-opus-4-7")
+        self.assertEqual(p["input"], 5.00)
+        self.assertEqual(p["output"], 25.00)
+
+    def test_opus_4_7_with_date_suffix(self):
+        """Model strings from JSONL often have date suffixes."""
+        p = get_pricing("claude-opus-4-7-20260215")
+        self.assertEqual(p["input"], 5.00)
+        self.assertEqual(p["output"], 25.00)
 
     def test_prefix_match(self):
         # A model name with a suffix should still match the base
@@ -134,19 +146,19 @@ class TestPricingConsistency(unittest.TestCase):
     """Ensure CLI pricing matches known Anthropic API rates."""
 
     def test_opus_pricing(self):
-        for model in ("claude-opus-4-6", "claude-opus-4-5"):
+        for model in ("claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5"):
             p = get_pricing(model)
             self.assertEqual(p["input"], 5.00, f"{model} input price wrong")
             self.assertEqual(p["output"], 25.00, f"{model} output price wrong")
 
     def test_sonnet_pricing(self):
-        for model in ("claude-sonnet-4-6", "claude-sonnet-4-5"):
+        for model in ("claude-sonnet-4-7", "claude-sonnet-4-6", "claude-sonnet-4-5"):
             p = get_pricing(model)
             self.assertEqual(p["input"], 3.00, f"{model} input price wrong")
             self.assertEqual(p["output"], 15.00, f"{model} output price wrong")
 
     def test_haiku_pricing(self):
-        for model in ("claude-haiku-4-5", "claude-haiku-4-6"):
+        for model in ("claude-haiku-4-7", "claude-haiku-4-6", "claude-haiku-4-5"):
             p = get_pricing(model)
             self.assertEqual(p["input"], 1.00, f"{model} input price wrong")
             self.assertEqual(p["output"], 5.00, f"{model} output price wrong")

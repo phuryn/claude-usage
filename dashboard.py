@@ -55,12 +55,36 @@ def get_dashboard_data(db_path=DB_PATH):
         "turns":          r["turns"] or 0,
     } for r in daily_rows]
 
+    # ── Hourly per-day per-model (client filters by range + TZ-shifts) ────────
+    # Timestamps are ISO8601 UTC (e.g. "2026-04-08T09:30:00Z"); chars 12-13 = hour.
+    hourly_rows = conn.execute("""
+        SELECT
+            substr(timestamp, 1, 10)                  as day,
+            CAST(substr(timestamp, 12, 2) AS INTEGER) as hour,
+            COALESCE(model, 'unknown')                as model,
+            SUM(output_tokens)                        as output,
+            COUNT(*)                                  as turns
+        FROM turns
+        WHERE timestamp IS NOT NULL AND length(timestamp) >= 13
+        GROUP BY day, hour, model
+        ORDER BY day, hour, model
+    """).fetchall()
+
+    hourly_by_model = [{
+        "day":    r["day"],
+        "hour":   r["hour"] if r["hour"] is not None else 0,
+        "model":  r["model"],
+        "output": r["output"] or 0,
+        "turns":  r["turns"] or 0,
+    } for r in hourly_rows]
+
     # ── All sessions (client filters by range and model) ──────────────────────
     session_rows = conn.execute("""
         SELECT
             session_id, project_name, first_timestamp, last_timestamp,
             total_input_tokens, total_output_tokens,
-            total_cache_read, total_cache_creation, model, turn_count
+            total_cache_read, total_cache_creation, model, turn_count,
+            git_branch
         FROM sessions
         ORDER BY last_timestamp DESC
     """).fetchall()
@@ -76,6 +100,7 @@ def get_dashboard_data(db_path=DB_PATH):
         sessions_all.append({
             "session_id":    r["session_id"][:8],
             "project":       r["project_name"] or "unknown",
+            "branch":        r["git_branch"] or "",
             "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
             "last_date":     (r["last_timestamp"] or "")[:10],
             "duration_min":  duration_min,
@@ -90,10 +115,11 @@ def get_dashboard_data(db_path=DB_PATH):
     conn.close()
 
     return {
-        "all_models":     all_models,
-        "daily_by_model": daily_by_model,
-        "sessions_all":   sessions_all,
-        "generated_at":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "all_models":      all_models,
+        "daily_by_model":  daily_by_model,
+        "hourly_by_model": hourly_by_model,
+        "sessions_all":    sessions_all,
+        "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
@@ -251,6 +277,17 @@ function _inl(s) {
   .chart-card h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 16px; }
   .chart-wrap { position: relative; height: 240px; }
   .chart-wrap.tall { height: 300px; }
+  .chart-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  .chart-header h2 { margin-bottom: 0; }
+  .chart-header-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .chart-day-count { font-size: 11px; color: var(--muted); }
+  .tz-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .tz-btn { padding: 3px 10px; background: transparent; border: none; border-right: 1px solid var(--border); color: var(--muted); font-size: 11px; cursor: pointer; transition: background 0.15s, color 0.15s; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  .tz-btn:last-child { border-right: none; }
+  .tz-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+  .tz-btn.active { background: rgba(217,119,87,0.15); color: var(--accent); }
+  .peak-legend { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+  .peak-swatch { width: 10px; height: 10px; background: rgba(248,113,113,0.8); border-radius: 2px; display: inline-block; }
 
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
@@ -334,6 +371,9 @@ function _inl(s) {
   <div class="filter-sep"></div>
   <div class="filter-label">Range</div>
   <div class="range-group">
+    <button class="range-btn" data-range="week" onclick="setRange('week')">This Week</button>
+    <button class="range-btn" data-range="month" onclick="setRange('month')">This Month</button>
+    <button class="range-btn" data-range="prev-month" onclick="setRange('prev-month')">Prev Month</button>
     <button class="range-btn" data-range="7d"  onclick="setRange('7d')">7d</button>
     <button class="range-btn" data-range="30d" onclick="setRange('30d')">30d</button>
     <button class="range-btn" data-range="90d" onclick="setRange('90d')">90d</button>
@@ -347,6 +387,20 @@ function _inl(s) {
     <div class="chart-card wide">
       <h2 id="daily-chart-title">Daily Token Usage</h2>
       <div class="chart-wrap tall"><canvas id="chart-daily"></canvas></div>
+    </div>
+    <div class="chart-card wide">
+      <div class="chart-header">
+        <h2 id="hourly-chart-title">Average Hourly Distribution</h2>
+        <div class="chart-header-right">
+          <span class="peak-legend" title="Mon–Fri 05:00–11:00 PT — Anthropic peak-hour throttling window"><span class="peak-swatch"></span>Peak hours (PT)</span>
+          <span class="chart-day-count" id="hourly-day-count"></span>
+          <div class="tz-group">
+            <button class="tz-btn" data-tz="local" onclick="setHourlyTZ('local')">Local</button>
+            <button class="tz-btn" data-tz="utc"   onclick="setHourlyTZ('utc')">UTC</button>
+          </div>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-hourly"></canvas></div>
     </div>
     <div class="chart-card">
       <h2>By Model</h2>
@@ -403,6 +457,21 @@ function _inl(s) {
       <tbody id="project-cost-body"></tbody>
     </table>
   </div>
+  <div class="table-card">
+    <div class="section-header"><div class="section-title">Cost by Project &amp; Branch</div><button class="export-btn" onclick="exportProjectBranchCSV()" title="Export project+branch breakdown to CSV">&#x2913; CSV</button></div>
+    <table>
+      <thead><tr>
+        <th>Project</th>
+        <th>Branch</th>
+        <th class="sortable" onclick="setProjectBranchSort('sessions')">Sessions <span class="sort-icon" id="pbsort-sessions"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('turns')">Turns <span class="sort-icon" id="pbsort-turns"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('input')">Input <span class="sort-icon" id="pbsort-input"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('output')">Output <span class="sort-icon" id="pbsort-output"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('cost')">Est. Cost <span class="sort-icon" id="pbsort-cost"></span></th>
+      </tr></thead>
+      <tbody id="project-branch-cost-body"></tbody>
+    </table>
+  </div>
 </div>
 
 <footer>
@@ -436,18 +505,65 @@ let modelSortCol = 'cost';
 let modelSortDir = 'desc';
 let projectSortCol = 'cost';
 let projectSortDir = 'desc';
+let branchSortCol = 'cost';
+let branchSortDir = 'desc';
 let lastFilteredSessions = [];
 let lastByProject = [];
+let lastByProjectBranch = [];
 let sessionSortDir = 'desc';
+let hourlyTZ = 'local';  // 'local' or 'utc'
+
+// ── Peak-hour config ───────────────────────────────────────────────────────
+// Anthropic throttles Mon–Fri 05:00–11:00 PT. We approximate as fixed UTC hours
+// 12–17 (matches PDT; during PST the window shifts by 1h — accepted simplification).
+const PEAK_HOURS_UTC = new Set([12, 13, 14, 15, 16, 17]);
+
+// Local-timezone offset in hours (signed). Fractional offsets (e.g. India UTC+5:30)
+// are rounded to the nearest hour for bucket alignment.
+function localOffsetHours() {
+  return Math.round(-new Date().getTimezoneOffset() / 60);
+}
+
+// Return the UTC hour (0–23) corresponding to a displayed-hour bucket.
+function displayHourToUTC(displayHour, tzMode) {
+  if (tzMode === 'utc') return displayHour;
+  return ((displayHour - localOffsetHours()) % 24 + 24) % 24;
+}
+
+// Return the displayed-hour bucket for a UTC hour.
+function utcHourToDisplay(utcHour, tzMode) {
+  if (tzMode === 'utc') return utcHour;
+  return ((utcHour + localOffsetHours()) % 24 + 24) % 24;
+}
+
+function isPeakHour(displayHour, tzMode) {
+  return PEAK_HOURS_UTC.has(displayHourToUTC(displayHour, tzMode));
+}
+
+function formatHourLabel(h) {
+  return String(h).padStart(2, '0') + ':00';
+}
+
+function tzDisplayName(tzMode) {
+  if (tzMode === 'utc') return 'UTC';
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local';
+  } catch(e) {
+    return 'Local';
+  }
+}
 
 // ── Pricing (Anthropic API, April 2026) ────────────────────────────────────
 const PRICING = {
+  'claude-opus-4-7':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-5':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
+  'claude-sonnet-4-7': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
   'claude-sonnet-4-6': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
   'claude-sonnet-4-5': { input:  3.00, output: 15.00, cache_write:  3.75, cache_read: 0.30 },
-  'claude-haiku-4-5':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
+  'claude-haiku-4-7':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
   'claude-haiku-4-6':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
+  'claude-haiku-4-5':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
 };
 
 function isBillable(model) {
@@ -463,7 +579,7 @@ function getPricing(model) {
     if (model.startsWith(key)) return PRICING[key];
   }
   const m = model.toLowerCase();
-  if (m.includes('opus'))   return PRICING['claude-opus-4-6'];
+  if (m.includes('opus'))   return PRICING['claude-opus-4-7'];
   if (m.includes('sonnet')) return PRICING['claude-sonnet-4-6'];
   if (m.includes('haiku'))  return PRICING['claude-haiku-4-5'];
   return null;
@@ -501,20 +617,49 @@ const TOKEN_COLORS = {
 const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
 
 // ── Time range ─────────────────────────────────────────────────────────────
-const RANGE_LABELS = { '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
-const RANGE_TICKS  = { '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+const RANGE_LABELS = { 'week': 'This Week', 'month': 'This Month', 'prev-month': 'Previous Month', '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
+const RANGE_TICKS  = { 'week': 7, 'month': 15, 'prev-month': 15, '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
+const VALID_RANGES = Object.keys(RANGE_LABELS);
 
-function getRangeCutoff(range) {
-  if (range === 'all') return null;
+function rangeIncludesToday(range) {
+  if (range === 'all') return true;
+  const { start, end } = getRangeBounds(range);
+  const today = new Date().toISOString().slice(0, 10);
+  if (start && today < start) return false;
+  if (end && today > end) return false;
+  return true;
+}
+
+function getRangeBounds(range) {
+  if (range === 'all') return { start: null, end: null };
+  const today = new Date();
+  const iso = d => d.toISOString().slice(0, 10);
+  if (range === 'week') {
+    const day = today.getDay();
+    const diffToMon = day === 0 ? 6 : day - 1;
+    const mon = new Date(today); mon.setDate(today.getDate() - diffToMon);
+    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+    return { start: iso(mon), end: iso(sun) };
+  }
+  if (range === 'month') {
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    return { start: iso(start), end: iso(end) };
+  }
+  if (range === 'prev-month') {
+    const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const end = new Date(today.getFullYear(), today.getMonth(), 0);
+    return { start: iso(start), end: iso(end) };
+  }
   const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
   const d = new Date();
   d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
+  return { start: iso(d), end: null };
 }
 
 function readURLRange() {
   const p = new URLSearchParams(window.location.search).get('range');
-  return ['7d', '30d', '90d', 'all'].includes(p) ? p : '30d';
+  return VALID_RANGES.includes(p) ? p : '30d';
 }
 
 function setRange(range) {
@@ -523,6 +668,15 @@ function setRange(range) {
     btn.classList.toggle('active', btn.dataset.range === range)
   );
   updateURL();
+  applyFilter();
+  scheduleAutoRefresh();
+}
+
+function setHourlyTZ(mode) {
+  hourlyTZ = mode;
+  document.querySelectorAll('.tz-btn').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.tz === mode)
+  );
   applyFilter();
 }
 
@@ -637,11 +791,11 @@ function sortSessions(sessions) {
 function applyFilter() {
   if (!rawData) return;
 
-  const cutoff = getRangeCutoff(selectedRange);
+  const { start, end } = getRangeBounds(selectedRange);
 
   // Filter daily rows by model + date range
   const filteredDaily = rawData.daily_by_model.filter(r =>
-    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+    selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end)
   );
 
   // Daily chart: aggregate by day
@@ -670,7 +824,7 @@ function applyFilter() {
 
   // Filter sessions by model + date range
   const filteredSessions = rawData.sessions_all.filter(s =>
-    selectedModels.has(s.model) && (!cutoff || s.last_date >= cutoff)
+    selectedModels.has(s.model) && (!start || s.last_date >= start) && (!end || s.last_date <= end)
   );
 
   // Add session counts into modelMap
@@ -695,6 +849,22 @@ function applyFilter() {
   }
   const byProject = Object.values(projMap).sort((a, b) => (b.input + b.output) - (a.input + a.output));
 
+  // By project+branch: aggregate from filtered sessions
+  const projBranchMap = {};
+  for (const s of filteredSessions) {
+    const key = s.project + '\x00' + (s.branch || '');
+    if (!projBranchMap[key]) projBranchMap[key] = { project: s.project, branch: s.branch || '', input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0, sessions: 0, cost: 0 };
+    const pb = projBranchMap[key];
+    pb.input          += s.input;
+    pb.output         += s.output;
+    pb.cache_read     += s.cache_read;
+    pb.cache_creation += s.cache_creation;
+    pb.turns          += s.turns;
+    pb.sessions++;
+    pb.cost += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+  }
+  const byProjectBranch = Object.values(projBranchMap).sort((a, b) => b.cost - a.cost);
+
   // Totals
   const totals = {
     sessions:       filteredSessions.length,
@@ -706,18 +876,28 @@ function applyFilter() {
     cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0),
   };
 
+  // Hourly aggregation (filtered by model + range, then bucketed by UTC hour)
+  const hourlySrc = (rawData.hourly_by_model || []).filter(r =>
+    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+  );
+  const hourlyAgg = aggregateHourly(hourlySrc, hourlyTZ);
+
   // Update daily chart title
   document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('hourly-chart-title').textContent = 'Average Hourly Distribution \u2014 ' + RANGE_LABELS[selectedRange];
 
   renderStats(totals);
   renderDailyChart(daily);
+  renderHourlyChart(hourlyAgg);
   renderModelChart(byModel);
   renderProjectChart(byProject);
   lastFilteredSessions = sortSessions(filteredSessions);
   lastByProject = sortProjects(byProject);
+  lastByProjectBranch = sortProjectBranch(byProjectBranch);
   renderSessionsTable(lastFilteredSessions.slice(0, 20));
   renderModelCostTable(byModel);
   renderProjectCostTable(lastByProject.slice(0, 20));
+  renderProjectBranchCostTable(lastByProjectBranch.slice(0, 20));
 }
 
 // ── Renderers ──────────────────────────────────────────────────────────────
@@ -741,6 +921,104 @@ function renderStats(t) {
   `).join('');
 }
 
+// Bucket rows into 24 hours (display-TZ), summing turns + output, and count
+// the unique days in the input so the caller can compute per-day averages.
+function aggregateHourly(rows, tzMode) {
+  const byHour = {};
+  for (let h = 0; h < 24; h++) byHour[h] = { turns: 0, output: 0 };
+  const days = new Set();
+  for (const r of rows) {
+    const displayHour = utcHourToDisplay(r.hour, tzMode);
+    byHour[displayHour].turns  += r.turns  || 0;
+    byHour[displayHour].output += r.output || 0;
+    if (r.day) days.add(r.day);
+  }
+  const dayCount = days.size;
+  const hours = [];
+  for (let h = 0; h < 24; h++) {
+    hours.push({
+      hour:       h,
+      avgTurns:   dayCount ? byHour[h].turns  / dayCount : 0,
+      avgOutput:  dayCount ? byHour[h].output / dayCount : 0,
+      totalTurns: byHour[h].turns,
+      peak:       isPeakHour(h, tzMode),
+    });
+  }
+  return { hours, dayCount };
+}
+
+function renderHourlyChart(agg) {
+  const dayCountEl = document.getElementById('hourly-day-count');
+  dayCountEl.textContent = agg.dayCount
+    ? agg.dayCount + ' day' + (agg.dayCount === 1 ? '' : 's') + ' averaged · ' + tzDisplayName(hourlyTZ)
+    : 'No data · ' + tzDisplayName(hourlyTZ);
+
+  const ctx = document.getElementById('chart-hourly').getContext('2d');
+  if (charts.hourly) charts.hourly.destroy();
+
+  const labels = agg.hours.map(h => (h.peak ? '⚡ ' : '') + formatHourLabel(h.hour));
+  const turns  = agg.hours.map(h => h.avgTurns);
+  const output = agg.hours.map(h => h.avgOutput);
+  const barColors = agg.hours.map(h => h.peak ? 'rgba(248,113,113,0.8)' : TOKEN_COLORS.input);
+
+  charts.hourly = new Chart(ctx, {
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          type: 'bar',
+          label: 'Avg turns / hour',
+          data: turns,
+          backgroundColor: barColors,
+          yAxisID: 'y',
+          order: 2,
+        },
+        {
+          type: 'line',
+          label: 'Avg output tokens / hour',
+          data: output,
+          borderColor: TOKEN_COLORS.output,
+          backgroundColor: 'rgba(167,139,250,0.15)',
+          borderWidth: 2,
+          pointRadius: 2,
+          tension: 0.3,
+          yAxisID: 'y1',
+          order: 1,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#8892a4', boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              if (!items.length) return '';
+              const idx = items[0].dataIndex;
+              const h = agg.hours[idx];
+              const base = formatHourLabel(h.hour) + ' ' + tzDisplayName(hourlyTZ);
+              return h.peak ? base + ' · Peak — Anthropic US hours' : base;
+            },
+            label: (item) => {
+              if (item.dataset.label && item.dataset.label.indexOf('turns') !== -1) {
+                return ' Avg turns: ' + item.parsed.y.toFixed(2);
+              }
+              return ' Avg output: ' + fmt(item.parsed.y);
+            },
+          }
+        },
+      },
+      scales: {
+        x: { ticks: { color: '#8892a4', maxRotation: 0, autoSkip: false, font: { size: 10 } }, grid: { color: '#2a2d3a' } },
+        y:  { position: 'left',  beginAtZero: true, ticks: { color: '#8892a4', callback: v => v.toFixed(1) },     grid: { color: '#2a2d3a' }, title: { display: true, text: 'Avg turns / hour',         color: '#8892a4', font: { size: 11 } } },
+        y1: { position: 'right', beginAtZero: true, ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { drawOnChartArea: false },   title: { display: true, text: 'Avg output tokens / hour', color: '#8892a4', font: { size: 11 } } },
+      }
+    }
+  });
+}
+
 function renderDailyChart(daily) {
   const ctx = document.getElementById('chart-daily').getContext('2d');
   if (charts.daily) charts.daily.destroy();
@@ -749,10 +1027,10 @@ function renderDailyChart(daily) {
     data: {
       labels: daily.map(d => d.day),
       datasets: [
-        { label: 'Input',          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'tokens' },
-        { label: 'Output',         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'tokens' },
-        { label: 'Cache Read',     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'tokens' },
-        { label: 'Cache Creation', data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'tokens' },
+        { label: 'Input',          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'io',    yAxisID: 'y1' },
+        { label: 'Output',         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'io',    yAxisID: 'y1' },
+        { label: 'Cache Read',     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'cache', yAxisID: 'y' },
+        { label: 'Cache Creation', data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'cache', yAxisID: 'y' },
       ]
     },
     options: {
@@ -760,7 +1038,8 @@ function renderDailyChart(daily) {
       plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
       scales: {
         x: { ticks: { color: '#8892a4', maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: '#2a2d3a' } },
-        y: { ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { color: '#2a2d3a' } },
+        y:  { position: 'left',  ticks: { color: '#74de80', callback: v => fmt(v) }, grid: { color: '#2a2d3a' }, title: { display: true, text: 'Cache', color: '#74de80' } },
+        y1: { position: 'right', ticks: { color: '#4f8ef7', callback: v => fmt(v) }, grid: { drawOnChartArea: false },    title: { display: true, text: 'Input / Output', color: '#4f8ef7' } },
       }
     }
   });
@@ -923,6 +1202,52 @@ function renderProjectCostTable(byProject) {
   }).join('');
 }
 
+// ── Project+Branch cost table sorting ────────────────────────────────────
+function setProjectBranchSort(col) {
+  if (branchSortCol === col) {
+    branchSortDir = branchSortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    branchSortCol = col;
+    branchSortDir = 'desc';
+  }
+  updateProjectBranchSortIcons();
+  applyFilter();
+}
+
+function updateProjectBranchSortIcons() {
+  document.querySelectorAll('[id^="pbsort-"]').forEach(el => el.textContent = '');
+  const icon = document.getElementById('pbsort-' + branchSortCol);
+  if (icon) icon.textContent = branchSortDir === 'desc' ? ' \u25bc' : ' \u25b2';
+}
+
+function sortProjectBranch(rows) {
+  return [...rows].sort((a, b) => {
+    const pa = (a.project || '').toLowerCase();
+    const pb = (b.project || '').toLowerCase();
+    if (pa < pb) return -1;
+    if (pa > pb) return 1;
+    const av = a[branchSortCol] ?? 0;
+    const bv = b[branchSortCol] ?? 0;
+    if (av < bv) return branchSortDir === 'desc' ? 1 : -1;
+    if (av > bv) return branchSortDir === 'desc' ? -1 : 1;
+    return 0;
+  });
+}
+
+function renderProjectBranchCostTable(rows) {
+  document.getElementById('project-branch-cost-body').innerHTML = sortProjectBranch(rows).map(pb => {
+    return `<tr>
+      <td>${esc(pb.project)}</td>
+      <td class="muted" style="font-family:monospace">${esc(pb.branch || '\u2014')}</td>
+      <td class="num">${pb.sessions}</td>
+      <td class="num">${fmt(pb.turns)}</td>
+      <td class="num">${fmt(pb.input)}</td>
+      <td class="num">${fmt(pb.output)}</td>
+      <td class="cost">${fmtCost(pb.cost)}</td>
+    </tr>`;
+  }).join('');
+}
+
 // ── CSV Export ────────────────────────────────────────────────────────────
 function csvField(val) {
   const s = String(val);
@@ -968,6 +1293,14 @@ function exportProjectsCSV() {
   downloadCSV('projects', header, rows);
 }
 
+function exportProjectBranchCSV() {
+  const header = ['Project', 'Branch', 'Sessions', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
+  const rows = lastByProjectBranch.map(pb => {
+    return [pb.project, pb.branch, pb.sessions, pb.turns, pb.input, pb.output, pb.cache_read, pb.cache_creation, pb.cost.toFixed(4)];
+  });
+  downloadCSV('projects_by_branch', header, rows);
+}
+
 // ── Rescan ────────────────────────────────────────────────────────────────
 async function triggerRescan() {
   const btn = document.getElementById('rescan-btn');
@@ -994,7 +1327,8 @@ async function loadData() {
       document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + esc(d.error) + '</div>';
       return;
     }
-    document.getElementById('meta').textContent = 'Updated: ' + d.generated_at + ' \u00b7 Auto-refresh in 30s';
+    const refreshNote = rangeIncludesToday(selectedRange) ? ' \u00b7 Auto-refresh in 30s' : '';
+    document.getElementById('meta').textContent = 'Updated: ' + d.generated_at + refreshNote;
 
     const isFirstLoad = rawData === null;
     rawData = d;
@@ -1005,11 +1339,16 @@ async function loadData() {
       document.querySelectorAll('.range-btn').forEach(btn =>
         btn.classList.toggle('active', btn.dataset.range === selectedRange)
       );
+      // Mark default TZ button active
+      document.querySelectorAll('.tz-btn').forEach(btn =>
+        btn.classList.toggle('active', btn.dataset.tz === hourlyTZ)
+      );
       // Build model filter (reads URL for model selection too)
       buildFilterUI(d.all_models);
       updateSortIcons();
       updateModelSortIcons();
       updateProjectSortIcons();
+      updateProjectBranchSortIcons();
     }
 
     applyFilter();
@@ -1018,8 +1357,16 @@ async function loadData() {
   }
 }
 
+let autoRefreshTimer = null;
+function scheduleAutoRefresh() {
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  if (rangeIncludesToday(selectedRange)) {
+    autoRefreshTimer = setInterval(loadData, 30000);
+  }
+}
+
 loadData();
-setInterval(loadData, 30000);
+scheduleAutoRefresh();
 
 // ── Analyzer ──────────────────────────────────────────────────────────────
 let analyzerReady = false;
@@ -1154,7 +1501,7 @@ async function launchDeepDive() {
 }
 
 initAnalyzer();
-</script>
+</script></script>
 </body>
 </html>
 """
@@ -1435,11 +1782,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/rescan":
-            # Full rebuild: delete DB and rescan from scratch
-            if DB_PATH.exists():
-                DB_PATH.unlink()
-            from scanner import scan
-            result = scan(verbose=False)
+            # Full rebuild: delete DB and rescan from scratch.
+            # Pass DB_PATH / DEFAULT_PROJECTS_DIRS explicitly so tests that
+            # patch the module globals are honored (scan's defaults are
+            # frozen at def time and would otherwise target the real paths).
+            import scanner
+            db_path = DB_PATH
+            if db_path.exists():
+                db_path.unlink()
+            result = scanner.scan(
+                db_path=db_path,
+                projects_dirs=scanner.DEFAULT_PROJECTS_DIRS,
+                verbose=False,
+            )
             body = json.dumps(result).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

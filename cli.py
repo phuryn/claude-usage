@@ -12,17 +12,20 @@ import os
 import sys
 import sqlite3
 from pathlib import Path
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
 PRICING = {
-    "claude-opus-4-6":   {"input":  5.00, "output": 25.00},
-    "claude-opus-4-5":   {"input":  5.00, "output": 25.00},
-    "claude-sonnet-4-6": {"input":  3.00, "output": 15.00},
-    "claude-sonnet-4-5": {"input":  3.00, "output": 15.00},
-    "claude-haiku-4-5":  {"input":  1.00, "output":  5.00},
-    "claude-haiku-4-6":  {"input":  1.00, "output":  5.00},
+    "claude-opus-4-7":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
+    "claude-opus-4-6":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
+    "claude-opus-4-5":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
+    "claude-sonnet-4-7": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
+    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
+    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
+    "claude-haiku-4-7":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25},
+    "claude-haiku-4-6":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25},
+    "claude-haiku-4-5":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25},
 }
 
 def get_pricing(model):
@@ -36,7 +39,7 @@ def get_pricing(model):
     # Substring fallback: match model family by keyword
     m = model.lower()
     if "opus" in m:
-        return PRICING["claude-opus-4-6"]
+        return PRICING["claude-opus-4-7"]
     if "sonnet" in m:
         return PRICING["claude-sonnet-4-6"]
     if "haiku" in m:
@@ -48,10 +51,10 @@ def calc_cost(model, inp, out, cache_read, cache_creation):
     if not p:
         return 0.0
     return (
-        inp          * p["input"]  / 1_000_000 +
-        out          * p["output"] / 1_000_000 +
-        cache_read   * p["input"]  * 0.10 / 1_000_000 +
-        cache_creation * p["input"] * 1.25 / 1_000_000
+        inp            * p["input"]       / 1_000_000 +
+        out            * p["output"]      / 1_000_000 +
+        cache_read     * p["cache_read"]  / 1_000_000 +
+        cache_creation * p["cache_write"] / 1_000_000
     )
 
 def fmt(n):
@@ -140,6 +143,102 @@ def cmd_today():
     conn.close()
 
 
+def cmd_week():
+    conn = require_db()
+    conn.row_factory = sqlite3.Row
+
+    today_d = date.today()
+    start_d = today_d - timedelta(days=6)
+    start = start_d.isoformat()
+    end = today_d.isoformat()
+
+    by_day_model = conn.execute("""
+        SELECT
+            substr(timestamp, 1, 10)   as day,
+            COALESCE(model, 'unknown') as model,
+            SUM(input_tokens)          as inp,
+            SUM(output_tokens)         as out,
+            SUM(cache_read_tokens)     as cr,
+            SUM(cache_creation_tokens) as cc,
+            COUNT(*)                   as turns
+        FROM turns
+        WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
+        GROUP BY day, model
+    """, (start, end)).fetchall()
+
+    by_model = conn.execute("""
+        SELECT
+            COALESCE(model, 'unknown') as model,
+            SUM(input_tokens)          as inp,
+            SUM(output_tokens)         as out,
+            SUM(cache_read_tokens)     as cr,
+            SUM(cache_creation_tokens) as cc,
+            COUNT(*)                   as turns
+        FROM turns
+        WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
+        GROUP BY model
+        ORDER BY inp + out DESC
+    """, (start, end)).fetchall()
+
+    sessions = conn.execute("""
+        SELECT COUNT(DISTINCT session_id) as cnt
+        FROM turns
+        WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
+    """, (start, end)).fetchone()
+
+    print()
+    hr()
+    print(f"  Weekly Usage  ({start} to {end})")
+    hr()
+
+    if not by_model:
+        print("  No usage recorded in the last 7 days.")
+        print()
+        conn.close()
+        return
+
+    # Aggregate per-day across models (with per-turn cost attribution)
+    per_day = {}
+    for r in by_day_model:
+        d = r["day"]
+        bucket = per_day.setdefault(d, {"turns": 0, "inp": 0, "out": 0, "cost": 0.0})
+        bucket["turns"] += r["turns"]
+        bucket["inp"]   += r["inp"] or 0
+        bucket["out"]   += r["out"] or 0
+        bucket["cost"]  += calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+
+    print("  By Day:")
+    for i in range(7):
+        d = (start_d + timedelta(days=i)).isoformat()
+        b = per_day.get(d, {"turns": 0, "inp": 0, "out": 0, "cost": 0.0})
+        print(f"    {d}  turns={b['turns']:<4}  in={fmt(b['inp']):<8}  out={fmt(b['out']):<8}  cost={fmt_cost(b['cost'])}")
+
+    hr()
+    print("  By Model:")
+
+    total_inp = total_out = total_cr = total_cc = total_turns = 0
+    total_cost = 0.0
+    for r in by_model:
+        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        total_cost  += cost
+        total_inp   += r["inp"] or 0
+        total_out   += r["out"] or 0
+        total_cr    += r["cr"]  or 0
+        total_cc    += r["cc"]  or 0
+        total_turns += r["turns"]
+        print(f"    {r['model']:<30}  turns={r['turns']:<4}  in={fmt(r['inp'] or 0):<8}  out={fmt(r['out'] or 0):<8}  cost={fmt_cost(cost)}")
+
+    hr()
+    print(f"    {'TOTAL':<30}  turns={total_turns:<4}  in={fmt(total_inp):<8}  out={fmt(total_out):<8}  cost={fmt_cost(total_cost)}")
+    print()
+    print(f"  Sessions this week:  {sessions['cnt']}")
+    print(f"  Cache read:          {fmt(total_cr)}")
+    print(f"  Cache creation:      {fmt(total_cc)}")
+    hr()
+    print()
+    conn.close()
+
+
 def cmd_stats():
     conn = require_db()
     conn.row_factory = sqlite3.Row
@@ -198,14 +297,12 @@ def cmd_stats():
     daily_avg = conn.execute("""
         SELECT
             AVG(daily_inp) as avg_inp,
-            AVG(daily_out) as avg_out,
-            AVG(daily_cost) as avg_cost
+            AVG(daily_out) as avg_out
         FROM (
             SELECT
                 substr(timestamp, 1, 10) as day,
                 SUM(input_tokens) as daily_inp,
-                SUM(output_tokens) as daily_out,
-                0.0 as daily_cost
+                SUM(output_tokens) as daily_out
             FROM turns
             WHERE timestamp >= datetime('now', '-30 days')
             GROUP BY day
@@ -360,7 +457,7 @@ def _extract_text_delta(event):
     return None
 
 
-def cmd_dashboard(projects_dir=None):
+def cmd_dashboard(projects_dir=None, host=None, port=None):
     import webbrowser
     import threading
     import time
@@ -371,8 +468,8 @@ def cmd_dashboard(projects_dir=None):
     print("\nStarting dashboard server...")
     from dashboard import serve
 
-    host = os.environ.get("HOST", "localhost")
-    port = int(os.environ.get("PORT", "8080"))
+    host = host or os.environ.get("HOST", "localhost")
+    port = int(port or os.environ.get("PORT", "8080"))
 
     def open_browser():
         time.sleep(1.0)
@@ -391,23 +488,26 @@ Claude Code Usage Dashboard
 Usage:
   python cli.py scan [--projects-dir PATH]   Scan JSONL files and update database
   python cli.py today                        Show today's usage summary
+  python cli.py week                         Show last 7 days (per-day + by-model)
   python cli.py stats                        Show all-time statistics
-  python cli.py dashboard [--projects-dir PATH]  Scan + start dashboard
+  python cli.py dashboard [--projects-dir PATH] [--host HOST] [--port PORT]
+                                                 Scan + start dashboard
   python cli.py analyze                      Analyze usage and get AI suggestions
 """
 
 COMMANDS = {
     "scan":      cmd_scan,
     "today":     cmd_today,
+    "week":      cmd_week,
     "stats":     cmd_stats,
     "dashboard": cmd_dashboard,
     "analyze":   cmd_analyze,
 }
 
-def parse_projects_dir(args):
-    """Extract --projects-dir value from argument list."""
+def parse_named_arg(args, flag):
+    """Extract a --flag VALUE pair from an argument list."""
     for i, arg in enumerate(args):
-        if arg == "--projects-dir" and i + 1 < len(args):
+        if arg == flag and i + 1 < len(args):
             return args[i + 1]
     return None
 
@@ -417,9 +517,16 @@ if __name__ == "__main__":
         sys.exit(0)
 
     command = sys.argv[1]
-    projects_dir = parse_projects_dir(sys.argv[2:])
+    rest = sys.argv[2:]
+    projects_dir = parse_named_arg(rest, "--projects-dir")
 
-    if command in ("scan", "dashboard") and projects_dir:
-        COMMANDS[command](projects_dir=projects_dir)
+    if command == "dashboard":
+        cmd_dashboard(
+            projects_dir=projects_dir,
+            host=parse_named_arg(rest, "--host"),
+            port=parse_named_arg(rest, "--port"),
+        )
+    elif command == "scan" and projects_dir:
+        cmd_scan(projects_dir=projects_dir)
     else:
         COMMANDS[command]()

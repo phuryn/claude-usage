@@ -65,6 +65,9 @@ python cli.py scan
 # Show today's usage summary by model (in terminal)
 python cli.py today
 
+# Show the last 7 days (per-day breakdown + by-model totals)
+python cli.py week
+
 # Show all-time statistics (in terminal)
 python cli.py stats
 
@@ -107,6 +110,7 @@ Costs are calculated using **Anthropic API pricing as of April 2026** ([claude.c
 
 | Model | Input | Output | Cache Write | Cache Read |
 |-------|-------|--------|------------|-----------|
+| claude-opus-4-7 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
 | claude-opus-4-6 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
 | claude-sonnet-4-6 | $3.00/MTok | $15.00/MTok | $3.75/MTok | $0.30/MTok |
 | claude-haiku-4-5 | $1.00/MTok | $5.00/MTok | $1.25/MTok | $0.10/MTok |
