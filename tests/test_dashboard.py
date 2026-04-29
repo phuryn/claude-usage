@@ -166,6 +166,13 @@ class TestDashboardHTTP(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             self.assertIn("text/html", resp.headers["Content-Type"])
 
+    def test_index_with_query_string_returns_html(self):
+        url = f"http://127.0.0.1:{self.port}/?range=30d"
+        with urllib.request.urlopen(url) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("text/html", resp.headers["Content-Type"])
+            self.assertIn(b"Claude Code Usage Dashboard", resp.read())
+
     def test_api_data_returns_json(self):
         url = f"http://127.0.0.1:{self.port}/api/data"
         with urllib.request.urlopen(url) as resp:
@@ -175,8 +182,27 @@ class TestDashboardHTTP(unittest.TestCase):
             # Should have expected keys (or error if no DB)
             self.assertTrue("all_models" in data or "error" in data)
 
+    def test_api_data_with_query_string_returns_json(self):
+        url = f"http://127.0.0.1:{self.port}/api/data?range=all"
+        with urllib.request.urlopen(url) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("application/json", resp.headers["Content-Type"])
+            data = json.loads(resp.read())
+            self.assertTrue("all_models" in data or "error" in data)
+
     def test_api_rescan_returns_json(self):
         url = f"http://127.0.0.1:{self.port}/api/rescan"
+        req = urllib.request.Request(url, method="POST")
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("application/json", resp.headers["Content-Type"])
+            data = json.loads(resp.read())
+            self.assertIn("new", data)
+            self.assertIn("updated", data)
+            self.assertIn("skipped", data)
+
+    def test_api_rescan_with_query_string_returns_json(self):
+        url = f"http://127.0.0.1:{self.port}/api/rescan?source=dashboard"
         req = urllib.request.Request(url, method="POST")
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
