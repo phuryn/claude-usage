@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import threading
@@ -123,6 +124,51 @@ class TestGetDashboardData(unittest.TestCase):
         self.assertTrue(all(r["model"] == "claude-sonnet-4-6" for r in rows))
         self.assertTrue(all(r["day"] == "2026-04-08" for r in rows))
 
+    def test_session_name_field_present(self):
+        """sessions_all entries must always include a session_name key (empty by default)."""
+        data = get_dashboard_data(db_path=self.db_path)
+        session = data["sessions_all"][0]
+        self.assertIn("session_name", session)
+        self.assertEqual(session["session_name"], "")
+
+
+class TestSessionNameInDashboard(unittest.TestCase):
+    """Verify session_name from the sessions table surfaces in dashboard output."""
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        conn = get_db(self.db_path)
+        init_db(conn)
+        conn.execute("""
+            INSERT INTO sessions
+                (session_id, project_name, first_timestamp, last_timestamp,
+                 git_branch, total_input_tokens, total_output_tokens,
+                 total_cache_read, total_cache_creation, model, turn_count,
+                 session_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "named-session-xyz", "user/proj",
+            "2026-04-08T09:00:00Z", "2026-04-08T10:00:00Z",
+            "main", 100, 50, 0, 0, "claude-sonnet-4-6", 1, "clip-research",
+        ))
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_session_name_returned_in_api(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        self.assertEqual(data["sessions_all"][0]["session_name"], "clip-research")
+
+    def test_session_id_still_truncated_alongside_name(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        session = data["sessions_all"][0]
+        self.assertEqual(len(session["session_id"]), 8)
+        self.assertEqual(session["session_id"], "named-se")
+
 
 class TestDashboardHTTP(unittest.TestCase):
     """Integration test: start server and make HTTP requests."""
@@ -196,9 +242,32 @@ class TestDashboardHTTP(unittest.TestCase):
 
 
 class TestHTMLTemplate(unittest.TestCase):
+    def _extract_js_function(self, name):
+        signature = f"function {name}("
+        start = HTML_TEMPLATE.index(signature)
+        brace_start = HTML_TEMPLATE.index("{", start)
+        depth = 0
+        for idx in range(brace_start, len(HTML_TEMPLATE)):
+            char = HTML_TEMPLATE[idx]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return HTML_TEMPLATE[start:idx + 1]
+        self.fail(f"Could not extract JavaScript function {name}")
+
     def test_template_is_valid_html(self):
         self.assertIn("<!DOCTYPE html>", HTML_TEMPLATE)
         self.assertIn("</html>", HTML_TEMPLATE)
+
+    def test_template_renders_session_name_when_set(self):
+        """The sessions-table renderer must branch on session_name presence."""
+        self.assertIn("s.session_name", HTML_TEMPLATE)
+        self.assertIn("session-name", HTML_TEMPLATE)
+
+    def test_csv_export_includes_session_name(self):
+        self.assertIn("Session Name", HTML_TEMPLATE)
 
     def test_template_has_esc_function(self):
         """Verify XSS protection is present (PR #10)."""
@@ -227,6 +296,41 @@ class TestHTMLTemplate(unittest.TestCase):
         """Peak-hour set covers UTC 12–17 (Mon–Fri 05:00–11:00 PT)."""
         self.assertIn('PEAK_HOURS_UTC', HTML_TEMPLATE)
         self.assertIn('[12, 13, 14, 15, 16, 17]', HTML_TEMPLATE)
+
+    def test_range_filter_uses_bounds_for_all_filtered_data(self):
+        """Regression for GH#88: range filtering must not reference undefined variables."""
+        apply_filter = self._extract_js_function("applyFilter")
+
+        bounds_decl = apply_filter.index("const { start, end } = getRangeBounds(selectedRange);")
+        daily_filter = apply_filter.index("rawData.daily_by_model.filter")
+        sessions_filter = apply_filter.index("rawData.sessions_all.filter")
+        hourly_filter = apply_filter.index("rawData.hourly_by_model || []")
+
+        self.assertLess(bounds_decl, daily_filter)
+        self.assertLess(bounds_decl, sessions_filter)
+        self.assertLess(bounds_decl, hourly_filter)
+        self.assertNotRegex(apply_filter, r"\bcutoff\b")
+        for filter_start in [daily_filter, sessions_filter, hourly_filter]:
+            filter_block = apply_filter[filter_start:filter_start + 180]
+            self.assertIn("!start", filter_block)
+            self.assertIn("!end", filter_block)
+
+    def test_template_handles_each_supported_range(self):
+        """Each selectable range needs UI, URL parsing, labels, ticks, and bounds support."""
+        expected_ranges = ["7d", "30d", "90d", "all"]
+        get_bounds = self._extract_js_function("getRangeBounds")
+        read_url_range = self._extract_js_function("readURLRange")
+
+        for range_name in expected_ranges:
+            self.assertIn(f'data-range="{range_name}"', HTML_TEMPLATE)
+            self.assertIn("VALID_RANGES.includes(p)", read_url_range)
+            self.assertRegex(HTML_TEMPLATE, rf"RANGE_LABELS\s*=\s*\{{[^}}]*'{re.escape(range_name)}':")
+            self.assertRegex(HTML_TEMPLATE, rf"RANGE_TICKS\s*=\s*\{{[^}}]*'{re.escape(range_name)}':")
+
+        self.assertIn("range === 'all'", get_bounds)
+        self.assertIn("range === '7d' ? 7", get_bounds)
+        self.assertIn("range === '30d' ? 30", get_bounds)
+        self.assertIn(": 90", get_bounds)
 
 
 class TestPricingParity(unittest.TestCase):

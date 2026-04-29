@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add session name support: the dashboard now shows the human-readable name set via Claude Code's `/rename` (from `customTitle` / `agentName` JSONL records), alongside the session ID, and exports it to CSV (#56)
+
 ## 2026-04-09
 
 - Fix token counts inflated ~2x by deduplicating streaming events that share the same message ID

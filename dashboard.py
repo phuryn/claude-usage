@@ -77,15 +77,28 @@ def get_dashboard_data(db_path=DB_PATH):
     } for r in hourly_rows]
 
     # ── All sessions (client filters by range and model) ──────────────────────
-    session_rows = conn.execute("""
-        SELECT
-            session_id, project_name, first_timestamp, last_timestamp,
-            total_input_tokens, total_output_tokens,
-            total_cache_read, total_cache_creation, model, turn_count,
-            git_branch
-        FROM sessions
-        ORDER BY last_timestamp DESC
-    """).fetchall()
+    # session_name may be missing on older DB schemas; fall back gracefully.
+    try:
+        session_rows = conn.execute("""
+            SELECT
+                session_id, project_name, first_timestamp, last_timestamp,
+                total_input_tokens, total_output_tokens,
+                total_cache_read, total_cache_creation, model, turn_count,
+                git_branch, session_name
+            FROM sessions
+            ORDER BY last_timestamp DESC
+        """).fetchall()
+    except sqlite3.OperationalError:
+        # Pre-migration DB: synthesise session_name=None
+        session_rows = conn.execute("""
+            SELECT
+                session_id, project_name, first_timestamp, last_timestamp,
+                total_input_tokens, total_output_tokens,
+                total_cache_read, total_cache_creation, model, turn_count,
+                git_branch, NULL AS session_name
+            FROM sessions
+            ORDER BY last_timestamp DESC
+        """).fetchall()
 
     sessions_all = []
     for r in session_rows:
@@ -97,6 +110,7 @@ def get_dashboard_data(db_path=DB_PATH):
             duration_min = 0
         sessions_all.append({
             "session_id":    r["session_id"][:8],
+            "session_name":  r["session_name"] or "",
             "project":       r["project_name"] or "unknown",
             "branch":        r["git_branch"] or "",
             "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
@@ -199,6 +213,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   tr:last-child td { border-bottom: none; }
   tr:hover td { background: rgba(255,255,255,0.02); }
   .model-tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; background: rgba(79,142,247,0.15); color: var(--blue); }
+  .session-name { color: var(--text); font-weight: 600; }
   .cost { color: var(--green); font-family: monospace; }
   .cost-na { color: var(--muted); font-family: monospace; font-size: 11px; }
   .num { font-family: monospace; }
@@ -742,7 +757,7 @@ function applyFilter() {
 
   // Hourly aggregation (filtered by model + range, then bucketed by UTC hour)
   const hourlySrc = (rawData.hourly_by_model || []).filter(r =>
-    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+    selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end)
   );
   const hourlyAgg = aggregateHourly(hourlySrc, hourlyTZ);
 
@@ -960,8 +975,11 @@ function renderSessionsTable(sessions) {
     const costCell = isBillable(s.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
+    const sessionCell = s.session_name
+      ? `<td><span class="session-name">${esc(s.session_name)}</span> <span class="muted" style="font-family:monospace">(${esc(s.session_id)}&hellip;)</span></td>`
+      : `<td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>`;
     return `<tr>
-      <td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>
+      ${sessionCell}
       <td>${esc(s.project)}</td>
       <td class="muted">${esc(s.last)}</td>
       <td class="muted">${esc(s.duration_min)}m</td>
@@ -1141,10 +1159,10 @@ function downloadCSV(reportType, header, rows) {
 }
 
 function exportSessionsCSV() {
-  const header = ['Session', 'Project', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
+  const header = ['Session ID', 'Session Name', 'Project', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
   const rows = lastFilteredSessions.map(s => {
     const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
-    return [s.session_id, s.project, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
+    return [s.session_id, s.session_name || '', s.project, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
   });
   downloadCSV('sessions', header, rows);
 }
