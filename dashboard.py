@@ -21,7 +21,7 @@ def get_dashboard_data(db_path=DB_PATH):
 
     # ── All models (for filter UI) ────────────────────────────────────────────
     model_rows = conn.execute("""
-        SELECT COALESCE(model, 'unknown') as model
+        SELECT COALESCE(NULLIF(model, ''), 'unknown') as model
         FROM turns
         GROUP BY model
         ORDER BY SUM(input_tokens + output_tokens) DESC
@@ -31,8 +31,8 @@ def get_dashboard_data(db_path=DB_PATH):
     # ── Daily per-model, ALL history (client filters by range) ────────────────
     daily_rows = conn.execute("""
         SELECT
-            substr(timestamp, 1, 10)   as day,
-            COALESCE(model, 'unknown') as model,
+            substr(timestamp, 1, 10)                  as day,
+            COALESCE(NULLIF(model, ''), 'unknown')     as model,
             SUM(input_tokens)          as input,
             SUM(output_tokens)         as output,
             SUM(cache_read_tokens)     as cache_read,
@@ -59,7 +59,7 @@ def get_dashboard_data(db_path=DB_PATH):
         SELECT
             substr(timestamp, 1, 10)                  as day,
             CAST(substr(timestamp, 12, 2) AS INTEGER) as hour,
-            COALESCE(model, 'unknown')                as model,
+            COALESCE(NULLIF(model, ''), 'unknown')    as model,
             SUM(output_tokens)                        as output,
             COUNT(*)                                  as turns
         FROM turns
@@ -555,7 +555,10 @@ function modelPriority(m) {
 
 function readURLModels(allModels) {
   const param = new URLSearchParams(window.location.search).get('models');
-  if (!param) return new Set(allModels.filter(m => isBillable(m)));
+  if (!param) {
+    const billable = allModels.filter(m => isBillable(m));
+    return new Set(billable.length > 0 ? billable : allModels);
+  }
   const fromURL = new Set(param.split(',').map(s => s.trim()).filter(Boolean));
   return new Set(allModels.filter(m => fromURL.has(m)));
 }
@@ -742,7 +745,7 @@ function applyFilter() {
 
   // Hourly aggregation (filtered by model + range, then bucketed by UTC hour)
   const hourlySrc = (rawData.hourly_by_model || []).filter(r =>
-    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+    selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end)
   );
   const hourlyAgg = aggregateHourly(hourlySrc, hourlyTZ);
 
