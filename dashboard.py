@@ -142,12 +142,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
 
-  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
   header .meta { color: var(--muted); font-size: 12px; }
+  .header-actions { display: flex; align-items: center; gap: 8px; }
   #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
   #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
   #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .lang-picker { position: relative; margin-top: 4px; }
+  #lang-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+  #lang-btn:hover { color: var(--text); border-color: var(--accent); }
+  #lang-btn .caret { font-size: 9px; opacity: 0.7; }
+  .lang-menu { position: absolute; top: calc(100% + 6px); right: 0; min-width: 160px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 50; display: none; }
+  .lang-menu.open { display: block; }
+  .lang-menu .lang-menu-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding: 4px 10px 6px; }
+  .lang-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; background: transparent; border: none; color: var(--text); padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; text-align: left; }
+  .lang-menu button:hover { background: rgba(255,255,255,0.04); }
+  .lang-menu button.active { color: var(--accent); }
+  .lang-menu button .check { color: var(--accent); opacity: 0; font-size: 12px; }
+  .lang-menu button.active .check { opacity: 1; }
 
   #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
@@ -222,26 +236,39 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>Claude Code Usage Dashboard</h1>
-  <div class="meta" id="meta">Loading...</div>
-  <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
+  <h1 data-i18n="header.title">Claude Code Usage Dashboard</h1>
+  <div class="meta" id="meta" data-i18n="header.meta_loading">Loading...</div>
+  <div class="header-actions">
+    <div class="lang-picker">
+      <button id="lang-btn" type="button" onclick="toggleLangMenu(event)" data-i18n-title="lang_picker.button_tooltip" aria-haspopup="true" aria-expanded="false">
+        <span aria-hidden="true">&#x1F310;</span>
+        <span id="lang-btn-label">English</span>
+        <span class="caret" aria-hidden="true">&#x25BE;</span>
+      </button>
+      <div class="lang-menu" id="lang-menu" role="menu" aria-labelledby="lang-btn">
+        <div class="lang-menu-title" data-i18n="lang_picker.title">Language</div>
+        <div id="lang-menu-items"></div>
+      </div>
+    </div>
+    <button id="rescan-btn" onclick="triggerRescan()" data-i18n="header.rescan" data-i18n-title="header.rescan_tooltip" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
+  </div>
 </header>
 
 <div id="filter-bar">
-  <div class="filter-label">Models</div>
+  <div class="filter-label" data-i18n="filter.models" data-i18n-title="filter.models_tooltip">Models</div>
   <div id="model-checkboxes"></div>
-  <button class="filter-btn" onclick="selectAllModels()">All</button>
-  <button class="filter-btn" onclick="clearAllModels()">None</button>
+  <button class="filter-btn" onclick="selectAllModels()" data-i18n="filter.all" data-i18n-title="filter.all_tooltip">All</button>
+  <button class="filter-btn" onclick="clearAllModels()" data-i18n="filter.none" data-i18n-title="filter.none_tooltip">None</button>
   <div class="filter-sep"></div>
-  <div class="filter-label">Range</div>
+  <div class="filter-label" data-i18n="filter.range" data-i18n-title="filter.range_tooltip">Range</div>
   <div class="range-group">
-    <button class="range-btn" data-range="week" onclick="setRange('week')">This Week</button>
-    <button class="range-btn" data-range="month" onclick="setRange('month')">This Month</button>
-    <button class="range-btn" data-range="prev-month" onclick="setRange('prev-month')">Prev Month</button>
-    <button class="range-btn" data-range="7d"  onclick="setRange('7d')">7d</button>
-    <button class="range-btn" data-range="30d" onclick="setRange('30d')">30d</button>
-    <button class="range-btn" data-range="90d" onclick="setRange('90d')">90d</button>
-    <button class="range-btn" data-range="all" onclick="setRange('all')">All</button>
+    <button class="range-btn" data-range="week" onclick="setRange('week')" data-i18n="range.week" data-i18n-title="range.week_tooltip">This Week</button>
+    <button class="range-btn" data-range="month" onclick="setRange('month')" data-i18n="range.month" data-i18n-title="range.month_tooltip">This Month</button>
+    <button class="range-btn" data-range="prev-month" onclick="setRange('prev-month')" data-i18n="range.prev_month" data-i18n-title="range.prev_month_tooltip">Prev Month</button>
+    <button class="range-btn" data-range="7d"  onclick="setRange('7d')" data-i18n="range.7d" data-i18n-title="range.7d_tooltip">7d</button>
+    <button class="range-btn" data-range="30d" onclick="setRange('30d')" data-i18n="range.30d" data-i18n-title="range.30d_tooltip">30d</button>
+    <button class="range-btn" data-range="90d" onclick="setRange('90d')" data-i18n="range.90d" data-i18n-title="range.90d_tooltip">90d</button>
+    <button class="range-btn" data-range="all" onclick="setRange('all')" data-i18n="range.all" data-i18n-title="range.all_tooltip">All</button>
   </div>
 </div>
 
@@ -249,89 +276,89 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="stats-row" id="stats-row"></div>
   <div class="charts-grid">
     <div class="chart-card wide">
-      <h2 id="daily-chart-title">Daily Token Usage</h2>
+      <h2 id="daily-chart-title" data-i18n="chart.daily_title" data-i18n-title="chart.daily_title_tooltip">Daily Token Usage</h2>
       <div class="chart-wrap tall"><canvas id="chart-daily"></canvas></div>
     </div>
     <div class="chart-card wide">
       <div class="chart-header">
-        <h2 id="hourly-chart-title">Average Hourly Distribution</h2>
+        <h2 id="hourly-chart-title" data-i18n="chart.hourly_title" data-i18n-title="chart.hourly_title_tooltip">Average Hourly Distribution</h2>
         <div class="chart-header-right">
-          <span class="peak-legend" title="Mon–Fri 05:00–11:00 PT — Anthropic peak-hour throttling window"><span class="peak-swatch"></span>Peak hours (PT)</span>
+          <span class="peak-legend" data-i18n-title="chart.peak_legend_tooltip" title="Mon–Fri 05:00–11:00 PT — Anthropic peak-hour throttling window"><span class="peak-swatch"></span><span data-i18n="chart.peak_legend">Peak hours (PT)</span></span>
           <span class="chart-day-count" id="hourly-day-count"></span>
           <div class="tz-group">
-            <button class="tz-btn" data-tz="local" onclick="setHourlyTZ('local')">Local</button>
-            <button class="tz-btn" data-tz="utc"   onclick="setHourlyTZ('utc')">UTC</button>
+            <button class="tz-btn" data-tz="local" onclick="setHourlyTZ('local')" data-i18n="chart.tz_local">Local</button>
+            <button class="tz-btn" data-tz="utc"   onclick="setHourlyTZ('utc')" data-i18n="chart.tz_utc">UTC</button>
           </div>
         </div>
       </div>
       <div class="chart-wrap"><canvas id="chart-hourly"></canvas></div>
     </div>
     <div class="chart-card">
-      <h2>By Model</h2>
+      <h2 data-i18n="chart.model_title" data-i18n-title="chart.model_title_tooltip">By Model</h2>
       <div class="chart-wrap"><canvas id="chart-model"></canvas></div>
     </div>
     <div class="chart-card">
-      <h2>Top Projects by Tokens</h2>
+      <h2 data-i18n="chart.project_title" data-i18n-title="chart.project_title_tooltip">Top Projects by Tokens</h2>
       <div class="chart-wrap"><canvas id="chart-project"></canvas></div>
     </div>
   </div>
   <div class="table-card">
-    <div class="section-title">Cost by Model</div>
+    <div class="section-title" data-i18n="table.cost_by_model">Cost by Model</div>
     <table>
       <thead><tr>
-        <th>Model</th>
-        <th class="sortable" onclick="setModelSort('turns')">Turns <span class="sort-icon" id="msort-turns"></span></th>
-        <th class="sortable" onclick="setModelSort('input')">Input <span class="sort-icon" id="msort-input"></span></th>
-        <th class="sortable" onclick="setModelSort('output')">Output <span class="sort-icon" id="msort-output"></span></th>
-        <th class="sortable" onclick="setModelSort('cache_read')">Cache Read <span class="sort-icon" id="msort-cache_read"></span></th>
-        <th class="sortable" onclick="setModelSort('cache_creation')">Cache Creation <span class="sort-icon" id="msort-cache_creation"></span></th>
-        <th class="sortable" onclick="setModelSort('cost')">Est. Cost <span class="sort-icon" id="msort-cost"></span></th>
+        <th><span data-i18n="th.model">Model</span></th>
+        <th class="sortable" onclick="setModelSort('turns')"><span data-i18n="th.turns">Turns</span> <span class="sort-icon" id="msort-turns"></span></th>
+        <th class="sortable" onclick="setModelSort('input')"><span data-i18n="th.input">Input</span> <span class="sort-icon" id="msort-input"></span></th>
+        <th class="sortable" onclick="setModelSort('output')"><span data-i18n="th.output">Output</span> <span class="sort-icon" id="msort-output"></span></th>
+        <th class="sortable" onclick="setModelSort('cache_read')"><span data-i18n="th.cache_read">Cache Read</span> <span class="sort-icon" id="msort-cache_read"></span></th>
+        <th class="sortable" onclick="setModelSort('cache_creation')"><span data-i18n="th.cache_creation">Cache Creation</span> <span class="sort-icon" id="msort-cache_creation"></span></th>
+        <th class="sortable" onclick="setModelSort('cost')"><span data-i18n="th.est_cost">Est. Cost</span> <span class="sort-icon" id="msort-cost"></span></th>
       </tr></thead>
       <tbody id="model-cost-body"></tbody>
     </table>
   </div>
   <div class="table-card">
-    <div class="section-header"><div class="section-title">Recent Sessions</div><button class="export-btn" onclick="exportSessionsCSV()" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
+    <div class="section-header"><div class="section-title" data-i18n="table.recent_sessions">Recent Sessions</div><button class="export-btn" onclick="exportSessionsCSV()" data-i18n="table.csv_export" data-i18n-title="table.csv_export_sessions_tooltip" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
-        <th>Session</th>
-        <th>Project</th>
-        <th class="sortable" onclick="setSessionSort('last')">Last Active <span class="sort-icon" id="sort-icon-last"></span></th>
-        <th class="sortable" onclick="setSessionSort('duration_min')">Duration <span class="sort-icon" id="sort-icon-duration_min"></span></th>
-        <th>Model</th>
-        <th class="sortable" onclick="setSessionSort('turns')">Turns <span class="sort-icon" id="sort-icon-turns"></span></th>
-        <th class="sortable" onclick="setSessionSort('input')">Input <span class="sort-icon" id="sort-icon-input"></span></th>
-        <th class="sortable" onclick="setSessionSort('output')">Output <span class="sort-icon" id="sort-icon-output"></span></th>
-        <th class="sortable" onclick="setSessionSort('cost')">Est. Cost <span class="sort-icon" id="sort-icon-cost"></span></th>
+        <th><span data-i18n="th.session">Session</span></th>
+        <th><span data-i18n="th.project">Project</span></th>
+        <th class="sortable" onclick="setSessionSort('last')"><span data-i18n="th.last_active">Last Active</span> <span class="sort-icon" id="sort-icon-last"></span></th>
+        <th class="sortable" onclick="setSessionSort('duration_min')"><span data-i18n="th.duration">Duration</span> <span class="sort-icon" id="sort-icon-duration_min"></span></th>
+        <th><span data-i18n="th.model">Model</span></th>
+        <th class="sortable" onclick="setSessionSort('turns')"><span data-i18n="th.turns">Turns</span> <span class="sort-icon" id="sort-icon-turns"></span></th>
+        <th class="sortable" onclick="setSessionSort('input')"><span data-i18n="th.input">Input</span> <span class="sort-icon" id="sort-icon-input"></span></th>
+        <th class="sortable" onclick="setSessionSort('output')"><span data-i18n="th.output">Output</span> <span class="sort-icon" id="sort-icon-output"></span></th>
+        <th class="sortable" onclick="setSessionSort('cost')"><span data-i18n="th.est_cost">Est. Cost</span> <span class="sort-icon" id="sort-icon-cost"></span></th>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
     </table>
   </div>
   <div class="table-card">
-    <div class="section-header"><div class="section-title">Cost by Project</div><button class="export-btn" onclick="exportProjectsCSV()" title="Export all projects to CSV">&#x2913; CSV</button></div>
+    <div class="section-header"><div class="section-title" data-i18n="table.cost_by_project">Cost by Project</div><button class="export-btn" onclick="exportProjectsCSV()" data-i18n="table.csv_export" data-i18n-title="table.csv_export_projects_tooltip" title="Export all projects to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
-        <th>Project</th>
-        <th class="sortable" onclick="setProjectSort('sessions')">Sessions <span class="sort-icon" id="psort-sessions"></span></th>
-        <th class="sortable" onclick="setProjectSort('turns')">Turns <span class="sort-icon" id="psort-turns"></span></th>
-        <th class="sortable" onclick="setProjectSort('input')">Input <span class="sort-icon" id="psort-input"></span></th>
-        <th class="sortable" onclick="setProjectSort('output')">Output <span class="sort-icon" id="psort-output"></span></th>
-        <th class="sortable" onclick="setProjectSort('cost')">Est. Cost <span class="sort-icon" id="psort-cost"></span></th>
+        <th><span data-i18n="th.project">Project</span></th>
+        <th class="sortable" onclick="setProjectSort('sessions')"><span data-i18n="th.sessions">Sessions</span> <span class="sort-icon" id="psort-sessions"></span></th>
+        <th class="sortable" onclick="setProjectSort('turns')"><span data-i18n="th.turns">Turns</span> <span class="sort-icon" id="psort-turns"></span></th>
+        <th class="sortable" onclick="setProjectSort('input')"><span data-i18n="th.input">Input</span> <span class="sort-icon" id="psort-input"></span></th>
+        <th class="sortable" onclick="setProjectSort('output')"><span data-i18n="th.output">Output</span> <span class="sort-icon" id="psort-output"></span></th>
+        <th class="sortable" onclick="setProjectSort('cost')"><span data-i18n="th.est_cost">Est. Cost</span> <span class="sort-icon" id="psort-cost"></span></th>
       </tr></thead>
       <tbody id="project-cost-body"></tbody>
     </table>
   </div>
   <div class="table-card">
-    <div class="section-header"><div class="section-title">Cost by Project &amp; Branch</div><button class="export-btn" onclick="exportProjectBranchCSV()" title="Export project+branch breakdown to CSV">&#x2913; CSV</button></div>
+    <div class="section-header"><div class="section-title" data-i18n="table.cost_by_project_branch">Cost by Project &amp; Branch</div><button class="export-btn" onclick="exportProjectBranchCSV()" data-i18n="table.csv_export" data-i18n-title="table.csv_export_project_branch_tooltip" title="Export project+branch breakdown to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
-        <th>Project</th>
-        <th>Branch</th>
-        <th class="sortable" onclick="setProjectBranchSort('sessions')">Sessions <span class="sort-icon" id="pbsort-sessions"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('turns')">Turns <span class="sort-icon" id="pbsort-turns"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('input')">Input <span class="sort-icon" id="pbsort-input"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('output')">Output <span class="sort-icon" id="pbsort-output"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('cost')">Est. Cost <span class="sort-icon" id="pbsort-cost"></span></th>
+        <th><span data-i18n="th.project">Project</span></th>
+        <th><span data-i18n="th.branch">Branch</span></th>
+        <th class="sortable" onclick="setProjectBranchSort('sessions')"><span data-i18n="th.sessions">Sessions</span> <span class="sort-icon" id="pbsort-sessions"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('turns')"><span data-i18n="th.turns">Turns</span> <span class="sort-icon" id="pbsort-turns"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('input')"><span data-i18n="th.input">Input</span> <span class="sort-icon" id="pbsort-input"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('output')"><span data-i18n="th.output">Output</span> <span class="sort-icon" id="pbsort-output"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('cost')"><span data-i18n="th.est_cost">Est. Cost</span> <span class="sort-icon" id="pbsort-cost"></span></th>
       </tr></thead>
       <tbody id="project-branch-cost-body"></tbody>
     </table>
@@ -340,13 +367,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <footer>
   <div class="footer-content">
-    <p>Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of April 2026. Only models containing <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
+    <p data-i18n-html="footer.cost_disclaimer_html">Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of April 2026. Only models containing <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
     <p>
-      GitHub: <a href="https://github.com/phuryn/claude-usage" target="_blank">https://github.com/phuryn/claude-usage</a>
+      <span data-i18n="footer.github_label">GitHub:</span> <a href="https://github.com/phuryn/claude-usage" target="_blank">https://github.com/phuryn/claude-usage</a>
       &nbsp;&middot;&nbsp;
-      Created by: <a href="https://www.productcompass.pm" target="_blank">The Product Compass Newsletter</a>
+      <span data-i18n="footer.created_by_label">Created by:</span> <a href="https://www.productcompass.pm" target="_blank" data-i18n="footer.created_by_name">The Product Compass Newsletter</a>
       &nbsp;&middot;&nbsp;
-      License: MIT
+      <span data-i18n="footer.license_label">License:</span> <span data-i18n="footer.license_value">MIT</span>
     </p>
   </div>
 </footer>
@@ -358,6 +385,408 @@ function esc(s) {
   d.textContent = String(s);
   return d.innerHTML;
 }
+
+// ── i18n ──────────────────────────────────────────────────────────────────
+// English is the source of truth. To add a language, copy the `en` block,
+// translate each value, and add the new locale code to `LOCALES` below.
+// Keys missing in a locale fall back to English with a console warning.
+const MESSAGES = {
+  en: {
+    'header.title': 'Claude Code Usage Dashboard',
+    'header.meta_loading': 'Loading...',
+    'header.meta_updated': 'Updated: {date}',
+    'header.meta_refresh_note': ' · Auto-refresh in 30s',
+    'header.rescan': '↻ Rescan',
+    'header.rescan_tooltip': 'Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.',
+    'header.rescan_scanning': '↻ Scanning...',
+    'header.rescan_done': '↻ Rescan ({new} new, {updated} updated)',
+    'header.rescan_error': '↻ Rescan (error)',
+
+    'filter.models': 'Models',
+    'filter.models_tooltip': 'Select Claude models to include in the aggregation. Only selected models appear in charts and tables.',
+    'filter.all': 'All',
+    'filter.all_tooltip': 'Select all models',
+    'filter.none': 'None',
+    'filter.none_tooltip': 'Clear all models',
+    'filter.range': 'Range',
+    'filter.range_tooltip': 'Select the aggregation period.',
+
+    'range.week': 'This Week',
+    'range.week_tooltip': 'This week (starting Monday)',
+    'range.month': 'This Month',
+    'range.month_tooltip': 'From the 1st of this month through today',
+    'range.prev_month': 'Prev Month',
+    'range.prev_month_tooltip': 'The full previous month',
+    'range.7d': '7d',
+    'range.7d_tooltip': 'Last 7 days',
+    'range.30d': '30d',
+    'range.30d_tooltip': 'Last 30 days',
+    'range.90d': '90d',
+    'range.90d_tooltip': 'Last 90 days',
+    'range.all': 'All',
+    'range.all_tooltip': 'All recorded history',
+
+    'range_label.week': 'This Week',
+    'range_label.month': 'This Month',
+    'range_label.prev-month': 'Previous Month',
+    'range_label.7d': 'Last 7 Days',
+    'range_label.30d': 'Last 30 Days',
+    'range_label.90d': 'Last 90 Days',
+    'range_label.all': 'All Time',
+
+    'stats.sessions.label': 'Sessions',
+    'stats.sessions.tooltip': 'Number of distinct chat sessions in the selected period.',
+    'stats.turns.label': 'Turns',
+    'stats.turns.tooltip': 'Total assistant turns. Each tool-call cycle counts as one turn.',
+    'stats.input_tokens.label': 'Input Tokens',
+    'stats.input_tokens.tooltip': 'Raw prompt tokens you sent to the model. Usually a small portion of total cost.',
+    'stats.output_tokens.label': 'Output Tokens',
+    'stats.output_tokens.tooltip': 'Tokens generated by Claude. Typically the most expensive component of cost.',
+    'stats.cache_read.label': 'Cache Read',
+    'stats.cache_read.tooltip': 'Tokens served from prompt cache — about 90% cheaper than fresh input tokens.',
+    'stats.cache_read.sub': 'from prompt cache',
+    'stats.cache_creation.label': 'Cache Creation',
+    'stats.cache_creation.tooltip': 'Tokens written to prompt cache — a 25% premium over input, but later cache reads are far cheaper.',
+    'stats.cache_creation.sub': 'writes to prompt cache',
+    'stats.est_cost.label': 'Est. Cost',
+    'stats.est_cost.tooltip': 'Estimated API cost based on Anthropic API pricing as of April 2026. Max/Pro subscribers have a flat subscription cost instead.',
+    'stats.est_cost.sub': 'API pricing, Apr 2026',
+
+    'chart.daily_title': 'Daily Token Usage',
+    'chart.daily_title_with_range': 'Daily Token Usage — {range}',
+    'chart.daily_title_tooltip': 'Stacked daily token usage by category. Cache tokens use the left axis; raw input/output use the right axis.',
+    'chart.hourly_title': 'Average Hourly Distribution',
+    'chart.hourly_title_with_range': 'Average Hourly Distribution — {range}',
+    'chart.hourly_title_tooltip': 'Average tokens and turns by hour of day across the selected range.',
+    'chart.peak_legend': 'Peak hours (PT)',
+    'chart.peak_legend_tooltip': 'Mon–Fri 05:00–11:00 PT — Anthropic peak-hour throttling window.',
+    'chart.tz_local': 'Local',
+    'chart.tz_utc': 'UTC',
+    'chart.day_count_singular': '{n} day averaged · {tz}',
+    'chart.day_count_plural': '{n} days averaged · {tz}',
+    'chart.day_count_empty': 'No data · {tz}',
+    'chart.peak_tooltip_suffix': ' · Peak — Anthropic US hours',
+    'chart.avg_turns_label': 'Avg turns / hour',
+    'chart.avg_output_label': 'Avg output tokens / hour',
+    'chart.avg_turns_tooltip': ' Avg turns: {n}',
+    'chart.avg_output_tooltip': ' Avg output: {n}',
+    'chart.daily.input': 'Input',
+    'chart.daily.output': 'Output',
+    'chart.daily.cache_read': 'Cache Read',
+    'chart.daily.cache_creation': 'Cache Creation',
+    'chart.daily.y_left': 'Cache',
+    'chart.daily.y_right': 'Input / Output',
+    'chart.model_title': 'By Model',
+    'chart.model_title_tooltip': 'Token share by model in the selected period.',
+    'chart.model_tooltip_label': ' {model}: {tokens} tokens',
+    'chart.project_title': 'Top Projects by Tokens',
+    'chart.project_title_tooltip': 'Top 10 projects by total tokens in the selected period.',
+
+    'table.cost_by_model': 'Cost by Model',
+    'table.recent_sessions': 'Recent Sessions',
+    'table.cost_by_project': 'Cost by Project',
+    'table.cost_by_project_branch': 'Cost by Project & Branch',
+    'table.csv_export': '⤓ CSV',
+    'table.csv_export_sessions_tooltip': 'Export all filtered sessions to CSV',
+    'table.csv_export_projects_tooltip': 'Export all projects to CSV',
+    'table.csv_export_project_branch_tooltip': 'Export project + branch breakdown to CSV',
+
+    'th.session': 'Session',
+    'th.project': 'Project',
+    'th.branch': 'Branch',
+    'th.last_active': 'Last Active',
+    'th.duration': 'Duration',
+    'th.model': 'Model',
+    'th.turns': 'Turns',
+    'th.input': 'Input',
+    'th.output': 'Output',
+    'th.cache_read': 'Cache Read',
+    'th.cache_creation': 'Cache Creation',
+    'th.est_cost': 'Est. Cost',
+    'th.sessions': 'Sessions',
+    'th.cost_na': 'n/a',
+    'th.duration_min_suffix': 'm',
+
+    'footer.cost_disclaimer_html': 'Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of April 2026. Only models containing <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.',
+    'footer.github_label': 'GitHub:',
+    'footer.created_by_label': 'Created by:',
+    'footer.created_by_name': 'The Product Compass Newsletter',
+    'footer.license_label': 'License:',
+    'footer.license_value': 'MIT',
+
+    'lang_picker.button_tooltip': 'Select language',
+    'lang_picker.title': 'Language',
+  },
+  ko: {
+    'header.title': 'Claude Code 사용량 대시보드',
+    'header.meta_loading': '불러오는 중...',
+    'header.meta_updated': '갱신: {date}',
+    'header.meta_refresh_note': ' · 30초마다 자동 새로고침',
+    'header.rescan': '↻ 다시 스캔',
+    'header.rescan_tooltip': '모든 JSONL 로그 파일을 다시 읽어 데이터베이스를 처음부터 재구성합니다. 데이터가 오래됐거나 비용이 이상해 보일 때 사용하세요.',
+    'header.rescan_scanning': '↻ 스캔 중...',
+    'header.rescan_done': '↻ 다시 스캔 (신규 {new}건, 갱신 {updated}건)',
+    'header.rescan_error': '↻ 다시 스캔 (오류)',
+
+    'filter.models': '모델',
+    'filter.models_tooltip': '집계에 포함할 Claude 모델을 선택합니다. 선택된 모델만 차트와 표에 반영됩니다.',
+    'filter.all': '전체',
+    'filter.all_tooltip': '모든 모델 선택',
+    'filter.none': '없음',
+    'filter.none_tooltip': '모든 모델 선택 해제',
+    'filter.range': '기간',
+    'filter.range_tooltip': '집계 기간을 선택합니다.',
+
+    'range.week': '이번 주',
+    'range.week_tooltip': '이번 주 (월요일 시작)',
+    'range.month': '이번 달',
+    'range.month_tooltip': '이번 달 1일부터 오늘까지',
+    'range.prev_month': '저번 달',
+    'range.prev_month_tooltip': '저번 달 전체',
+    'range.7d': '7일',
+    'range.7d_tooltip': '최근 7일',
+    'range.30d': '30일',
+    'range.30d_tooltip': '최근 30일',
+    'range.90d': '90일',
+    'range.90d_tooltip': '최근 90일',
+    'range.all': '전체',
+    'range.all_tooltip': '기록된 전체 기간',
+
+    'range_label.week': '이번 주',
+    'range_label.month': '이번 달',
+    'range_label.prev-month': '저번 달',
+    'range_label.7d': '최근 7일',
+    'range_label.30d': '최근 30일',
+    'range_label.90d': '최근 90일',
+    'range_label.all': '전체 기간',
+
+    'stats.sessions.label': '세션',
+    'stats.sessions.tooltip': '선택한 기간에 진행된 별개 세션의 수입니다.',
+    'stats.turns.label': '턴',
+    'stats.turns.tooltip': '어시스턴트의 총 턴 수입니다. 도구 호출 한 사이클이 한 턴으로 계산됩니다.',
+    'stats.input_tokens.label': '입력 토큰',
+    'stats.input_tokens.tooltip': '모델에 보낸 원시 프롬프트 토큰입니다. 보통 전체 비용에서 차지하는 비중은 작습니다.',
+    'stats.output_tokens.label': '출력 토큰',
+    'stats.output_tokens.tooltip': 'Claude가 생성한 토큰입니다. 일반적으로 가장 비싼 항목입니다.',
+    'stats.cache_read.label': '캐시 읽기',
+    'stats.cache_read.tooltip': '프롬프트 캐시에서 가져온 토큰입니다. 신규 입력 대비 약 90% 저렴합니다.',
+    'stats.cache_read.sub': '프롬프트 캐시에서',
+    'stats.cache_creation.label': '캐시 생성',
+    'stats.cache_creation.tooltip': '프롬프트 캐시에 저장된 토큰입니다. 입력보다 25% 비싸지만 이후 캐시 읽기는 훨씬 저렴해집니다.',
+    'stats.cache_creation.sub': '프롬프트 캐시에 저장',
+    'stats.est_cost.label': '예상 비용',
+    'stats.est_cost.tooltip': 'Anthropic API 가격 기준 예상 비용입니다(2026년 4월 기준). Max/Pro 구독자는 정액 구독료가 청구되므로 실제 결제액과 다를 수 있습니다.',
+    'stats.est_cost.sub': 'API 가격, 2026년 4월',
+
+    'chart.daily_title': '일별 토큰 사용량',
+    'chart.daily_title_with_range': '일별 토큰 사용량 — {range}',
+    'chart.daily_title_tooltip': '일별 토큰 사용량을 항목별로 누적한 차트입니다. 캐시 토큰은 좌측 축, 원시 입력/출력은 우측 축을 사용합니다.',
+    'chart.hourly_title': '시간대별 평균 분포',
+    'chart.hourly_title_with_range': '시간대별 평균 분포 — {range}',
+    'chart.hourly_title_tooltip': '선택한 기간 내 시간대별 평균 토큰과 턴 수입니다.',
+    'chart.peak_legend': '피크 시간 (PT)',
+    'chart.peak_legend_tooltip': '월–금 PT 05:00–11:00 — Anthropic 피크 시간 스로틀링 구간입니다.',
+    'chart.tz_local': '현지',
+    'chart.tz_utc': 'UTC',
+    'chart.day_count_singular': '{n}일 평균 · {tz}',
+    'chart.day_count_plural': '{n}일 평균 · {tz}',
+    'chart.day_count_empty': '데이터 없음 · {tz}',
+    'chart.peak_tooltip_suffix': ' · 피크 — Anthropic 미국 시간',
+    'chart.avg_turns_label': '시간당 평균 턴',
+    'chart.avg_output_label': '시간당 평균 출력 토큰',
+    'chart.avg_turns_tooltip': ' 평균 턴: {n}',
+    'chart.avg_output_tooltip': ' 평균 출력: {n}',
+    'chart.daily.input': '입력',
+    'chart.daily.output': '출력',
+    'chart.daily.cache_read': '캐시 읽기',
+    'chart.daily.cache_creation': '캐시 생성',
+    'chart.daily.y_left': '캐시',
+    'chart.daily.y_right': '입력 / 출력',
+    'chart.model_title': '모델별',
+    'chart.model_title_tooltip': '선택한 기간의 모델별 토큰 비중입니다.',
+    'chart.model_tooltip_label': ' {model}: 토큰 {tokens}개',
+    'chart.project_title': '토큰 기준 상위 프로젝트',
+    'chart.project_title_tooltip': '선택한 기간의 총 토큰 기준 상위 10개 프로젝트입니다.',
+
+    'table.cost_by_model': '모델별 비용',
+    'table.recent_sessions': '최근 세션',
+    'table.cost_by_project': '프로젝트별 비용',
+    'table.cost_by_project_branch': '프로젝트 & 브랜치별 비용',
+    'table.csv_export': '⤓ CSV',
+    'table.csv_export_sessions_tooltip': '필터링된 모든 세션을 CSV로 내보냅니다',
+    'table.csv_export_projects_tooltip': '모든 프로젝트를 CSV로 내보냅니다',
+    'table.csv_export_project_branch_tooltip': '프로젝트+브랜치 분석을 CSV로 내보냅니다',
+
+    'th.session': '세션',
+    'th.project': '프로젝트',
+    'th.branch': '브랜치',
+    'th.last_active': '최근 활동',
+    'th.duration': '지속 시간',
+    'th.model': '모델',
+    'th.turns': '턴',
+    'th.input': '입력',
+    'th.output': '출력',
+    'th.cache_read': '캐시 읽기',
+    'th.cache_creation': '캐시 생성',
+    'th.est_cost': '예상 비용',
+    'th.sessions': '세션',
+    'th.cost_na': '해당 없음',
+    'th.duration_min_suffix': '분',
+
+    'footer.cost_disclaimer_html': '비용 추정치는 2026년 4월 기준 Anthropic API 가격(<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>)을 사용합니다. 모델명에 <em>opus</em>, <em>sonnet</em>, <em>haiku</em>가 포함된 모델만 비용 계산에 반영됩니다. Max/Pro 구독자의 실제 비용은 API 가격과 다릅니다.',
+    'footer.github_label': 'GitHub:',
+    'footer.created_by_label': '제작:',
+    'footer.created_by_name': 'The Product Compass Newsletter',
+    'footer.license_label': '라이선스:',
+    'footer.license_value': 'MIT',
+
+    'lang_picker.button_tooltip': '언어 선택',
+    'lang_picker.title': '언어',
+  },
+};
+
+// Display name shown in the language picker for each locale.
+// To add a new language, append a new entry here and a matching block in MESSAGES.
+const LOCALES = {
+  en: 'English',
+  ko: '한국어',
+};
+
+const LANG_STORAGE_KEY = 'claudeUsageLang';
+const DEFAULT_LANG = 'en';
+let currentLang = DEFAULT_LANG;
+
+function getInitialLang() {
+  try {
+    const url = new URL(window.location.href);
+    const fromUrl = url.searchParams.get('lang');
+    if (fromUrl && LOCALES[fromUrl]) return fromUrl;
+  } catch(e) {}
+  try {
+    const stored = localStorage.getItem(LANG_STORAGE_KEY);
+    if (stored && LOCALES[stored]) return stored;
+  } catch(e) {}
+  try {
+    const navLangs = navigator.languages || [navigator.language];
+    for (const raw of navLangs) {
+      if (!raw) continue;
+      const short = String(raw).toLowerCase().split('-')[0];
+      if (LOCALES[short]) return short;
+    }
+  } catch(e) {}
+  return DEFAULT_LANG;
+}
+
+function tr(key, vars) {
+  const dict = MESSAGES[currentLang] || MESSAGES[DEFAULT_LANG];
+  let msg = dict[key];
+  if (msg === undefined) {
+    if (currentLang !== DEFAULT_LANG) {
+      console.warn('[i18n] missing key for ' + currentLang + ': ' + key);
+    }
+    msg = MESSAGES[DEFAULT_LANG][key];
+  }
+  if (msg === undefined) {
+    console.warn('[i18n] unknown key: ' + key);
+    return key;
+  }
+  if (vars) {
+    return msg.replace(/\{(\w+)\}/g, (_, name) =>
+      vars[name] !== undefined ? String(vars[name]) : '{' + name + '}'
+    );
+  }
+  return msg;
+}
+
+// Apply translations to all elements with data-i18n / data-i18n-title attributes.
+// data-i18n="key"        → sets textContent
+// data-i18n-html="key"   → sets innerHTML (use only for trusted message bundles)
+// data-i18n-title="key"  → sets the title attribute (hover tooltip)
+function applyTranslations() {
+  document.documentElement.lang = currentLang;
+  document.title = tr('header.title');
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = tr(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = tr(el.getAttribute('data-i18n-html'));
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    el.setAttribute('title', tr(el.getAttribute('data-i18n-title')));
+  });
+}
+
+function setLang(lang) {
+  if (!LOCALES[lang]) return;
+  currentLang = lang;
+  try { localStorage.setItem(LANG_STORAGE_KEY, lang); } catch(e) {}
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('lang', lang);
+    history.replaceState(null, '', url.toString());
+  } catch(e) {}
+  applyTranslations();
+  if (typeof rerenderAfterLangChange === 'function') rerenderAfterLangChange();
+}
+
+// Re-render every JS-driven surface after a language change.
+// Static markup is handled by applyTranslations(); this covers the chart
+// titles, stat cards, chart datasets, hourly day-count text, etc.
+function rerenderAfterLangChange() {
+  updateLangButton();
+  buildLangMenu();
+  if (rawData) applyFilter();
+}
+
+// ── Language picker UI ────────────────────────────────────────────────────
+function updateLangButton() {
+  const labelEl = document.getElementById('lang-btn-label');
+  if (labelEl) labelEl.textContent = LOCALES[currentLang] || currentLang;
+}
+
+function buildLangMenu() {
+  const container = document.getElementById('lang-menu-items');
+  if (!container) return;
+  const codes = Object.keys(LOCALES);
+  container.innerHTML = codes.map(code => {
+    const active = code === currentLang ? ' active' : '';
+    const aria = code === currentLang ? ' aria-current="true"' : '';
+    return '<button type="button" class="lang-option' + active + '"' + aria +
+      ' data-lang="' + esc(code) + '" onclick="onLangSelect(\'' + esc(code) + '\')">' +
+      '<span>' + esc(LOCALES[code]) + '</span><span class="check" aria-hidden="true">✓</span>' +
+      '</button>';
+  }).join('');
+}
+
+function setLangMenuOpen(open) {
+  const menu = document.getElementById('lang-menu');
+  const btn = document.getElementById('lang-btn');
+  if (!menu || !btn) return;
+  menu.classList.toggle('open', open);
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function toggleLangMenu(e) {
+  if (e) { e.stopPropagation(); }
+  const menu = document.getElementById('lang-menu');
+  if (!menu) return;
+  setLangMenuOpen(!menu.classList.contains('open'));
+}
+
+function onLangSelect(code) {
+  setLangMenuOpen(false);
+  setLang(code);
+}
+
+document.addEventListener('click', (e) => {
+  const picker = e.target.closest('.lang-picker');
+  if (!picker) setLangMenuOpen(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') setLangMenuOpen(false);
+});
+
+currentLang = getInitialLang();
 
 // ── State ──────────────────────────────────────────────────────────────────
 let rawData = null;
@@ -409,11 +838,11 @@ function formatHourLabel(h) {
 }
 
 function tzDisplayName(tzMode) {
-  if (tzMode === 'utc') return 'UTC';
+  if (tzMode === 'utc') return tr('chart.tz_utc');
   try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local';
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || tr('chart.tz_local');
   } catch(e) {
-    return 'Local';
+    return tr('chart.tz_local');
   }
 }
 
@@ -481,9 +910,12 @@ const TOKEN_COLORS = {
 const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
 
 // ── Time range ─────────────────────────────────────────────────────────────
-const RANGE_LABELS = { 'week': 'This Week', 'month': 'This Month', 'prev-month': 'Previous Month', '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
+// Range identifiers. Display labels live in MESSAGES under 'range_label.*'
+// (e.g. tr('range_label.7d')); they are looked up at render time so the
+// language picker can swap them without re-creating the dashboard.
+const VALID_RANGES = ['week', 'month', 'prev-month', '7d', '30d', '90d', 'all'];
 const RANGE_TICKS  = { 'week': 7, 'month': 15, 'prev-month': 15, '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
-const VALID_RANGES = Object.keys(RANGE_LABELS);
+function rangeLabel(range) { return tr('range_label.' + range); }
 
 function rangeIncludesToday(range) {
   if (range === 'all') return true;
@@ -747,8 +1179,8 @@ function applyFilter() {
   const hourlyAgg = aggregateHourly(hourlySrc, hourlyTZ);
 
   // Update daily chart title
-  document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
-  document.getElementById('hourly-chart-title').textContent = 'Average Hourly Distribution \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('daily-chart-title').textContent = tr('chart.daily_title_with_range', { range: rangeLabel(selectedRange) });
+  document.getElementById('hourly-chart-title').textContent = tr('chart.hourly_title_with_range', { range: rangeLabel(selectedRange) });
 
   renderStats(totals);
   renderDailyChart(daily);
@@ -766,19 +1198,19 @@ function applyFilter() {
 
 // ── Renderers ──────────────────────────────────────────────────────────────
 function renderStats(t) {
-  const rangeLabel = RANGE_LABELS[selectedRange].toLowerCase();
+  const rangeSub = rangeLabel(selectedRange).toLowerCase();
   const stats = [
-    { label: 'Sessions',       value: t.sessions.toLocaleString(), sub: rangeLabel },
-    { label: 'Turns',          value: fmt(t.turns),                sub: rangeLabel },
-    { label: 'Input Tokens',   value: fmt(t.input),                sub: rangeLabel },
-    { label: 'Output Tokens',  value: fmt(t.output),               sub: rangeLabel },
-    { label: 'Cache Read',     value: fmt(t.cache_read),           sub: 'from prompt cache' },
-    { label: 'Cache Creation', value: fmt(t.cache_creation),       sub: 'writes to prompt cache' },
-    { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, Apr 2026', color: '#4ade80' },
+    { key: 'sessions',       label: tr('stats.sessions.label'),       tooltip: tr('stats.sessions.tooltip'),       value: t.sessions.toLocaleString(), sub: rangeSub },
+    { key: 'turns',          label: tr('stats.turns.label'),          tooltip: tr('stats.turns.tooltip'),          value: fmt(t.turns),                sub: rangeSub },
+    { key: 'input_tokens',   label: tr('stats.input_tokens.label'),   tooltip: tr('stats.input_tokens.tooltip'),   value: fmt(t.input),                sub: rangeSub },
+    { key: 'output_tokens',  label: tr('stats.output_tokens.label'),  tooltip: tr('stats.output_tokens.tooltip'),  value: fmt(t.output),               sub: rangeSub },
+    { key: 'cache_read',     label: tr('stats.cache_read.label'),     tooltip: tr('stats.cache_read.tooltip'),     value: fmt(t.cache_read),           sub: tr('stats.cache_read.sub') },
+    { key: 'cache_creation', label: tr('stats.cache_creation.label'), tooltip: tr('stats.cache_creation.tooltip'), value: fmt(t.cache_creation),       sub: tr('stats.cache_creation.sub') },
+    { key: 'est_cost',       label: tr('stats.est_cost.label'),       tooltip: tr('stats.est_cost.tooltip'),       value: fmtCostBig(t.cost),          sub: tr('stats.est_cost.sub'), color: '#4ade80' },
   ];
   document.getElementById('stats-row').innerHTML = stats.map(s => `
-    <div class="stat-card">
-      <div class="label">${s.label}</div>
+    <div class="stat-card" title="${esc(s.tooltip)}">
+      <div class="label">${esc(s.label)}</div>
       <div class="value" style="${s.color ? 'color:' + s.color : ''}">${esc(s.value)}</div>
       ${s.sub ? `<div class="sub">${esc(s.sub)}</div>` : ''}
     </div>
@@ -813,9 +1245,12 @@ function aggregateHourly(rows, tzMode) {
 
 function renderHourlyChart(agg) {
   const dayCountEl = document.getElementById('hourly-day-count');
-  dayCountEl.textContent = agg.dayCount
-    ? agg.dayCount + ' day' + (agg.dayCount === 1 ? '' : 's') + ' averaged · ' + tzDisplayName(hourlyTZ)
-    : 'No data · ' + tzDisplayName(hourlyTZ);
+  if (!agg.dayCount) {
+    dayCountEl.textContent = tr('chart.day_count_empty', { tz: tzDisplayName(hourlyTZ) });
+  } else {
+    const key = agg.dayCount === 1 ? 'chart.day_count_singular' : 'chart.day_count_plural';
+    dayCountEl.textContent = tr(key, { n: agg.dayCount, tz: tzDisplayName(hourlyTZ) });
+  }
 
   const ctx = document.getElementById('chart-hourly').getContext('2d');
   if (charts.hourly) charts.hourly.destroy();
@@ -825,13 +1260,16 @@ function renderHourlyChart(agg) {
   const output = agg.hours.map(h => h.avgOutput);
   const barColors = agg.hours.map(h => h.peak ? 'rgba(248,113,113,0.8)' : TOKEN_COLORS.input);
 
+  const turnsLabel  = tr('chart.avg_turns_label');
+  const outputLabel = tr('chart.avg_output_label');
+
   charts.hourly = new Chart(ctx, {
     data: {
       labels: labels,
       datasets: [
         {
           type: 'bar',
-          label: 'Avg turns / hour',
+          label: turnsLabel,
           data: turns,
           backgroundColor: barColors,
           yAxisID: 'y',
@@ -839,7 +1277,7 @@ function renderHourlyChart(agg) {
         },
         {
           type: 'line',
-          label: 'Avg output tokens / hour',
+          label: outputLabel,
           data: output,
           borderColor: TOKEN_COLORS.output,
           backgroundColor: 'rgba(167,139,250,0.15)',
@@ -863,21 +1301,23 @@ function renderHourlyChart(agg) {
               const idx = items[0].dataIndex;
               const h = agg.hours[idx];
               const base = formatHourLabel(h.hour) + ' ' + tzDisplayName(hourlyTZ);
-              return h.peak ? base + ' · Peak — Anthropic US hours' : base;
+              return h.peak ? base + tr('chart.peak_tooltip_suffix') : base;
             },
+            // Dataset 0 is the turns bar, dataset 1 is the output line.
+            // Index-based dispatch keeps tooltip output stable across locales.
             label: (item) => {
-              if (item.dataset.label && item.dataset.label.indexOf('turns') !== -1) {
-                return ' Avg turns: ' + item.parsed.y.toFixed(2);
+              if (item.datasetIndex === 0) {
+                return tr('chart.avg_turns_tooltip', { n: item.parsed.y.toFixed(2) });
               }
-              return ' Avg output: ' + fmt(item.parsed.y);
+              return tr('chart.avg_output_tooltip', { n: fmt(item.parsed.y) });
             },
           }
         },
       },
       scales: {
         x: { ticks: { color: '#8892a4', maxRotation: 0, autoSkip: false, font: { size: 10 } }, grid: { color: '#2a2d3a' } },
-        y:  { position: 'left',  beginAtZero: true, ticks: { color: '#8892a4', callback: v => v.toFixed(1) },     grid: { color: '#2a2d3a' }, title: { display: true, text: 'Avg turns / hour',         color: '#8892a4', font: { size: 11 } } },
-        y1: { position: 'right', beginAtZero: true, ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { drawOnChartArea: false },   title: { display: true, text: 'Avg output tokens / hour', color: '#8892a4', font: { size: 11 } } },
+        y:  { position: 'left',  beginAtZero: true, ticks: { color: '#8892a4', callback: v => v.toFixed(1) },     grid: { color: '#2a2d3a' }, title: { display: true, text: turnsLabel,  color: '#8892a4', font: { size: 11 } } },
+        y1: { position: 'right', beginAtZero: true, ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { drawOnChartArea: false },   title: { display: true, text: outputLabel, color: '#8892a4', font: { size: 11 } } },
       }
     }
   });
@@ -891,10 +1331,10 @@ function renderDailyChart(daily) {
     data: {
       labels: daily.map(d => d.day),
       datasets: [
-        { label: 'Input',          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'io',    yAxisID: 'y1' },
-        { label: 'Output',         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'io',    yAxisID: 'y1' },
-        { label: 'Cache Read',     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'cache', yAxisID: 'y' },
-        { label: 'Cache Creation', data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'cache', yAxisID: 'y' },
+        { label: tr('chart.daily.input'),          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'io',    yAxisID: 'y1' },
+        { label: tr('chart.daily.output'),         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'io',    yAxisID: 'y1' },
+        { label: tr('chart.daily.cache_read'),     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'cache', yAxisID: 'y' },
+        { label: tr('chart.daily.cache_creation'), data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'cache', yAxisID: 'y' },
       ]
     },
     options: {
@@ -902,8 +1342,8 @@ function renderDailyChart(daily) {
       plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
       scales: {
         x: { ticks: { color: '#8892a4', maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: '#2a2d3a' } },
-        y:  { position: 'left',  ticks: { color: '#74de80', callback: v => fmt(v) }, grid: { color: '#2a2d3a' }, title: { display: true, text: 'Cache', color: '#74de80' } },
-        y1: { position: 'right', ticks: { color: '#4f8ef7', callback: v => fmt(v) }, grid: { drawOnChartArea: false },    title: { display: true, text: 'Input / Output', color: '#4f8ef7' } },
+        y:  { position: 'left',  ticks: { color: '#74de80', callback: v => fmt(v) }, grid: { color: '#2a2d3a' }, title: { display: true, text: tr('chart.daily.y_left'),  color: '#74de80' } },
+        y1: { position: 'right', ticks: { color: '#4f8ef7', callback: v => fmt(v) }, grid: { drawOnChartArea: false },    title: { display: true, text: tr('chart.daily.y_right'), color: '#4f8ef7' } },
       }
     }
   });
@@ -923,7 +1363,7 @@ function renderModelChart(byModel) {
       responsive: true, maintainAspectRatio: false,
       plugins: {
         legend: { position: 'bottom', labels: { color: '#8892a4', boxWidth: 12, font: { size: 11 } } },
-        tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${fmt(ctx.raw)} tokens` } }
+        tooltip: { callbacks: { label: ctx => tr('chart.model_tooltip_label', { model: ctx.label, tokens: fmt(ctx.raw) }) } }
       }
     }
   });
@@ -939,8 +1379,8 @@ function renderProjectChart(byProject) {
     data: {
       labels: top.map(p => p.project.length > 22 ? '\u2026' + p.project.slice(-20) : p.project),
       datasets: [
-        { label: 'Input',  data: top.map(p => p.input),  backgroundColor: TOKEN_COLORS.input },
-        { label: 'Output', data: top.map(p => p.output), backgroundColor: TOKEN_COLORS.output },
+        { label: tr('chart.daily.input'),  data: top.map(p => p.input),  backgroundColor: TOKEN_COLORS.input },
+        { label: tr('chart.daily.output'), data: top.map(p => p.output), backgroundColor: TOKEN_COLORS.output },
       ]
     },
     options: {
@@ -955,16 +1395,18 @@ function renderProjectChart(byProject) {
 }
 
 function renderSessionsTable(sessions) {
+  const naLabel = tr('th.cost_na');
+  const minSuffix = tr('th.duration_min_suffix');
   document.getElementById('sessions-body').innerHTML = sessions.map(s => {
     const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
     const costCell = isBillable(s.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
-      : `<td class="cost-na">n/a</td>`;
+      : `<td class="cost-na">${esc(naLabel)}</td>`;
     return `<tr>
       <td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>
       <td>${esc(s.project)}</td>
       <td class="muted">${esc(s.last)}</td>
-      <td class="muted">${esc(s.duration_min)}m</td>
+      <td class="muted">${esc(s.duration_min)}${esc(minSuffix)}</td>
       <td><span class="model-tag">${esc(s.model)}</span></td>
       <td class="num">${s.turns}</td>
       <td class="num">${fmt(s.input)}</td>
@@ -1169,17 +1611,17 @@ function exportProjectBranchCSV() {
 async function triggerRescan() {
   const btn = document.getElementById('rescan-btn');
   btn.disabled = true;
-  btn.textContent = '\u21bb Scanning...';
+  btn.textContent = tr('header.rescan_scanning');
   try {
     const resp = await fetch('/api/rescan', { method: 'POST' });
     const d = await resp.json();
-    btn.textContent = '\u21bb Rescan (' + d.new + ' new, ' + d.updated + ' updated)';
+    btn.textContent = tr('header.rescan_done', { new: d.new, updated: d.updated });
     await loadData();
   } catch(e) {
-    btn.textContent = '\u21bb Rescan (error)';
+    btn.textContent = tr('header.rescan_error');
     console.error(e);
   }
-  setTimeout(() => { btn.textContent = '\u21bb Rescan'; btn.disabled = false; }, 3000);
+  setTimeout(() => { btn.textContent = tr('header.rescan'); btn.disabled = false; }, 3000);
 }
 
 // ── Data loading ───────────────────────────────────────────────────────────
@@ -1191,8 +1633,8 @@ async function loadData() {
       document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + esc(d.error) + '</div>';
       return;
     }
-    const refreshNote = rangeIncludesToday(selectedRange) ? ' \u00b7 Auto-refresh in 30s' : '';
-    document.getElementById('meta').textContent = 'Updated: ' + d.generated_at + refreshNote;
+    const refreshNote = rangeIncludesToday(selectedRange) ? tr('header.meta_refresh_note') : '';
+    document.getElementById('meta').textContent = tr('header.meta_updated', { date: d.generated_at }) + refreshNote;
 
     const isFirstLoad = rawData === null;
     rawData = d;
@@ -1229,6 +1671,9 @@ function scheduleAutoRefresh() {
   }
 }
 
+applyTranslations();
+updateLangButton();
+buildLangMenu();
 loadData();
 scheduleAutoRefresh();
 </script>

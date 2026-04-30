@@ -264,5 +264,83 @@ class TestPricingParity(unittest.TestCase):
             )
 
 
+class TestI18n(unittest.TestCase):
+    """Sanity checks on the embedded MESSAGES catalog and LOCALES registry."""
+
+    @staticmethod
+    def _extract_locale_blocks():
+        """Return {locale_code: {key: value}} parsed out of HTML_TEMPLATE.
+
+        Parses the JS literal `const MESSAGES = { en: {...}, ko: {...}, };`.
+        Only handles single-quoted string keys/values, which is the
+        convention used in dashboard.py.
+        """
+        import re
+        msg_match = re.search(
+            r"const MESSAGES = \{(.*?)\n\};", HTML_TEMPLATE, re.DOTALL
+        )
+        if not msg_match:
+            raise AssertionError("MESSAGES literal not found in HTML_TEMPLATE")
+        body = msg_match.group(1)
+        locale_starts = [
+            (m.group(1), m.start())
+            for m in re.finditer(r"\n  ([a-zA-Z][a-zA-Z0-9_-]*): \{", body)
+        ]
+        locales = {}
+        for i, (code, start) in enumerate(locale_starts):
+            end = locale_starts[i + 1][1] if i + 1 < len(locale_starts) else len(body)
+            block = body[start:end]
+            entries = dict(re.findall(r"'([^']+?)':\s*'((?:[^'\\]|\\.)*)'", block))
+            locales[code] = entries
+        return locales
+
+    @staticmethod
+    def _extract_locales_registry():
+        import re
+        m = re.search(r"const LOCALES = \{(.*?)\};", HTML_TEMPLATE, re.DOTALL)
+        if not m:
+            raise AssertionError("LOCALES literal not found in HTML_TEMPLATE")
+        return set(re.findall(r"\n  ([a-zA-Z][a-zA-Z0-9_-]*):", m.group(1)))
+
+    def test_messages_contains_default_english(self):
+        locales = self._extract_locale_blocks()
+        self.assertIn("en", locales, "English (en) catalog missing")
+        self.assertGreater(len(locales["en"]), 0, "English catalog is empty")
+
+    def test_every_locale_has_same_keys_as_english(self):
+        locales = self._extract_locale_blocks()
+        en_keys = set(locales["en"].keys())
+        for code, entries in locales.items():
+            if code == "en":
+                continue
+            keys = set(entries.keys())
+            missing = en_keys - keys
+            extra = keys - en_keys
+            self.assertFalse(
+                missing,
+                f"Locale '{code}' is missing keys: {sorted(missing)}"
+            )
+            self.assertFalse(
+                extra,
+                f"Locale '{code}' has unknown keys: {sorted(extra)}"
+            )
+
+    def test_locales_registry_matches_messages(self):
+        registry = self._extract_locales_registry()
+        catalog = set(self._extract_locale_blocks().keys())
+        self.assertEqual(
+            registry, catalog,
+            "LOCALES picker entries and MESSAGES catalog must match exactly"
+        )
+
+    def test_no_translation_value_is_empty(self):
+        for code, entries in self._extract_locale_blocks().items():
+            for key, value in entries.items():
+                self.assertNotEqual(
+                    value, "",
+                    f"Locale '{code}' has empty value for key '{key}'"
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
