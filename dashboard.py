@@ -575,6 +575,13 @@ function setLang(lang) {
   if (typeof rerenderAfterLangChange === 'function') rerenderAfterLangChange();
 }
 
+// Re-render every JS-driven surface after a language change.
+// Static markup is handled by applyTranslations(); this covers the chart
+// titles, stat cards, chart datasets, hourly day-count text, etc.
+function rerenderAfterLangChange() {
+  if (rawData) applyFilter();
+}
+
 currentLang = getInitialLang();
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -627,11 +634,11 @@ function formatHourLabel(h) {
 }
 
 function tzDisplayName(tzMode) {
-  if (tzMode === 'utc') return 'UTC';
+  if (tzMode === 'utc') return tr('chart.tz_utc');
   try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local';
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || tr('chart.tz_local');
   } catch(e) {
-    return 'Local';
+    return tr('chart.tz_local');
   }
 }
 
@@ -699,9 +706,12 @@ const TOKEN_COLORS = {
 const MODEL_COLORS = ['#d97757','#4f8ef7','#4ade80','#a78bfa','#fbbf24','#f472b6','#34d399','#60a5fa'];
 
 // ── Time range ─────────────────────────────────────────────────────────────
-const RANGE_LABELS = { 'week': 'This Week', 'month': 'This Month', 'prev-month': 'Previous Month', '7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time' };
+// Range identifiers. Display labels live in MESSAGES under 'range_label.*'
+// (e.g. tr('range_label.7d')); they are looked up at render time so the
+// language picker can swap them without re-creating the dashboard.
+const VALID_RANGES = ['week', 'month', 'prev-month', '7d', '30d', '90d', 'all'];
 const RANGE_TICKS  = { 'week': 7, 'month': 15, 'prev-month': 15, '7d': 7, '30d': 15, '90d': 13, 'all': 12 };
-const VALID_RANGES = Object.keys(RANGE_LABELS);
+function rangeLabel(range) { return tr('range_label.' + range); }
 
 function rangeIncludesToday(range) {
   if (range === 'all') return true;
@@ -965,8 +975,8 @@ function applyFilter() {
   const hourlyAgg = aggregateHourly(hourlySrc, hourlyTZ);
 
   // Update daily chart title
-  document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
-  document.getElementById('hourly-chart-title').textContent = 'Average Hourly Distribution \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('daily-chart-title').textContent = tr('chart.daily_title_with_range', { range: rangeLabel(selectedRange) });
+  document.getElementById('hourly-chart-title').textContent = tr('chart.hourly_title_with_range', { range: rangeLabel(selectedRange) });
 
   renderStats(totals);
   renderDailyChart(daily);
@@ -984,19 +994,19 @@ function applyFilter() {
 
 // ── Renderers ──────────────────────────────────────────────────────────────
 function renderStats(t) {
-  const rangeLabel = RANGE_LABELS[selectedRange].toLowerCase();
+  const rangeSub = rangeLabel(selectedRange).toLowerCase();
   const stats = [
-    { label: 'Sessions',       value: t.sessions.toLocaleString(), sub: rangeLabel },
-    { label: 'Turns',          value: fmt(t.turns),                sub: rangeLabel },
-    { label: 'Input Tokens',   value: fmt(t.input),                sub: rangeLabel },
-    { label: 'Output Tokens',  value: fmt(t.output),               sub: rangeLabel },
-    { label: 'Cache Read',     value: fmt(t.cache_read),           sub: 'from prompt cache' },
-    { label: 'Cache Creation', value: fmt(t.cache_creation),       sub: 'writes to prompt cache' },
-    { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, Apr 2026', color: '#4ade80' },
+    { key: 'sessions',       label: tr('stats.sessions.label'),       tooltip: tr('stats.sessions.tooltip'),       value: t.sessions.toLocaleString(), sub: rangeSub },
+    { key: 'turns',          label: tr('stats.turns.label'),          tooltip: tr('stats.turns.tooltip'),          value: fmt(t.turns),                sub: rangeSub },
+    { key: 'input_tokens',   label: tr('stats.input_tokens.label'),   tooltip: tr('stats.input_tokens.tooltip'),   value: fmt(t.input),                sub: rangeSub },
+    { key: 'output_tokens',  label: tr('stats.output_tokens.label'),  tooltip: tr('stats.output_tokens.tooltip'),  value: fmt(t.output),               sub: rangeSub },
+    { key: 'cache_read',     label: tr('stats.cache_read.label'),     tooltip: tr('stats.cache_read.tooltip'),     value: fmt(t.cache_read),           sub: tr('stats.cache_read.sub') },
+    { key: 'cache_creation', label: tr('stats.cache_creation.label'), tooltip: tr('stats.cache_creation.tooltip'), value: fmt(t.cache_creation),       sub: tr('stats.cache_creation.sub') },
+    { key: 'est_cost',       label: tr('stats.est_cost.label'),       tooltip: tr('stats.est_cost.tooltip'),       value: fmtCostBig(t.cost),          sub: tr('stats.est_cost.sub'), color: '#4ade80' },
   ];
   document.getElementById('stats-row').innerHTML = stats.map(s => `
-    <div class="stat-card">
-      <div class="label">${s.label}</div>
+    <div class="stat-card" title="${esc(s.tooltip)}">
+      <div class="label">${esc(s.label)}</div>
       <div class="value" style="${s.color ? 'color:' + s.color : ''}">${esc(s.value)}</div>
       ${s.sub ? `<div class="sub">${esc(s.sub)}</div>` : ''}
     </div>
@@ -1031,9 +1041,12 @@ function aggregateHourly(rows, tzMode) {
 
 function renderHourlyChart(agg) {
   const dayCountEl = document.getElementById('hourly-day-count');
-  dayCountEl.textContent = agg.dayCount
-    ? agg.dayCount + ' day' + (agg.dayCount === 1 ? '' : 's') + ' averaged · ' + tzDisplayName(hourlyTZ)
-    : 'No data · ' + tzDisplayName(hourlyTZ);
+  if (!agg.dayCount) {
+    dayCountEl.textContent = tr('chart.day_count_empty', { tz: tzDisplayName(hourlyTZ) });
+  } else {
+    const key = agg.dayCount === 1 ? 'chart.day_count_singular' : 'chart.day_count_plural';
+    dayCountEl.textContent = tr(key, { n: agg.dayCount, tz: tzDisplayName(hourlyTZ) });
+  }
 
   const ctx = document.getElementById('chart-hourly').getContext('2d');
   if (charts.hourly) charts.hourly.destroy();
@@ -1043,13 +1056,16 @@ function renderHourlyChart(agg) {
   const output = agg.hours.map(h => h.avgOutput);
   const barColors = agg.hours.map(h => h.peak ? 'rgba(248,113,113,0.8)' : TOKEN_COLORS.input);
 
+  const turnsLabel  = tr('chart.avg_turns_label');
+  const outputLabel = tr('chart.avg_output_label');
+
   charts.hourly = new Chart(ctx, {
     data: {
       labels: labels,
       datasets: [
         {
           type: 'bar',
-          label: 'Avg turns / hour',
+          label: turnsLabel,
           data: turns,
           backgroundColor: barColors,
           yAxisID: 'y',
@@ -1057,7 +1073,7 @@ function renderHourlyChart(agg) {
         },
         {
           type: 'line',
-          label: 'Avg output tokens / hour',
+          label: outputLabel,
           data: output,
           borderColor: TOKEN_COLORS.output,
           backgroundColor: 'rgba(167,139,250,0.15)',
@@ -1081,21 +1097,23 @@ function renderHourlyChart(agg) {
               const idx = items[0].dataIndex;
               const h = agg.hours[idx];
               const base = formatHourLabel(h.hour) + ' ' + tzDisplayName(hourlyTZ);
-              return h.peak ? base + ' · Peak — Anthropic US hours' : base;
+              return h.peak ? base + tr('chart.peak_tooltip_suffix') : base;
             },
+            // Dataset 0 is the turns bar, dataset 1 is the output line.
+            // Index-based dispatch keeps tooltip output stable across locales.
             label: (item) => {
-              if (item.dataset.label && item.dataset.label.indexOf('turns') !== -1) {
-                return ' Avg turns: ' + item.parsed.y.toFixed(2);
+              if (item.datasetIndex === 0) {
+                return tr('chart.avg_turns_tooltip', { n: item.parsed.y.toFixed(2) });
               }
-              return ' Avg output: ' + fmt(item.parsed.y);
+              return tr('chart.avg_output_tooltip', { n: fmt(item.parsed.y) });
             },
           }
         },
       },
       scales: {
         x: { ticks: { color: '#8892a4', maxRotation: 0, autoSkip: false, font: { size: 10 } }, grid: { color: '#2a2d3a' } },
-        y:  { position: 'left',  beginAtZero: true, ticks: { color: '#8892a4', callback: v => v.toFixed(1) },     grid: { color: '#2a2d3a' }, title: { display: true, text: 'Avg turns / hour',         color: '#8892a4', font: { size: 11 } } },
-        y1: { position: 'right', beginAtZero: true, ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { drawOnChartArea: false },   title: { display: true, text: 'Avg output tokens / hour', color: '#8892a4', font: { size: 11 } } },
+        y:  { position: 'left',  beginAtZero: true, ticks: { color: '#8892a4', callback: v => v.toFixed(1) },     grid: { color: '#2a2d3a' }, title: { display: true, text: turnsLabel,  color: '#8892a4', font: { size: 11 } } },
+        y1: { position: 'right', beginAtZero: true, ticks: { color: '#8892a4', callback: v => fmt(v) }, grid: { drawOnChartArea: false },   title: { display: true, text: outputLabel, color: '#8892a4', font: { size: 11 } } },
       }
     }
   });
@@ -1109,10 +1127,10 @@ function renderDailyChart(daily) {
     data: {
       labels: daily.map(d => d.day),
       datasets: [
-        { label: 'Input',          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'io',    yAxisID: 'y1' },
-        { label: 'Output',         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'io',    yAxisID: 'y1' },
-        { label: 'Cache Read',     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'cache', yAxisID: 'y' },
-        { label: 'Cache Creation', data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'cache', yAxisID: 'y' },
+        { label: tr('chart.daily.input'),          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          stack: 'io',    yAxisID: 'y1' },
+        { label: tr('chart.daily.output'),         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         stack: 'io',    yAxisID: 'y1' },
+        { label: tr('chart.daily.cache_read'),     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     stack: 'cache', yAxisID: 'y' },
+        { label: tr('chart.daily.cache_creation'), data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, stack: 'cache', yAxisID: 'y' },
       ]
     },
     options: {
@@ -1120,8 +1138,8 @@ function renderDailyChart(daily) {
       plugins: { legend: { labels: { color: '#8892a4', boxWidth: 12 } } },
       scales: {
         x: { ticks: { color: '#8892a4', maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: '#2a2d3a' } },
-        y:  { position: 'left',  ticks: { color: '#74de80', callback: v => fmt(v) }, grid: { color: '#2a2d3a' }, title: { display: true, text: 'Cache', color: '#74de80' } },
-        y1: { position: 'right', ticks: { color: '#4f8ef7', callback: v => fmt(v) }, grid: { drawOnChartArea: false },    title: { display: true, text: 'Input / Output', color: '#4f8ef7' } },
+        y:  { position: 'left',  ticks: { color: '#74de80', callback: v => fmt(v) }, grid: { color: '#2a2d3a' }, title: { display: true, text: tr('chart.daily.y_left'),  color: '#74de80' } },
+        y1: { position: 'right', ticks: { color: '#4f8ef7', callback: v => fmt(v) }, grid: { drawOnChartArea: false },    title: { display: true, text: tr('chart.daily.y_right'), color: '#4f8ef7' } },
       }
     }
   });
@@ -1141,7 +1159,7 @@ function renderModelChart(byModel) {
       responsive: true, maintainAspectRatio: false,
       plugins: {
         legend: { position: 'bottom', labels: { color: '#8892a4', boxWidth: 12, font: { size: 11 } } },
-        tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${fmt(ctx.raw)} tokens` } }
+        tooltip: { callbacks: { label: ctx => tr('chart.model_tooltip_label', { model: ctx.label, tokens: fmt(ctx.raw) }) } }
       }
     }
   });
@@ -1157,8 +1175,8 @@ function renderProjectChart(byProject) {
     data: {
       labels: top.map(p => p.project.length > 22 ? '\u2026' + p.project.slice(-20) : p.project),
       datasets: [
-        { label: 'Input',  data: top.map(p => p.input),  backgroundColor: TOKEN_COLORS.input },
-        { label: 'Output', data: top.map(p => p.output), backgroundColor: TOKEN_COLORS.output },
+        { label: tr('chart.daily.input'),  data: top.map(p => p.input),  backgroundColor: TOKEN_COLORS.input },
+        { label: tr('chart.daily.output'), data: top.map(p => p.output), backgroundColor: TOKEN_COLORS.output },
       ]
     },
     options: {
@@ -1173,16 +1191,18 @@ function renderProjectChart(byProject) {
 }
 
 function renderSessionsTable(sessions) {
+  const naLabel = tr('th.cost_na');
+  const minSuffix = tr('th.duration_min_suffix');
   document.getElementById('sessions-body').innerHTML = sessions.map(s => {
     const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
     const costCell = isBillable(s.model)
       ? `<td class="cost">${fmtCost(cost)}</td>`
-      : `<td class="cost-na">n/a</td>`;
+      : `<td class="cost-na">${esc(naLabel)}</td>`;
     return `<tr>
       <td class="muted" style="font-family:monospace">${esc(s.session_id)}&hellip;</td>
       <td>${esc(s.project)}</td>
       <td class="muted">${esc(s.last)}</td>
-      <td class="muted">${esc(s.duration_min)}m</td>
+      <td class="muted">${esc(s.duration_min)}${esc(minSuffix)}</td>
       <td><span class="model-tag">${esc(s.model)}</span></td>
       <td class="num">${s.turns}</td>
       <td class="num">${fmt(s.input)}</td>
@@ -1387,17 +1407,17 @@ function exportProjectBranchCSV() {
 async function triggerRescan() {
   const btn = document.getElementById('rescan-btn');
   btn.disabled = true;
-  btn.textContent = '\u21bb Scanning...';
+  btn.textContent = tr('header.rescan_scanning');
   try {
     const resp = await fetch('/api/rescan', { method: 'POST' });
     const d = await resp.json();
-    btn.textContent = '\u21bb Rescan (' + d.new + ' new, ' + d.updated + ' updated)';
+    btn.textContent = tr('header.rescan_done', { new: d.new, updated: d.updated });
     await loadData();
   } catch(e) {
-    btn.textContent = '\u21bb Rescan (error)';
+    btn.textContent = tr('header.rescan_error');
     console.error(e);
   }
-  setTimeout(() => { btn.textContent = '\u21bb Rescan'; btn.disabled = false; }, 3000);
+  setTimeout(() => { btn.textContent = tr('header.rescan'); btn.disabled = false; }, 3000);
 }
 
 // ── Data loading ───────────────────────────────────────────────────────────
@@ -1409,8 +1429,8 @@ async function loadData() {
       document.body.innerHTML = '<div style="padding:40px;color:#f87171">' + esc(d.error) + '</div>';
       return;
     }
-    const refreshNote = rangeIncludesToday(selectedRange) ? ' \u00b7 Auto-refresh in 30s' : '';
-    document.getElementById('meta').textContent = 'Updated: ' + d.generated_at + refreshNote;
+    const refreshNote = rangeIncludesToday(selectedRange) ? tr('header.meta_refresh_note') : '';
+    document.getElementById('meta').textContent = tr('header.meta_updated', { date: d.generated_at }) + refreshNote;
 
     const isFirstLoad = rawData === null;
     rawData = d;
