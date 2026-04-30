@@ -102,6 +102,29 @@ Claude Code writes one JSONL file per session to `~/.claude/projects/`. Each lin
 
 ---
 
+## Internationalization
+
+The dashboard ships English by default and can be switched to other languages from the 🌐 picker in the header. The chosen language is remembered in `localStorage` and reflected in the URL (`?lang=ko`); on first visit the app reads `navigator.languages` and uses the first match.
+
+Currently bundled locales:
+
+- `en` — English
+- `ko` — 한국어 (Korean)
+
+Hover any metric, chart title, or column header to see an in-context explanation of what it represents (e.g. *Cache Read* explains the 90% discount over fresh input tokens).
+
+### Adding a new language
+
+All translations live in a single `MESSAGES` object inside `dashboard.py`. To add a locale:
+
+1. Copy the `en: { ... }` block, rename the key (e.g. `de: { ... }`), and translate each value. Keep the keys identical to English.
+2. Add a display name to the `LOCALES` registry: `de: 'Deutsch',`.
+3. Run `python -m unittest tests.test_dashboard.TestI18n` — it verifies key parity, registry/catalog consistency, and that no value is empty.
+
+CSV exports stay in English on purpose so spreadsheets and downstream pipelines see stable column names.
+
+---
+
 ## Cost estimates
 
 Costs are calculated using **Anthropic API pricing as of April 2026** ([claude.com/pricing#api](https://claude.com/pricing#api)).

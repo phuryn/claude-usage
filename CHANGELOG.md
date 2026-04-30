@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-04-30
+
+- Add internationalization (i18n) infrastructure with English (default) and Korean (한국어) bundled
+- Add language picker (🌐) in the header — choice persists via URL `?lang=` and `localStorage`; first-visit auto-detection from `navigator.languages`
+- Add hover tooltips with plain-language explanations for every stat card, chart title, and column header (what each metric means, including the cache-read discount and cache-creation premium)
+- Add tests that fail the build if any locale drifts from the English key set or the LOCALES picker registry
+
 ## 2026-04-09
 
 - Fix token counts inflated ~2x by deduplicating streaming events that share the same message ID
