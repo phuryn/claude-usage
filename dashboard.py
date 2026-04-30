@@ -222,26 +222,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>Claude Code Usage Dashboard</h1>
-  <div class="meta" id="meta">Loading...</div>
-  <button id="rescan-btn" onclick="triggerRescan()" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
+  <h1 data-i18n="header.title">Claude Code Usage Dashboard</h1>
+  <div class="meta" id="meta" data-i18n="header.meta_loading">Loading...</div>
+  <button id="rescan-btn" onclick="triggerRescan()" data-i18n="header.rescan" data-i18n-title="header.rescan_tooltip" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
 </header>
 
 <div id="filter-bar">
-  <div class="filter-label">Models</div>
+  <div class="filter-label" data-i18n="filter.models" data-i18n-title="filter.models_tooltip">Models</div>
   <div id="model-checkboxes"></div>
-  <button class="filter-btn" onclick="selectAllModels()">All</button>
-  <button class="filter-btn" onclick="clearAllModels()">None</button>
+  <button class="filter-btn" onclick="selectAllModels()" data-i18n="filter.all" data-i18n-title="filter.all_tooltip">All</button>
+  <button class="filter-btn" onclick="clearAllModels()" data-i18n="filter.none" data-i18n-title="filter.none_tooltip">None</button>
   <div class="filter-sep"></div>
-  <div class="filter-label">Range</div>
+  <div class="filter-label" data-i18n="filter.range" data-i18n-title="filter.range_tooltip">Range</div>
   <div class="range-group">
-    <button class="range-btn" data-range="week" onclick="setRange('week')">This Week</button>
-    <button class="range-btn" data-range="month" onclick="setRange('month')">This Month</button>
-    <button class="range-btn" data-range="prev-month" onclick="setRange('prev-month')">Prev Month</button>
-    <button class="range-btn" data-range="7d"  onclick="setRange('7d')">7d</button>
-    <button class="range-btn" data-range="30d" onclick="setRange('30d')">30d</button>
-    <button class="range-btn" data-range="90d" onclick="setRange('90d')">90d</button>
-    <button class="range-btn" data-range="all" onclick="setRange('all')">All</button>
+    <button class="range-btn" data-range="week" onclick="setRange('week')" data-i18n="range.week" data-i18n-title="range.week_tooltip">This Week</button>
+    <button class="range-btn" data-range="month" onclick="setRange('month')" data-i18n="range.month" data-i18n-title="range.month_tooltip">This Month</button>
+    <button class="range-btn" data-range="prev-month" onclick="setRange('prev-month')" data-i18n="range.prev_month" data-i18n-title="range.prev_month_tooltip">Prev Month</button>
+    <button class="range-btn" data-range="7d"  onclick="setRange('7d')" data-i18n="range.7d" data-i18n-title="range.7d_tooltip">7d</button>
+    <button class="range-btn" data-range="30d" onclick="setRange('30d')" data-i18n="range.30d" data-i18n-title="range.30d_tooltip">30d</button>
+    <button class="range-btn" data-range="90d" onclick="setRange('90d')" data-i18n="range.90d" data-i18n-title="range.90d_tooltip">90d</button>
+    <button class="range-btn" data-range="all" onclick="setRange('all')" data-i18n="range.all" data-i18n-title="range.all_tooltip">All</button>
   </div>
 </div>
 
@@ -249,89 +249,89 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="stats-row" id="stats-row"></div>
   <div class="charts-grid">
     <div class="chart-card wide">
-      <h2 id="daily-chart-title">Daily Token Usage</h2>
+      <h2 id="daily-chart-title" data-i18n="chart.daily_title" data-i18n-title="chart.daily_title_tooltip">Daily Token Usage</h2>
       <div class="chart-wrap tall"><canvas id="chart-daily"></canvas></div>
     </div>
     <div class="chart-card wide">
       <div class="chart-header">
-        <h2 id="hourly-chart-title">Average Hourly Distribution</h2>
+        <h2 id="hourly-chart-title" data-i18n="chart.hourly_title" data-i18n-title="chart.hourly_title_tooltip">Average Hourly Distribution</h2>
         <div class="chart-header-right">
-          <span class="peak-legend" title="Mon–Fri 05:00–11:00 PT — Anthropic peak-hour throttling window"><span class="peak-swatch"></span>Peak hours (PT)</span>
+          <span class="peak-legend" data-i18n-title="chart.peak_legend_tooltip" title="Mon–Fri 05:00–11:00 PT — Anthropic peak-hour throttling window"><span class="peak-swatch"></span><span data-i18n="chart.peak_legend">Peak hours (PT)</span></span>
           <span class="chart-day-count" id="hourly-day-count"></span>
           <div class="tz-group">
-            <button class="tz-btn" data-tz="local" onclick="setHourlyTZ('local')">Local</button>
-            <button class="tz-btn" data-tz="utc"   onclick="setHourlyTZ('utc')">UTC</button>
+            <button class="tz-btn" data-tz="local" onclick="setHourlyTZ('local')" data-i18n="chart.tz_local">Local</button>
+            <button class="tz-btn" data-tz="utc"   onclick="setHourlyTZ('utc')" data-i18n="chart.tz_utc">UTC</button>
           </div>
         </div>
       </div>
       <div class="chart-wrap"><canvas id="chart-hourly"></canvas></div>
     </div>
     <div class="chart-card">
-      <h2>By Model</h2>
+      <h2 data-i18n="chart.model_title" data-i18n-title="chart.model_title_tooltip">By Model</h2>
       <div class="chart-wrap"><canvas id="chart-model"></canvas></div>
     </div>
     <div class="chart-card">
-      <h2>Top Projects by Tokens</h2>
+      <h2 data-i18n="chart.project_title" data-i18n-title="chart.project_title_tooltip">Top Projects by Tokens</h2>
       <div class="chart-wrap"><canvas id="chart-project"></canvas></div>
     </div>
   </div>
   <div class="table-card">
-    <div class="section-title">Cost by Model</div>
+    <div class="section-title" data-i18n="table.cost_by_model">Cost by Model</div>
     <table>
       <thead><tr>
-        <th>Model</th>
-        <th class="sortable" onclick="setModelSort('turns')">Turns <span class="sort-icon" id="msort-turns"></span></th>
-        <th class="sortable" onclick="setModelSort('input')">Input <span class="sort-icon" id="msort-input"></span></th>
-        <th class="sortable" onclick="setModelSort('output')">Output <span class="sort-icon" id="msort-output"></span></th>
-        <th class="sortable" onclick="setModelSort('cache_read')">Cache Read <span class="sort-icon" id="msort-cache_read"></span></th>
-        <th class="sortable" onclick="setModelSort('cache_creation')">Cache Creation <span class="sort-icon" id="msort-cache_creation"></span></th>
-        <th class="sortable" onclick="setModelSort('cost')">Est. Cost <span class="sort-icon" id="msort-cost"></span></th>
+        <th><span data-i18n="th.model">Model</span></th>
+        <th class="sortable" onclick="setModelSort('turns')"><span data-i18n="th.turns">Turns</span> <span class="sort-icon" id="msort-turns"></span></th>
+        <th class="sortable" onclick="setModelSort('input')"><span data-i18n="th.input">Input</span> <span class="sort-icon" id="msort-input"></span></th>
+        <th class="sortable" onclick="setModelSort('output')"><span data-i18n="th.output">Output</span> <span class="sort-icon" id="msort-output"></span></th>
+        <th class="sortable" onclick="setModelSort('cache_read')"><span data-i18n="th.cache_read">Cache Read</span> <span class="sort-icon" id="msort-cache_read"></span></th>
+        <th class="sortable" onclick="setModelSort('cache_creation')"><span data-i18n="th.cache_creation">Cache Creation</span> <span class="sort-icon" id="msort-cache_creation"></span></th>
+        <th class="sortable" onclick="setModelSort('cost')"><span data-i18n="th.est_cost">Est. Cost</span> <span class="sort-icon" id="msort-cost"></span></th>
       </tr></thead>
       <tbody id="model-cost-body"></tbody>
     </table>
   </div>
   <div class="table-card">
-    <div class="section-header"><div class="section-title">Recent Sessions</div><button class="export-btn" onclick="exportSessionsCSV()" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
+    <div class="section-header"><div class="section-title" data-i18n="table.recent_sessions">Recent Sessions</div><button class="export-btn" onclick="exportSessionsCSV()" data-i18n="table.csv_export" data-i18n-title="table.csv_export_sessions_tooltip" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
-        <th>Session</th>
-        <th>Project</th>
-        <th class="sortable" onclick="setSessionSort('last')">Last Active <span class="sort-icon" id="sort-icon-last"></span></th>
-        <th class="sortable" onclick="setSessionSort('duration_min')">Duration <span class="sort-icon" id="sort-icon-duration_min"></span></th>
-        <th>Model</th>
-        <th class="sortable" onclick="setSessionSort('turns')">Turns <span class="sort-icon" id="sort-icon-turns"></span></th>
-        <th class="sortable" onclick="setSessionSort('input')">Input <span class="sort-icon" id="sort-icon-input"></span></th>
-        <th class="sortable" onclick="setSessionSort('output')">Output <span class="sort-icon" id="sort-icon-output"></span></th>
-        <th class="sortable" onclick="setSessionSort('cost')">Est. Cost <span class="sort-icon" id="sort-icon-cost"></span></th>
+        <th><span data-i18n="th.session">Session</span></th>
+        <th><span data-i18n="th.project">Project</span></th>
+        <th class="sortable" onclick="setSessionSort('last')"><span data-i18n="th.last_active">Last Active</span> <span class="sort-icon" id="sort-icon-last"></span></th>
+        <th class="sortable" onclick="setSessionSort('duration_min')"><span data-i18n="th.duration">Duration</span> <span class="sort-icon" id="sort-icon-duration_min"></span></th>
+        <th><span data-i18n="th.model">Model</span></th>
+        <th class="sortable" onclick="setSessionSort('turns')"><span data-i18n="th.turns">Turns</span> <span class="sort-icon" id="sort-icon-turns"></span></th>
+        <th class="sortable" onclick="setSessionSort('input')"><span data-i18n="th.input">Input</span> <span class="sort-icon" id="sort-icon-input"></span></th>
+        <th class="sortable" onclick="setSessionSort('output')"><span data-i18n="th.output">Output</span> <span class="sort-icon" id="sort-icon-output"></span></th>
+        <th class="sortable" onclick="setSessionSort('cost')"><span data-i18n="th.est_cost">Est. Cost</span> <span class="sort-icon" id="sort-icon-cost"></span></th>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
     </table>
   </div>
   <div class="table-card">
-    <div class="section-header"><div class="section-title">Cost by Project</div><button class="export-btn" onclick="exportProjectsCSV()" title="Export all projects to CSV">&#x2913; CSV</button></div>
+    <div class="section-header"><div class="section-title" data-i18n="table.cost_by_project">Cost by Project</div><button class="export-btn" onclick="exportProjectsCSV()" data-i18n="table.csv_export" data-i18n-title="table.csv_export_projects_tooltip" title="Export all projects to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
-        <th>Project</th>
-        <th class="sortable" onclick="setProjectSort('sessions')">Sessions <span class="sort-icon" id="psort-sessions"></span></th>
-        <th class="sortable" onclick="setProjectSort('turns')">Turns <span class="sort-icon" id="psort-turns"></span></th>
-        <th class="sortable" onclick="setProjectSort('input')">Input <span class="sort-icon" id="psort-input"></span></th>
-        <th class="sortable" onclick="setProjectSort('output')">Output <span class="sort-icon" id="psort-output"></span></th>
-        <th class="sortable" onclick="setProjectSort('cost')">Est. Cost <span class="sort-icon" id="psort-cost"></span></th>
+        <th><span data-i18n="th.project">Project</span></th>
+        <th class="sortable" onclick="setProjectSort('sessions')"><span data-i18n="th.sessions">Sessions</span> <span class="sort-icon" id="psort-sessions"></span></th>
+        <th class="sortable" onclick="setProjectSort('turns')"><span data-i18n="th.turns">Turns</span> <span class="sort-icon" id="psort-turns"></span></th>
+        <th class="sortable" onclick="setProjectSort('input')"><span data-i18n="th.input">Input</span> <span class="sort-icon" id="psort-input"></span></th>
+        <th class="sortable" onclick="setProjectSort('output')"><span data-i18n="th.output">Output</span> <span class="sort-icon" id="psort-output"></span></th>
+        <th class="sortable" onclick="setProjectSort('cost')"><span data-i18n="th.est_cost">Est. Cost</span> <span class="sort-icon" id="psort-cost"></span></th>
       </tr></thead>
       <tbody id="project-cost-body"></tbody>
     </table>
   </div>
   <div class="table-card">
-    <div class="section-header"><div class="section-title">Cost by Project &amp; Branch</div><button class="export-btn" onclick="exportProjectBranchCSV()" title="Export project+branch breakdown to CSV">&#x2913; CSV</button></div>
+    <div class="section-header"><div class="section-title" data-i18n="table.cost_by_project_branch">Cost by Project &amp; Branch</div><button class="export-btn" onclick="exportProjectBranchCSV()" data-i18n="table.csv_export" data-i18n-title="table.csv_export_project_branch_tooltip" title="Export project+branch breakdown to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
-        <th>Project</th>
-        <th>Branch</th>
-        <th class="sortable" onclick="setProjectBranchSort('sessions')">Sessions <span class="sort-icon" id="pbsort-sessions"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('turns')">Turns <span class="sort-icon" id="pbsort-turns"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('input')">Input <span class="sort-icon" id="pbsort-input"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('output')">Output <span class="sort-icon" id="pbsort-output"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('cost')">Est. Cost <span class="sort-icon" id="pbsort-cost"></span></th>
+        <th><span data-i18n="th.project">Project</span></th>
+        <th><span data-i18n="th.branch">Branch</span></th>
+        <th class="sortable" onclick="setProjectBranchSort('sessions')"><span data-i18n="th.sessions">Sessions</span> <span class="sort-icon" id="pbsort-sessions"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('turns')"><span data-i18n="th.turns">Turns</span> <span class="sort-icon" id="pbsort-turns"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('input')"><span data-i18n="th.input">Input</span> <span class="sort-icon" id="pbsort-input"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('output')"><span data-i18n="th.output">Output</span> <span class="sort-icon" id="pbsort-output"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('cost')"><span data-i18n="th.est_cost">Est. Cost</span> <span class="sort-icon" id="pbsort-cost"></span></th>
       </tr></thead>
       <tbody id="project-branch-cost-body"></tbody>
     </table>
@@ -340,13 +340,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <footer>
   <div class="footer-content">
-    <p>Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of April 2026. Only models containing <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
+    <p data-i18n-html="footer.cost_disclaimer_html">Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of April 2026. Only models containing <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
     <p>
-      GitHub: <a href="https://github.com/phuryn/claude-usage" target="_blank">https://github.com/phuryn/claude-usage</a>
+      <span data-i18n="footer.github_label">GitHub:</span> <a href="https://github.com/phuryn/claude-usage" target="_blank">https://github.com/phuryn/claude-usage</a>
       &nbsp;&middot;&nbsp;
-      Created by: <a href="https://www.productcompass.pm" target="_blank">The Product Compass Newsletter</a>
+      <span data-i18n="footer.created_by_label">Created by:</span> <a href="https://www.productcompass.pm" target="_blank" data-i18n="footer.created_by_name">The Product Compass Newsletter</a>
       &nbsp;&middot;&nbsp;
-      License: MIT
+      <span data-i18n="footer.license_label">License:</span> <span data-i18n="footer.license_value">MIT</span>
     </p>
   </div>
 </footer>
@@ -1447,6 +1447,7 @@ function scheduleAutoRefresh() {
   }
 }
 
+applyTranslations();
 loadData();
 scheduleAutoRefresh();
 </script>
