@@ -142,12 +142,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
 
-  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
   header .meta { color: var(--muted); font-size: 12px; }
+  .header-actions { display: flex; align-items: center; gap: 8px; }
   #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
   #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
   #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .lang-picker { position: relative; margin-top: 4px; }
+  #lang-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+  #lang-btn:hover { color: var(--text); border-color: var(--accent); }
+  #lang-btn .caret { font-size: 9px; opacity: 0.7; }
+  .lang-menu { position: absolute; top: calc(100% + 6px); right: 0; min-width: 160px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 50; display: none; }
+  .lang-menu.open { display: block; }
+  .lang-menu .lang-menu-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding: 4px 10px 6px; }
+  .lang-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; background: transparent; border: none; color: var(--text); padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; text-align: left; }
+  .lang-menu button:hover { background: rgba(255,255,255,0.04); }
+  .lang-menu button.active { color: var(--accent); }
+  .lang-menu button .check { color: var(--accent); opacity: 0; font-size: 12px; }
+  .lang-menu button.active .check { opacity: 1; }
 
   #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
@@ -224,7 +238,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <header>
   <h1 data-i18n="header.title">Claude Code Usage Dashboard</h1>
   <div class="meta" id="meta" data-i18n="header.meta_loading">Loading...</div>
-  <button id="rescan-btn" onclick="triggerRescan()" data-i18n="header.rescan" data-i18n-title="header.rescan_tooltip" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
+  <div class="header-actions">
+    <div class="lang-picker">
+      <button id="lang-btn" type="button" onclick="toggleLangMenu(event)" data-i18n-title="lang_picker.button_tooltip" aria-haspopup="true" aria-expanded="false">
+        <span aria-hidden="true">&#x1F310;</span>
+        <span id="lang-btn-label">English</span>
+        <span class="caret" aria-hidden="true">&#x25BE;</span>
+      </button>
+      <div class="lang-menu" id="lang-menu" role="menu" aria-labelledby="lang-btn">
+        <div class="lang-menu-title" data-i18n="lang_picker.title">Language</div>
+        <div id="lang-menu-items"></div>
+      </div>
+    </div>
+    <button id="rescan-btn" onclick="triggerRescan()" data-i18n="header.rescan" data-i18n-title="header.rescan_tooltip" title="Rebuild the database from scratch by re-scanning all JSONL files. Use if data looks stale or costs seem wrong.">&#x21bb; Rescan</button>
+  </div>
 </header>
 
 <div id="filter-bar">
@@ -579,8 +606,58 @@ function setLang(lang) {
 // Static markup is handled by applyTranslations(); this covers the chart
 // titles, stat cards, chart datasets, hourly day-count text, etc.
 function rerenderAfterLangChange() {
+  updateLangButton();
+  buildLangMenu();
   if (rawData) applyFilter();
 }
+
+// ── Language picker UI ────────────────────────────────────────────────────
+function updateLangButton() {
+  const labelEl = document.getElementById('lang-btn-label');
+  if (labelEl) labelEl.textContent = LOCALES[currentLang] || currentLang;
+}
+
+function buildLangMenu() {
+  const container = document.getElementById('lang-menu-items');
+  if (!container) return;
+  const codes = Object.keys(LOCALES);
+  container.innerHTML = codes.map(code => {
+    const active = code === currentLang ? ' active' : '';
+    const aria = code === currentLang ? ' aria-current="true"' : '';
+    return '<button type="button" class="lang-option' + active + '"' + aria +
+      ' data-lang="' + esc(code) + '" onclick="onLangSelect(\'' + esc(code) + '\')">' +
+      '<span>' + esc(LOCALES[code]) + '</span><span class="check" aria-hidden="true">✓</span>' +
+      '</button>';
+  }).join('');
+}
+
+function setLangMenuOpen(open) {
+  const menu = document.getElementById('lang-menu');
+  const btn = document.getElementById('lang-btn');
+  if (!menu || !btn) return;
+  menu.classList.toggle('open', open);
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function toggleLangMenu(e) {
+  if (e) { e.stopPropagation(); }
+  const menu = document.getElementById('lang-menu');
+  if (!menu) return;
+  setLangMenuOpen(!menu.classList.contains('open'));
+}
+
+function onLangSelect(code) {
+  setLangMenuOpen(false);
+  setLang(code);
+}
+
+document.addEventListener('click', (e) => {
+  const picker = e.target.closest('.lang-picker');
+  if (!picker) setLangMenuOpen(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') setLangMenuOpen(false);
+});
 
 currentLang = getInitialLang();
 
@@ -1468,6 +1545,8 @@ function scheduleAutoRefresh() {
 }
 
 applyTranslations();
+updateLangButton();
+buildLangMenu();
 loadData();
 scheduleAutoRefresh();
 </script>
