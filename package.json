@@ -1,0 +1,25 @@
+{
+  "name": "claude-usage-dashboard",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.9",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-chartjs-2": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.6",
+    "@types/react-dom": "^19.0.6",
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

@@ -9,7 +9,7 @@ Claude Code writes detailed usage logs locally — token counts, models, session
 
 ![Claude Usage Dashboard](docs/screenshot.png)
 
-**Created by:** [The Product Compass Newsletter](https://www.productcompass.pm)
+**Created by:** [Alexander-Nachtmann](https://github.com/Alexander-Nachtmann)
 
 ---
 
@@ -30,18 +30,19 @@ Captures usage from:
 ## Requirements
 
 - Python 3.8+
-- No third-party packages — uses only the standard library (`sqlite3`, `http.server`, `json`, `pathlib`)
+- Node.js 22+ for the TypeScript React dashboard build
+- No Python packages — the scanner and API server use only the standard library (`sqlite3`, `http.server`, `json`, `pathlib`)
 
-> Anyone running Claude Code already has Python installed.
+> The Python backend stays dependency-free; the browser UI is built with Vite + React.
 
 ## Quick Start
-
-No `pip install`, no virtual environment, no build step.
 
 ### Windows
 ```
 git clone https://github.com/phuryn/claude-usage
 cd claude-usage
+npm install
+npm run build
 python cli.py dashboard
 ```
 
@@ -49,6 +50,8 @@ python cli.py dashboard
 ```
 git clone https://github.com/phuryn/claude-usage
 cd claude-usage
+npm install
+npm run build
 python3 cli.py dashboard
 ```
 
@@ -98,13 +101,17 @@ Claude Code writes one JSONL file per session to `~/.claude/projects/`. Each lin
 
 `scanner.py` parses those files and stores the data in a SQLite database at `~/.claude/usage.db`.
 
-`dashboard.py` serves a single-page dashboard on `localhost:8080` with Chart.js charts (loaded from CDN). It auto-refreshes every 30 seconds and supports model filtering with bookmarkable URLs. The bind address and port can be overridden with `HOST` and `PORT` environment variables (defaults: `localhost`, `8080`).
+`dashboard.py` serves the JSON API and the built React dashboard from `dist/` on `localhost:8080`. The React app uses Chart.js through npm, auto-refreshes every 30 seconds for live ranges, and supports model filtering with bookmarkable URLs. The bind address and port can be overridden with `HOST` and `PORT` environment variables (defaults: `localhost`, `8080`).
+
+### Related qyl context
+
+This standalone JSONL dashboard is separate from qyl's OpenTelemetry observability work. qyl issue [#173](https://github.com/Alexander-Nachtmann/qyl/issues/173) tracks a different span-based roll-up for costs, conversations, and agent inventory; this project can inform local dashboard ergonomics, but it is not the qyl source of truth.
 
 ---
 
 ## Cost estimates
 
-Costs are calculated using **Anthropic API pricing as of April 2026** ([claude.com/pricing#api](https://claude.com/pricing#api)).
+Costs are estimated from the bundled Claude API pricing table in `cli.py` and `src/App.tsx`.
 
 **Only models whose name contains `opus`, `sonnet`, or `haiku` are included in cost calculations.** Local models, unknown models, and any other model names are excluded (shown as `n/a`).
 
@@ -115,7 +122,7 @@ Costs are calculated using **Anthropic API pricing as of April 2026** ([claude.c
 | claude-sonnet-4-6 | $3.00/MTok | $15.00/MTok | $3.75/MTok | $0.30/MTok |
 | claude-haiku-4-5 | $1.00/MTok | $5.00/MTok | $1.25/MTok | $0.10/MTok |
 
-> **Note:** These are API prices. If you use Claude Code via a Max or Pro subscription, your actual cost structure is different (subscription-based, not per-token).
+> **Note:** These are estimated API prices. If you use Claude Code via a Max or Pro subscription, your billing is subscription-based, not per-token.
 
 ---
 
@@ -124,5 +131,7 @@ Costs are calculated using **Anthropic API pricing as of April 2026** ([claude.c
 | File | Purpose |
 |------|---------|
 | `scanner.py` | Parses JSONL transcripts, writes to `~/.claude/usage.db` |
-| `dashboard.py` | HTTP server + single-page HTML/JS dashboard |
+| `dashboard.py` | HTTP API + static server for the built React dashboard |
 | `cli.py` | `scan`, `today`, `stats`, `dashboard` commands |
+| `src/` | TypeScript React dashboard source |
+| `dist/` | Generated dashboard build output (`npm run build`, ignored by git) |
