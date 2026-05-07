@@ -419,6 +419,8 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                             meta = new_session_metas[session_id]
                             if timestamp and (not meta["last_timestamp"] or timestamp > meta["last_timestamp"]):
                                 meta["last_timestamp"] = timestamp
+                            if timestamp and (not meta["first_timestamp"] or timestamp < meta["first_timestamp"]):
+                                meta["first_timestamp"] = timestamp
 
                         if rtype == "assistant":
                             msg = record.get("message", {})
