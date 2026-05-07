@@ -742,7 +742,7 @@ function applyFilter() {
 
   // Hourly aggregation (filtered by model + range, then bucketed by UTC hour)
   const hourlySrc = (rawData.hourly_by_model || []).filter(r =>
-    selectedModels.has(r.model) && (!cutoff || r.day >= cutoff)
+    selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end)
   );
   const hourlyAgg = aggregateHourly(hourlySrc, hourlyTZ);
 
@@ -1242,13 +1242,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        from urllib.parse import urlparse
+        parsed_path = urlparse(self.path).path
+        if parsed_path in ("/", "/index.html"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
 
-        elif self.path == "/api/data":
+        elif parsed_path == "/api/data":
             data = get_dashboard_data()
             body = json.dumps(data).encode("utf-8")
             self.send_response(200)
