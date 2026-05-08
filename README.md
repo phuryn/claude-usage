@@ -52,6 +52,24 @@ cd claude-usage
 python3 cli.py dashboard
 ```
 
+### Docker
+
+```bash
+docker compose up -d
+# Open http://localhost:8080
+```
+
+Mounts `~/.claude` into the container, so the SQLite DB at `~/.claude/usage.db`
+persists on the host and CLI commands (`python3 cli.py today`) keep working
+alongside the container.
+
+To run single-shot CLI commands without starting the server:
+
+```bash
+docker compose run --rm claude-usage python3 cli.py today
+docker compose run --rm claude-usage python3 cli.py stats
+```
+
 ---
 
 ## Usage

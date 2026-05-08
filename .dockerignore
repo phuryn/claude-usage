@@ -1,0 +1,11 @@
+.git/
+.github/
+.claude/
+tests/
+docs/
+*.md
+LICENSE
+__pycache__/
+*.pyc
+.DS_Store
+server.log

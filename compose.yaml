@@ -1,0 +1,12 @@
+services:
+  claude-usage:
+    build: .
+    container_name: claude-usage
+    ports:
+      - "8080:8080"
+    volumes:
+      # JSONL logs (read) + usage.db (read/write)
+      - ${HOME}/.claude:/root/.claude
+      # Optional: Xcode Claude integration logs (macOS only)
+      # - ${HOME}/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/projects:/root/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/projects:ro
+    restart: unless-stopped
