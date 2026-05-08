@@ -264,5 +264,19 @@ class TestPricingParity(unittest.TestCase):
             )
 
 
+class TestApplyFilterHourlyRegression(unittest.TestCase):
+    """Regression: applyFilter() referenced `cutoff` (undefined) for the hourly
+    chart filter instead of the `start` bound from getRangeBounds().  Any active
+    date range caused a ReferenceError, silently emptying the hourly chart."""
+
+    def test_no_undefined_cutoff_in_template(self):
+        self.assertNotIn("cutoff", HTML_TEMPLATE)
+
+    def test_hourly_filter_uses_start_bound(self):
+        idx = HTML_TEMPLATE.index("hourlySrc")
+        snippet = HTML_TEMPLATE[idx:idx + 300]
+        self.assertIn("!start || r.day >= start", snippet)
+
+
 if __name__ == "__main__":
     unittest.main()
