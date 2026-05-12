@@ -228,6 +228,14 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertIn('PEAK_HOURS_UTC', HTML_TEMPLATE)
         self.assertIn('[12, 13, 14, 15, 16, 17]', HTML_TEMPLATE)
 
+    def test_hourly_filter_uses_selected_range_bounds(self):
+        """Hourly dashboard rows use the same selected date bounds as daily rows."""
+        self.assertNotIn("cutoff", HTML_TEMPLATE)
+        self.assertGreaterEqual(
+            HTML_TEMPLATE.count("(!start || r.day >= start) && (!end || r.day <= end)"),
+            2,
+        )
+
 
 class TestPricingParity(unittest.TestCase):
     """Verify CLI and dashboard pricing tables stay in sync."""
