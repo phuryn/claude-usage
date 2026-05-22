@@ -228,6 +228,16 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertIn('PEAK_HOURS_UTC', HTML_TEMPLATE)
         self.assertIn('[12, 13, 14, 15, 16, 17]', HTML_TEMPLATE)
 
+    def test_hourly_filter_uses_start_end_not_cutoff(self):
+        """Hourly filter must use start/end like the daily filter.
+
+        Regression guard: the date-range refactor renamed `cutoff` to
+        start/end; a stray `cutoff` reference in the hourly filter would
+        throw ReferenceError inside applyFilter() and break every chart.
+        """
+        self.assertNotIn("r.day >= cutoff", HTML_TEMPLATE)
+        self.assertNotIn("r.day <= cutoff", HTML_TEMPLATE)
+
 
 class TestPricingParity(unittest.TestCase):
     """Verify CLI and dashboard pricing tables stay in sync."""
