@@ -15,12 +15,26 @@ class TestGetPricing(unittest.TestCase):
         self.assertEqual(p["output"], 25.00)
 
     def test_all_known_models_have_pricing(self):
-        for model in ("claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
+        for model in ("claude-fable-5",
+                       "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
                        "claude-sonnet-4-7", "claude-sonnet-4-6", "claude-sonnet-4-5",
                        "claude-haiku-4-7", "claude-haiku-4-6", "claude-haiku-4-5"):
             p = get_pricing(model)
             self.assertGreater(p["input"], 0, f"Missing input price for {model}")
             self.assertGreater(p["output"], 0, f"Missing output price for {model}")
+
+    def test_fable_5_has_explicit_entry(self):
+        """Fable 5 must be present as an explicit entry, not resolved via a
+        generic substring fallback."""
+        self.assertIn("claude-fable-5", PRICING)
+        p = get_pricing("claude-fable-5")
+        self.assertEqual(p["input"], 10.00)
+        self.assertEqual(p["output"], 50.00)
+
+    def test_fable_substring_fallback(self):
+        """An unrecognized fable-family id resolves to Fable 5 pricing."""
+        p = get_pricing("claude-fable-5-20260601")
+        self.assertEqual(p["input"], 10.00)
 
     def test_opus_4_7_has_explicit_entry(self):
         """Regression guard for issue #61 — Opus 4.7 must be present."""

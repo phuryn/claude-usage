@@ -10,7 +10,22 @@ from pathlib import Path
 from scanner import (
     get_db, init_db, project_name_from_cwd, parse_jsonl_file,
     aggregate_sessions, upsert_sessions, insert_turns, scan,
+    _model_priority,
 )
+
+
+class TestModelPriority(unittest.TestCase):
+    def test_fable_outranks_opus(self):
+        self.assertGreater(
+            _model_priority("claude-fable-5"),
+            _model_priority("claude-opus-4-7"),
+        )
+
+    def test_descending_order(self):
+        order = ["claude-fable-5", "claude-opus-4-7",
+                 "claude-sonnet-4-6", "claude-haiku-4-5", "gpt-4o"]
+        scores = [_model_priority(m) for m in order]
+        self.assertEqual(scores, sorted(scores, reverse=True))
 
 
 class TestProjectNameFromCwd(unittest.TestCase):
