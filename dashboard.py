@@ -386,7 +386,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <footer>
   <div class="footer-content">
-    <p>Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of May 2026. Only models containing <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
+    <p>Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of June 2026. Only models containing <em>fable</em>, <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
     <p>
       GitHub: <a href="https://github.com/phuryn/claude-usage" target="_blank">https://github.com/phuryn/claude-usage</a>
       &nbsp;&middot;&nbsp;
@@ -485,6 +485,7 @@ function tzDisplayName(tzMode) {
 
 // ── Pricing (Anthropic API, April 2026) ────────────────────────────────────
 const PRICING = {
+  'claude-fable-5':    { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
   'claude-opus-4-7':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-5':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
@@ -499,7 +500,7 @@ const PRICING = {
 function isBillable(model) {
   if (!model) return false;
   const m = model.toLowerCase();
-  return m.includes('opus') || m.includes('sonnet') || m.includes('haiku');
+  return m.includes('fable') || m.includes('opus') || m.includes('sonnet') || m.includes('haiku');
 }
 
 function getPricing(model) {
@@ -509,6 +510,7 @@ function getPricing(model) {
     if (model.startsWith(key)) return PRICING[key];
   }
   const m = model.toLowerCase();
+  if (m.includes('fable'))  return PRICING['claude-fable-5'];
   if (m.includes('opus'))   return PRICING['claude-opus-4-7'];
   if (m.includes('sonnet')) return PRICING['claude-sonnet-4-6'];
   if (m.includes('haiku'))  return PRICING['claude-haiku-4-5'];
@@ -675,10 +677,11 @@ function setHourlyTZ(mode) {
 // ── Model filter ───────────────────────────────────────────────────────────
 function modelPriority(m) {
   const ml = m.toLowerCase();
-  if (ml.includes('opus'))   return 0;
-  if (ml.includes('sonnet')) return 1;
-  if (ml.includes('haiku'))  return 2;
-  return 3;
+  if (ml.includes('fable'))  return 0;
+  if (ml.includes('opus'))   return 1;
+  if (ml.includes('sonnet')) return 2;
+  if (ml.includes('haiku'))  return 3;
+  return 4;
 }
 
 function readURLModels(allModels) {

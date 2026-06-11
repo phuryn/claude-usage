@@ -17,6 +17,7 @@ from datetime import datetime, date, timedelta
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
 PRICING = {
+    "claude-fable-5":    {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50},
     "claude-opus-4-7":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-6":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-5":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
@@ -38,6 +39,8 @@ def get_pricing(model):
             return PRICING[key]
     # Substring fallback: match model family by keyword
     m = model.lower()
+    if "fable" in m:
+        return PRICING["claude-fable-5"]
     if "opus" in m:
         return PRICING["claude-opus-4-7"]
     if "sonnet" in m:
