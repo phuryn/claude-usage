@@ -362,6 +362,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .export-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 3px 10px; border-radius: 5px; cursor: pointer; font-size: 11px; }
   .export-btn:hover { color: var(--text); border-color: var(--accent); }
   .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
+  .bw-track { height: 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; overflow: hidden; margin: 10px 0 16px; }
+  .bw-fill { height: 100%; border-radius: 7px; transition: width .3s ease; }
+  .bw-metrics { display: flex; flex-wrap: wrap; gap: 28px; }
+  .bw-metric { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .bw-metric strong { display: block; font-size: 18px; color: var(--text); font-weight: 700; margin-top: 4px; letter-spacing: 0; text-transform: none; }
+  .bw-prompt { color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .bw-prompt a { color: var(--blue); text-decoration: none; }
+  .bw-prompt a:hover { text-decoration: underline; }
   .table-foot { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 12px; }
   .table-foot:empty { margin-top: 0; }
   .show-more-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
@@ -421,6 +429,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="container">
   <div class="stats-row" id="stats-row"></div>
+  <div class="table-card" id="billing-card" style="display:none">
+    <div class="section-title">Current 5h Billing Window <span class="muted" id="billing-sub" style="font-weight:400;text-transform:none;letter-spacing:0;font-size:11px"></span></div>
+    <div id="billing-body"></div>
+  </div>
   <div class="charts-grid">
     <div class="chart-card wide">
       <h2 id="daily-chart-title">Daily Token Usage</h2>
@@ -1191,6 +1203,7 @@ function applyFilter() {
   renderProjectChart(byProject);
   renderSubagentChart(byAgentType);
   renderTopDispatches(filteredDispatches);
+  renderBilling(rawData.billing);
   lastFilteredSessions = sortSessions(filteredSessions);
   lastByModel = byModel;
   lastByProject = sortProjects(byProject);
@@ -1482,6 +1495,49 @@ function renderTopDispatches(rows) {
       ${costCell}
     </tr>`;
   }).join('');
+}
+
+function renderBilling(b) {
+  const card = document.getElementById('billing-card');
+  const body = document.getElementById('billing-body');
+  const sub  = document.getElementById('billing-sub');
+  if (!b) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  if (!b.available) {
+    sub.textContent = '';
+    body.innerHTML = '<div class="bw-prompt">Install <a href="https://github.com/ryoppippi/ccusage" target="_blank" rel="noopener">ccusage</a> (needs <a href="https://nodejs.org" target="_blank" rel="noopener">Node.js</a>), then re-run <code>scan</code> to see live 5-hour billing windows, burn rate and projections. The rest of the dashboard works without it.</div>';
+    return;
+  }
+
+  const a = b.active;
+  const limit = b.plan_limit_estimate || 0;
+  if (!a) {
+    sub.textContent = `· ${b.window_count} windows tracked · none active right now`;
+    body.innerHTML = '<div class="bw-prompt">No active 5-hour window. Start a Claude Code session and re-scan to see live burn rate.</div>';
+    return;
+  }
+
+  const used = a.total_tokens || 0;
+  const pctRaw = limit ? Math.round(used / limit * 100) : 0;
+  const pct = Math.min(100, pctRaw);
+  const color = pctRaw >= 100 ? C.red : pctRaw >= 80 ? C.amber : C.green;
+  sub.textContent = `· baseline = P90 of your windows (${fmt(limit)} tok) · ${b.window_count} windows tracked`;
+  const burn   = a.burn_rate_tpm ? `${fmt(Math.round(a.burn_rate_tpm))} tok/min` : '—';
+  const remain = a.remaining_minutes != null ? `${a.remaining_minutes} min` : '—';
+  const proj   = a.projected_total_tokens
+    ? `${fmt(a.projected_total_tokens)} · ${a.projected_cost_usd != null ? fmtCostBig(a.projected_cost_usd) : '—'}`
+    : '—';
+  body.innerHTML =
+    `<div class="bw-track"><div class="bw-fill" style="width:${pct}%;background:${color}"></div></div>` +
+    `<div class="bw-metrics">` +
+      `<div class="bw-metric">Used this window<strong>${fmt(used)} tok</strong></div>` +
+      `<div class="bw-metric">% of P90 baseline<strong style="color:${color}">${pctRaw}%</strong></div>` +
+      `<div class="bw-metric">Burn rate<strong>${burn}</strong></div>` +
+      `<div class="bw-metric">Time remaining<strong>${remain}</strong></div>` +
+      `<div class="bw-metric">Projected end-of-window<strong>${proj}</strong></div>` +
+      `<div class="bw-metric">Window cost so far<strong>${fmtCostBig(a.cost_usd || 0)}</strong></div>` +
+    `</div>`;
 }
 
 // Fills a table card's footer with the row-reveal control. Three states:
