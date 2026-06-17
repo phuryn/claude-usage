@@ -96,6 +96,46 @@ def init_db(conn):
             tool_use_count        INTEGER
         );
 
+        -- 5-hour billing windows ingested from ccusage `blocks --json` (optional,
+        -- only populated when Node/npx + ccusage are available). Kept separate
+        -- from the native turns/sessions tables so the two sources never conflict.
+        CREATE TABLE IF NOT EXISTS billing_windows (
+            block_id                TEXT PRIMARY KEY,
+            start_time              TEXT,
+            end_time                TEXT,
+            actual_end_time         TEXT,
+            is_active               INTEGER DEFAULT 0,
+            input_tokens            INTEGER DEFAULT 0,
+            output_tokens           INTEGER DEFAULT 0,
+            cache_read_tokens       INTEGER DEFAULT 0,
+            cache_creation_tokens   INTEGER DEFAULT 0,
+            total_tokens            INTEGER DEFAULT 0,
+            cost_usd                REAL DEFAULT 0,
+            models                  TEXT,
+            burn_rate_tpm           REAL,
+            burn_rate_cost_per_hour REAL,
+            projected_total_tokens  INTEGER,
+            projected_cost_usd      REAL,
+            remaining_minutes       INTEGER,
+            ingested_at             TEXT
+        );
+
+        -- Per-day usage from ccusage `daily --json`, keyed by (day, source) so
+        -- multiple agent CLIs (claude/codex/gemini/...) can coexist.
+        CREATE TABLE IF NOT EXISTS ccusage_daily_cache (
+            day                     TEXT,
+            source                  TEXT,
+            input_tokens            INTEGER DEFAULT 0,
+            output_tokens           INTEGER DEFAULT 0,
+            cache_read_tokens       INTEGER DEFAULT 0,
+            cache_creation_tokens   INTEGER DEFAULT 0,
+            total_tokens            INTEGER DEFAULT 0,
+            cost_usd                REAL DEFAULT 0,
+            models                  TEXT,
+            ingested_at             TEXT,
+            PRIMARY KEY (day, source)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
         CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
         CREATE INDEX IF NOT EXISTS idx_sessions_first ON sessions(first_timestamp);

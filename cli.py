@@ -91,6 +91,13 @@ def require_db():
 def cmd_scan(projects_dir=None):
     from scanner import scan
     scan(projects_dir=Path(projects_dir) if projects_dir else None)
+    # Optional: enrich with ccusage billing-window data if Node/npx is present.
+    # Never let this block or fail a successful native scan.
+    try:
+        from ccusage_bridge import ingest
+        ingest()
+    except Exception as e:
+        print(f"[ccusage] skipped: {e}")
 
 
 def cmd_today():
