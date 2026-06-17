@@ -5,6 +5,7 @@ scanner.py - Scans Claude Code JSONL transcript files and stores data in SQLite.
 import json
 import os
 import glob
+import re
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from datetime import datetime, timezone
 # runtime version has to live here as a constant. Keep this in lockstep with the
 # top CHANGELOG heading and vscode-extension/package.json (a parity test guards
 # all three; see tests/test_version.py).
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
@@ -134,6 +135,16 @@ def init_db(conn):
             models                  TEXT,
             ingested_at             TEXT,
             PRIMARY KEY (day, source)
+        );
+
+        -- "Claude AI usage limit reached" events (rate/quota), detected from
+        -- API-error records. Deduped by the record uuid.
+        CREATE TABLE IF NOT EXISTS limit_events (
+            uuid         TEXT PRIMARY KEY,
+            session_id   TEXT,
+            timestamp    TEXT,
+            reset_at     INTEGER,
+            message      TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
@@ -259,6 +270,58 @@ def upsert_agents(conn, agents):
     ])
 
 
+_LIMIT_RE = re.compile(r"limit reached\|(\d+)")
+
+
+def extract_limit_event(record):
+    """Detect a genuine "Claude AI usage limit reached" event.
+
+    Gated on ``isApiErrorMessage`` so ordinary text that merely mentions a limit
+    (e.g. this very conversation) is not misdetected. The number after the pipe
+    in "...limit reached|<unix_ts>" is the reset time (0 = unknown)."""
+    if not record.get("isApiErrorMessage"):
+        return None
+    msg = record.get("message", {})
+    content = msg.get("content") if isinstance(msg, dict) else None
+    text = ""
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and "limit reached" in str(item.get("text", "")):
+                text = item.get("text", "")
+                break
+    elif isinstance(content, str):
+        text = content
+    if "limit reached" not in text.lower():
+        return None
+    m = _LIMIT_RE.search(text)
+    reset_at = int(m.group(1)) if m else None
+    return {
+        "uuid": record.get("uuid"),
+        "session_id": record.get("sessionId"),
+        "timestamp": record.get("timestamp", ""),
+        "reset_at": reset_at,
+        "message": text[:200],
+    }
+
+
+def upsert_limit_events(conn, events):
+    if not events:
+        return
+    conn.executemany("""
+        INSERT INTO limit_events (uuid, session_id, timestamp, reset_at, message)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(uuid) DO UPDATE SET
+            session_id = excluded.session_id,
+            timestamp  = excluded.timestamp,
+            reset_at   = excluded.reset_at,
+            message    = excluded.message
+    """, [
+        (e["uuid"], e.get("session_id"), e.get("timestamp"),
+         e.get("reset_at"), e.get("message"))
+        for e in events
+    ])
+
+
 def parse_jsonl_file(filepath):
     """Parse a JSONL file and return (session_metas, turns, agents, line_count).
 
@@ -270,6 +333,7 @@ def parse_jsonl_file(filepath):
     turns_no_id = []    # turns without a message_id (kept as-is)
     session_meta = {}   # session_id -> dict
     agents = {}         # agent_id -> dispatch dict
+    limit_events = {}   # uuid -> limit event
     line_count = 0
 
     try:
@@ -282,6 +346,11 @@ def parse_jsonl_file(filepath):
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+
+                # Limit events can be any record type — detect before the filter.
+                le = extract_limit_event(record)
+                if le is not None and le.get("uuid"):
+                    limit_events[le["uuid"]] = le
 
                 rtype = record.get("type")
                 if rtype not in ("assistant", "user"):
@@ -369,7 +438,8 @@ def parse_jsonl_file(filepath):
         print(f"  Warning: error reading {filepath}: {e}")
 
     turns = turns_no_id + list(seen_messages.values())
-    return list(session_meta.values()), turns, list(agents.values()), line_count
+    return (list(session_meta.values()), turns, list(agents.values()),
+            list(limit_events.values()), line_count)
 
 
 def aggregate_sessions(session_metas, turns):
@@ -529,8 +599,9 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
 
         if is_new:
             # New file: full parse (single read, returns line count)
-            session_metas, turns, agents, line_count = parse_jsonl_file(filepath)
+            session_metas, turns, agents, limit_events, line_count = parse_jsonl_file(filepath)
             upsert_agents(conn, agents)
+            upsert_limit_events(conn, limit_events)
 
             if turns or session_metas:
                 sessions = aggregate_sessions(session_metas, turns)
@@ -548,6 +619,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
             turns_no_id = []
             new_session_metas = {}
             agents = {}         # agent_id -> dispatch dict
+            limit_events = {}   # uuid -> limit event
             line_count = 0
 
             try:
@@ -562,6 +634,10 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                             record = json.loads(line)
                         except json.JSONDecodeError:
                             continue
+
+                        le = extract_limit_event(record)
+                        if le is not None and le.get("uuid"):
+                            limit_events[le["uuid"]] = le
 
                         rtype = record.get("type")
                         if rtype not in ("assistant", "user"):
@@ -651,6 +727,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
 
             new_turns = turns_no_id + list(seen_messages.values())
             upsert_agents(conn, list(agents.values()))
+            upsert_limit_events(conn, list(limit_events.values()))
 
             if new_turns or new_session_metas:
                 sessions = aggregate_sessions(list(new_session_metas.values()), new_turns)

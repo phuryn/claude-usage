@@ -2,7 +2,7 @@
   "name": "claude-usage-phuryn",
   "displayName": "Claude Code Usage by Paweł Huryn",
   "description": "Embed your Claude Code usage dashboard (token counts, costs, sessions, projects) directly inside VS Code. Reads local JSONL transcripts, no API calls.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",

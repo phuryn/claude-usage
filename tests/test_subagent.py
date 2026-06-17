@@ -69,31 +69,31 @@ class TestSubagentDetection(unittest.TestCase):
 
     def test_sidechain_flag_marks_subagent(self):
         path = self._write("a.jsonl", [_assistant(extra={"isSidechain": True})])
-        _, turns, _, _ = parse_jsonl_file(path)
+        _, turns, _, _, _ = parse_jsonl_file(path)
         self.assertEqual(turns[0]["is_subagent"], 1)
 
     def test_agent_id_marks_subagent_and_is_captured(self):
         path = self._write("a.jsonl", [_assistant(extra={"agentId": "agent-xyz"})])
-        _, turns, _, _ = parse_jsonl_file(path)
+        _, turns, _, _, _ = parse_jsonl_file(path)
         self.assertEqual(turns[0]["is_subagent"], 1)
         self.assertEqual(turns[0]["agent_id"], "agent-xyz")
 
     def test_path_under_subagents_marks_subagent(self):
         path = self._write(os.path.join("proj", "subagents", "x.jsonl"),
                            [_assistant()])
-        _, turns, _, _ = parse_jsonl_file(path)
+        _, turns, _, _, _ = parse_jsonl_file(path)
         self.assertEqual(turns[0]["is_subagent"], 1)
 
     def test_normal_record_not_subagent(self):
         path = self._write("a.jsonl", [_assistant()])
-        _, turns, _, _ = parse_jsonl_file(path)
+        _, turns, _, _, _ = parse_jsonl_file(path)
         self.assertEqual(turns[0]["is_subagent"], 0)
         self.assertIsNone(turns[0]["agent_id"])
 
     def test_agent_dispatch_extracted_from_tool_result(self):
         path = self._write("a.jsonl", [_dispatch(agent_id="agent-xyz", agent_type="Plan",
                                                   total_tokens=1234)])
-        _, _, agents, _ = parse_jsonl_file(path)
+        _, _, agents, _, _ = parse_jsonl_file(path)
         self.assertEqual(len(agents), 1)
         self.assertEqual(agents[0]["agent_id"], "agent-xyz")
         self.assertEqual(agents[0]["agent_type"], "Plan")
@@ -103,7 +103,7 @@ class TestSubagentDetection(unittest.TestCase):
         rec = json.dumps({"type": "user", "sessionId": "s1",
                           "toolUseResult": {"status": "ok"}})
         path = self._write("a.jsonl", [rec])
-        _, _, agents, _ = parse_jsonl_file(path)
+        _, _, agents, _, _ = parse_jsonl_file(path)
         self.assertEqual(agents, [])
 
 

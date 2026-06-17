@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.5.0 — 2026-06-17
+
+### Subagent attribution
+
+- The scanner now records which turns came from dispatched subagents (Task/Agent tool) via new `turns.is_subagent` / `turns.agent_id` columns and an `agents` dispatch table (agent type + aggregate stats captured from the parent `toolUseResult`). Subagents are detected by `isSidechain`, an `agentId`, or a `subagents/` transcript path. Schema changes are additive, so existing `usage.db` files migrate in place (no rebuild).
+- Dashboard: a **Subagent Tokens by Type** chart, a **Top Subagent Dispatches** table, and a Subagent Tokens stat card — all driven by the existing model + range filters. Dynamic values are HTML-escaped.
+- CLI: `today` and `stats` now print subagent token/turn summaries (included in totals).
+
+### ccusage integration (optional)
+
+- New optional bridge (`ccusage_bridge.py`): when Node/`npx` + [ccusage](https://github.com/ryoppippi/ccusage) are present, `scan` ingests ccusage's 5-hour billing **blocks** and per-source **daily** totals into new `billing_windows` / `ccusage_daily_cache` tables. It degrades gracefully when absent — the native, stdlib-only tool is unchanged and ccusage is never required. Windows `npx.cmd` invocation and UTF-8 output are handled; the subprocess never raises.
+- Dashboard: a **Current 5h Billing Window** card (progress bar vs your P90 window baseline, burn rate, time remaining, projected end-of-window tokens/cost, cost so far) with an install prompt when ccusage isn't present, and an **Other Agent CLIs (via ccusage)** chart for non-Claude usage (Codex/Gemini/Copilot/…). Claude Code is always counted natively and never double-counted against ccusage.
+
+### Scanner / CLI
+
+- Pricing now lives in a single `pricing.py` module shared by the CLI and (via `/api/data`) the dashboard, so the Python and JS pricing tables can no longer drift; the embedded JS table is now only a cold-start fallback.
+- Detect "Claude AI usage limit reached" events into a new `limit_events` table, gated on `isApiErrorMessage` so ordinary text mentioning a limit isn't misdetected.
+
+### Project / docs
+
+- Footer now notes that figures are transcript-derived estimates (Claude Code doesn't write every request to disk) and may not match Anthropic billing exactly, and that native vs ccusage numbers are shown separately, never summed.
+
 ## v1.4.0 — 2026-06-15
 
 ### Dashboard

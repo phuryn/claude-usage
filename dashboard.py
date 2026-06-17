@@ -11,6 +11,7 @@ from pathlib import Path
 from datetime import datetime
 
 from scanner import VERSION
+from pricing import PRICING  # single source of truth, also served via /api/data
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
 
@@ -251,6 +252,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "top_dispatches":  top_dispatches,
         "billing":         billing,
         "ccusage_daily":   ccusage_daily,
+        "pricing":         PRICING,
         "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -573,6 +575,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <footer>
   <div class="footer-content">
     <p>Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of June 2026. Only models containing <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
+    <p>Figures are derived from local Claude Code transcripts, which don't capture every request Claude Code makes (e.g. some internal/system calls), so totals are estimates and may not match Anthropic billing exactly. Billing-window figures come from <em>ccusage</em> (its own pricing snapshot) when installed; native and ccusage numbers are shown separately, never summed.</p>
     <p>
       GitHub: <a href="https://github.com/phuryn/claude-usage" target="_blank">https://github.com/phuryn/claude-usage</a>
       &nbsp;&middot;&nbsp;
@@ -672,7 +675,10 @@ function tzDisplayName(tzMode) {
 }
 
 // ── Pricing (Anthropic API, June 2026) ─────────────────────────────────────
-const PRICING = {
+// Canonical table lives in pricing.py and is served via /api/data; loadData()
+// overrides this object from rawData.pricing when present. This literal is only
+// a cold-start fallback so the two can't drift.
+let PRICING = {
   // Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
   // (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
   'claude-fable-5':    { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
@@ -1926,6 +1932,7 @@ async function loadData() {
 
     const isFirstLoad = rawData === null;
     rawData = d;
+    if (d.pricing && Object.keys(d.pricing).length) PRICING = d.pricing;  // server is canonical
 
     if (isFirstLoad) {
       // Restore range from URL, mark active button
