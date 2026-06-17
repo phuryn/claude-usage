@@ -118,6 +118,15 @@ def cmd_today():
         WHERE substr(timestamp, 1, 10) = ?
     """, (today,)).fetchone()
 
+    subagent = conn.execute("""
+        SELECT
+            COUNT(*) as turns,
+            SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) as tokens
+        FROM turns
+        WHERE substr(timestamp, 1, 10) = ?
+          AND COALESCE(is_subagent, 0) = 1
+    """, (today,)).fetchone()
+
     print()
     hr()
     print(f"  Today's Usage  ({today})")
@@ -145,6 +154,7 @@ def cmd_today():
     print(f"  {'TOTAL':<30}  turns={total_turns:<4}  in={fmt(total_inp):<8}  out={fmt(total_out):<8}  cost={fmt_cost(total_cost)}")
     print()
     print(f"  Sessions today:   {sessions['cnt']}")
+    print(f"  Subagent tokens:  {fmt(subagent['tokens'] or 0)}  ({fmt(subagent['turns'] or 0)} turns)")
     print(f"  Cache read:       {fmt(total_cr)}")
     print(f"  Cache creation:   {fmt(total_cc)}")
     hr()
@@ -302,6 +312,15 @@ def cmd_stats():
         LIMIT 5
     """).fetchall()
 
+    # Subagent totals (subagent tokens are included in the all-time totals above)
+    subagent = conn.execute("""
+        SELECT
+            COUNT(*) as turns,
+            SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) as tokens
+        FROM turns
+        WHERE COALESCE(is_subagent, 0) = 1
+    """).fetchone()
+
     # Daily average (last 30 days)
     daily_avg = conn.execute("""
         SELECT
@@ -334,11 +353,13 @@ def cmd_stats():
     print(f"  Period:           {first_date} to {last_date}")
     print(f"  Total sessions:   {session_info['sessions'] or 0:,}")
     print(f"  Total turns:      {fmt(totals['turns'] or 0)}")
+    print(f"  Subagent turns:   {fmt(subagent['turns'] or 0)}")
     print()
     print(f"  Input tokens:     {fmt(totals['inp'] or 0):<12}  (raw prompt tokens)")
     print(f"  Output tokens:    {fmt(totals['out'] or 0):<12}  (generated tokens)")
     print(f"  Cache read:       {fmt(totals['cr'] or 0):<12}  (90% cheaper than input)")
     print(f"  Cache creation:   {fmt(totals['cc'] or 0):<12}  (25% premium on input)")
+    print(f"  Subagent tokens:  {fmt(subagent['tokens'] or 0):<12}  (included in totals)")
     print()
     print(f"  Est. total cost:  ${total_cost:.4f}")
     hr()

@@ -128,6 +128,87 @@ def get_dashboard_data(db_path=DB_PATH):
             "cache_creation": r["total_cache_creation"] or 0,
         })
 
+    # ── Subagent breakdown by type, by day & model ────────────────────────────
+    # JOIN turns to agents (parent tool_result metadata captured by the scanner).
+    # acompact-* ids are Claude Code's auto-compaction subagent (no parent
+    # dispatch record); anything else without a match is shown as 'unknown'.
+    AGENT_TYPE_EXPR = (
+        "COALESCE(a.agent_type, "
+        "CASE WHEN t.agent_id LIKE 'acompact-%' THEN 'auto-compact' "
+        "ELSE 'unknown' END)"
+    )
+
+    subagent_daily_rows = conn.execute(f"""
+        SELECT
+            substr(t.timestamp, 1, 10)               as day,
+            {AGENT_TYPE_EXPR}                        as agent_type,
+            COALESCE(NULLIF(t.model, ''), 'unknown') as model,
+            SUM(t.input_tokens)                      as input,
+            SUM(t.output_tokens)                     as output,
+            SUM(t.cache_read_tokens)                 as cache_read,
+            SUM(t.cache_creation_tokens)             as cache_creation,
+            COUNT(DISTINCT t.agent_id)               as dispatches,
+            COUNT(*)                                 as turns
+        FROM turns t
+        LEFT JOIN agents a ON t.agent_id = a.agent_id
+        WHERE t.is_subagent = 1
+        GROUP BY day, agent_type, model
+        ORDER BY day, agent_type
+    """).fetchall()
+
+    subagent_by_type = [{
+        "day":            r["day"],
+        "agent_type":     r["agent_type"],
+        "model":          r["model"],
+        "input":          r["input"] or 0,
+        "output":         r["output"] or 0,
+        "cache_read":     r["cache_read"] or 0,
+        "cache_creation": r["cache_creation"] or 0,
+        "dispatches":     r["dispatches"] or 0,
+        "turns":          r["turns"] or 0,
+    } for r in subagent_daily_rows]
+
+    # ── Top individual subagent dispatches (one row per agent_id) ─────────────
+    top_dispatch_rows = conn.execute(f"""
+        SELECT
+            t.agent_id                               as agent_id,
+            {AGENT_TYPE_EXPR}                        as agent_type,
+            COALESCE(NULLIF(t.model, ''), 'unknown') as model,
+            MIN(t.timestamp)                         as start_ts,
+            SUM(t.input_tokens)                      as input,
+            SUM(t.output_tokens)                     as output,
+            SUM(t.cache_read_tokens)                 as cache_read,
+            SUM(t.cache_creation_tokens)             as cache_creation,
+            COUNT(*)                                 as turns,
+            a.dispatched_in_session                  as parent_session,
+            a.total_duration_ms                      as duration_ms,
+            a.tool_use_count                         as tool_uses,
+            a.status                                 as status
+        FROM turns t
+        LEFT JOIN agents a ON t.agent_id = a.agent_id
+        WHERE t.is_subagent = 1 AND t.agent_id IS NOT NULL
+        GROUP BY t.agent_id
+        ORDER BY (SUM(t.input_tokens) + SUM(t.output_tokens)
+                  + SUM(t.cache_read_tokens) + SUM(t.cache_creation_tokens)) DESC
+        LIMIT 50
+    """).fetchall()
+
+    top_dispatches = [{
+        "agent_id":       r["agent_id"],
+        "agent_type":     r["agent_type"],
+        "model":          r["model"],
+        "start":          (r["start_ts"] or "")[:16].replace("T", " "),
+        "start_date":     (r["start_ts"] or "")[:10],
+        "input":          r["input"] or 0,
+        "output":         r["output"] or 0,
+        "cache_read":     r["cache_read"] or 0,
+        "cache_creation": r["cache_creation"] or 0,
+        "turns":          r["turns"] or 0,
+        "duration_ms":    r["duration_ms"],
+        "tool_uses":      r["tool_uses"],
+        "status":         r["status"],
+    } for r in top_dispatch_rows]
+
     conn.close()
 
     return {
@@ -135,6 +216,8 @@ def get_dashboard_data(db_path=DB_PATH):
         "daily_by_model":  daily_by_model,
         "hourly_by_model": hourly_by_model,
         "sessions_all":    sessions_all,
+        "subagent_by_type": subagent_by_type,
+        "top_dispatches":  top_dispatches,
         "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -356,6 +439,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <h2>Top Projects by Tokens</h2>
       <div class="chart-wrap"><canvas id="chart-project"></canvas></div>
     </div>
+    <div class="chart-card wide">
+      <h2 id="subagent-chart-title">Subagent Tokens by Type</h2>
+      <div class="chart-wrap"><canvas id="chart-subagent"></canvas></div>
+    </div>
+  </div>
+  <div class="table-card">
+    <div class="section-title">Top Subagent Dispatches <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0;font-size:11px">&middot; ranked by total tokens; <em>unknown</em> = parent dispatch record not found</span></div>
+    <table>
+      <thead><tr>
+        <th>Type</th><th>Started</th><th>Model</th><th>Turns</th><th>Tool Uses</th>
+        <th>Duration</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Tokens</th><th>Est. Cost</th>
+      </tr></thead>
+      <tbody id="dispatches-body"></tbody>
+    </table>
   </div>
   <div class="table-card">
     <div class="section-title">Cost by Model</div>
@@ -623,6 +720,26 @@ const TOKEN_HOVER = {
 // blue, mauve, ochre, taupe, terracotta) rather than a saturated rainbow.
 const MODEL_COLORS = ['#D97757','#C9A26B','#7FA98C','#6E97A8','#B98AA0','#D9A84E','#A88B6A','#C2705A'];
 
+// Subagent type swatches (table tag tint) — warm/neutral, matching the palette.
+const AGENT_TYPE_COLORS = {
+  'general-purpose':   '#6E97A8',
+  'Explore':           '#9B7EC7',
+  'Plan':              '#D9A84E',
+  'claude-code-guide': '#48A0C7',
+  'auto-compact':      '#A88B6A',
+  'unknown':           '#4F4F50',
+};
+function colorForAgentType(t) { return AGENT_TYPE_COLORS[t] || '#7FA98C'; }
+function fmtDuration(ms) {
+  if (!ms || ms < 0) return '—';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60), r = s % 60;
+  if (m < 60) return r ? `${m}m${r}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h${m % 60}m`;
+}
+
 // Tooltip color swatches: solid fill, no border (Chart.js's default draws a
 // bordered box that looked offset/inconsistent). Lines use their solid stroke
 // color instead of the translucent area fill.
@@ -642,7 +759,7 @@ Chart.defaults.plugins.tooltip.callbacks.labelColor = (ctx) => {
 // series the user toggled off. We track hidden series by label per chart and
 // reapply on rebuild: dataset charts via `dataset.hidden`, the doughnut via
 // per-slice data visibility (see applyModelHidden).
-const hiddenSeries = { daily: new Set(), hourly: new Set(), project: new Set(), model: new Set() };
+const hiddenSeries = { daily: new Set(), hourly: new Set(), project: new Set(), model: new Set(), subagent: new Set() };
 function legendToggle(key) {
   return (e, item, legend) => {
     const ci = legend.chart;
@@ -1020,6 +1137,9 @@ function applyFilter() {
     cache_read:     byModel.reduce((s, m) => s + m.cache_read, 0),
     cache_creation: byModel.reduce((s, m) => s + m.cache_creation, 0),
     cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0),
+    subagent_tokens: (rawData.subagent_by_type || [])
+      .filter(r => selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end))
+      .reduce((s, r) => s + r.input + r.output + r.cache_read + r.cache_creation, 0),
   };
 
   // Hourly aggregation (filtered by model + range, then bucketed by UTC hour)
@@ -1028,15 +1148,40 @@ function applyFilter() {
   );
   const hourlyAgg = aggregateHourly(hourlySrc, hourlyTZ);
 
+  // Subagent breakdown by type (filtered by range + selected models)
+  const subagentTypeMap = {};
+  for (const r of (rawData.subagent_by_type || [])) {
+    if (!selectedModels.has(r.model)) continue;
+    if (start && r.day < start) continue;
+    if (end && r.day > end) continue;
+    const k = r.agent_type;
+    if (!subagentTypeMap[k]) subagentTypeMap[k] = { agent_type: k, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0 };
+    const m = subagentTypeMap[k];
+    m.input += r.input; m.output += r.output;
+    m.cache_read += r.cache_read; m.cache_creation += r.cache_creation;
+    m.turns += r.turns;
+  }
+  const byAgentType = Object.values(subagentTypeMap).sort((a, b) =>
+    (b.input + b.output + b.cache_read + b.cache_creation) -
+    (a.input + a.output + a.cache_read + a.cache_creation));
+
+  // Top dispatches: filter by range + selected model, take top 20
+  const filteredDispatches = (rawData.top_dispatches || []).filter(d =>
+    selectedModels.has(d.model) && (!start || d.start_date >= start) && (!end || d.start_date <= end)
+  ).slice(0, 20);
+
   // Update daily chart title
   document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
   document.getElementById('hourly-chart-title').textContent = 'Average Hourly Distribution \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('subagent-chart-title').textContent = 'Subagent Tokens by Type \u2014 ' + RANGE_LABELS[selectedRange];
 
   renderStats(totals);
   renderDailyChart(daily);
   renderHourlyChart(hourlyAgg);
   renderModelChart(byModel);
   renderProjectChart(byProject);
+  renderSubagentChart(byAgentType);
+  renderTopDispatches(filteredDispatches);
   lastFilteredSessions = sortSessions(filteredSessions);
   lastByModel = byModel;
   lastByProject = sortProjects(byProject);
@@ -1055,6 +1200,7 @@ function renderStats(t) {
     { label: 'Turns',          value: fmt(t.turns),                sub: rangeLabel },
     { label: 'Input Tokens',   value: fmt(t.input),                sub: rangeLabel },
     { label: 'Output Tokens',  value: fmt(t.output),               sub: rangeLabel },
+    { label: 'Subagent Tokens', value: fmt(t.subagent_tokens || 0), sub: 'included in totals' },
     { label: 'Cache Read',     value: fmt(t.cache_read),           sub: 'from prompt cache' },
     { label: 'Cache Creation', value: fmt(t.cache_creation),       sub: 'writes to prompt cache' },
     { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, June 2026', color: C.green },
@@ -1261,6 +1407,72 @@ function renderProjectChart(byProject) {
       }
     }
   });
+}
+
+function renderSubagentChart(byType) {
+  const ctx = document.getElementById('chart-subagent').getContext('2d');
+  if (charts.subagent) charts.subagent.destroy();
+  if (!byType.length) { charts.subagent = null; return; }
+  charts.subagent = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: byType.map(t => t.agent_type),
+      datasets: [
+        { label: 'Input',          hidden: hiddenSeries.subagent.has('Input'),          data: byType.map(t => t.input),          backgroundColor: TOKEN_COLORS.input,          hoverBackgroundColor: TOKEN_HOVER.input,          stack: 'tokens' },
+        { label: 'Output',         hidden: hiddenSeries.subagent.has('Output'),         data: byType.map(t => t.output),         backgroundColor: TOKEN_COLORS.output,         hoverBackgroundColor: TOKEN_HOVER.output,         stack: 'tokens' },
+        { label: 'Cache Read',     hidden: hiddenSeries.subagent.has('Cache Read'),     data: byType.map(t => t.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     hoverBackgroundColor: TOKEN_HOVER.cache_read,     stack: 'tokens' },
+        { label: 'Cache Creation', hidden: hiddenSeries.subagent.has('Cache Creation'), data: byType.map(t => t.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, hoverBackgroundColor: TOKEN_HOVER.cache_creation, stack: 'tokens' },
+      ]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false, resizeDelay: 150,
+      plugins: {
+        legend: { onClick: legendToggle('subagent'), labels: { color: C.axis, boxWidth: 12 } },
+        tooltip: { callbacks: {
+          label: ctx => ` ${ctx.dataset.label}: ${fmt(ctx.raw)}`,
+          footer: items => {
+            const total = items.reduce((s, it) => s + it.raw, 0);
+            const row = byType[items[0].dataIndex];
+            return ` Total: ${fmt(total)} · ${row.turns} turns`;
+          }
+        } }
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: C.axis, callback: v => fmt(v) }, grid: { color: C.border } },
+        y: { stacked: true, ticks: { color: C.axis, font: { size: 11 } }, grid: { color: C.border } },
+      }
+    }
+  });
+}
+
+function renderTopDispatches(rows) {
+  const body = document.getElementById('dispatches-body');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="11" class="muted" style="text-align:center;padding:24px">No subagent dispatches in selected range.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(d => {
+    const tokensTotal = d.input + d.output + d.cache_read + d.cache_creation;
+    const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation);
+    const costCell = isBillable(d.model)
+      ? `<td class="cost">${fmtCost(cost)}</td>`
+      : `<td class="cost-na">n/a</td>`;
+    const col = colorForAgentType(d.agent_type);
+    const typeStyle = `background:${col}22;color:${col};border:1px solid ${col}44`;
+    return `<tr>
+      <td><span class="model-tag" style="${typeStyle}">${esc(d.agent_type)}</span></td>
+      <td class="muted">${esc(d.start || '—')}</td>
+      <td><span class="model-tag">${esc(d.model)}</span></td>
+      <td class="num">${d.turns}</td>
+      <td class="num">${d.tool_uses != null ? d.tool_uses : '—'}</td>
+      <td class="muted">${fmtDuration(d.duration_ms)}</td>
+      <td class="num">${fmt(d.input)}</td>
+      <td class="num">${fmt(d.output)}</td>
+      <td class="num">${fmt(d.cache_read)}</td>
+      <td class="num"><strong>${fmt(tokensTotal)}</strong></td>
+      ${costCell}
+    </tr>`;
+  }).join('');
 }
 
 // Fills a table card's footer with the row-reveal control. Three states:
