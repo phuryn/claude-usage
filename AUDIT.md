@@ -8,8 +8,10 @@ per-finding verification — 80 raised → **73 confirmed / 7 refuted**.
 
 > ⚠️ **Read this first.** The audited tree was ~2 months behind upstream. Syncing
 > to **v1.4.0** resolved most findings, and the subagent + ccusage work in **PR
-> #140** resolves several more. The status column reflects the **current** code,
-> not the audited snapshot. Only the rows marked **⚠️ OPEN** still need action.
+> #140** resolves the rest. The status column reflects the **current** code, not
+> the audited snapshot. As of PR #140 every confirmed finding is addressed; the
+> section below records the three that were still open after the v1.4.0 sync and
+> how PR #140 fixed them. One residual limitation is noted inline.
 
 ## Severity summary (confirmed, as of the audited snapshot)
 
@@ -32,30 +34,33 @@ per-finding verification — 80 raised → **73 confirmed / 7 refuted**.
 | `launch.json` ran `python dashboard.py` (no scan; `python` on macOS) | Med | ✅ Fixed in v1.4.0 (orphan `launch.json` removed) |
 | Usage-limit events not tracked | Low | ✅ Added in **PR #140** (`limit_events`, gated on `isApiErrorMessage`) |
 | "Transcript ≠ Anthropic billing" not disclosed | Info | ✅ Added in **PR #140** (footer caveat) |
-| **Scanner: a shrunk/compacted JSONL is skipped forever** | Med | ⚠️ **OPEN** |
-| **`today` / `week` compare local date vs UTC timestamps** | Low | ⚠️ **OPEN** |
-| **Dashboard recomputes every query per request + ships full history; no cache** | Med (perf) | ⚠️ **OPEN** |
+| Scanner: a shrunk/compacted JSONL was skipped forever | Med | ✅ Fixed in **PR #140** (shrink path syncs `lines`, not just mtime) |
+| `today` / `week` compared local date vs UTC timestamps | Low | ✅ Fixed in **PR #140** (UTC date in CLI; `getRangeBounds` UTC) |
+| Dashboard recomputed every query per request | Med (perf) | ✅ Fixed in **PR #140** (mtime-keyed `/api/data` cache) |
 
-## Still open — actionable on the current codebase
+## Open after the v1.4.0 sync — now fixed in PR #140
 
 1. **Scanner shrink/compaction permanent-skip** (`scanner.py`, the
-   `if line_count <= old_lines:` branch). It updates `processed_files.mtime` but
-   not `lines`; on the next scan the mtime matches and the file is skipped, so a
-   compacted (rewritten-smaller) transcript is never re-ingested and stale turns
-   linger. **Fix:** also `SET lines = ?` in that branch (and, for full
-   correctness, treat `current_lines < old_lines` as a rewrite — delete the
-   file's turns and re-parse). Low real-world frequency (transcripts are usually
-   append-only), hence Medium.
+   `if line_count <= old_lines:` branch). It updated `processed_files.mtime` but
+   not `lines`; on the next scan the mtime matched and the file was skipped, so a
+   compacted (rewritten-smaller) transcript was never re-ingested. **Fixed:** the
+   branch now also `SET lines = ?`, so later appends are detected.
+   *Residual limitation:* stale turns from the pre-compaction content aren't
+   purged (turns aren't linked to a source file); a full re-ingest-on-shrink
+   would need a `source_file` column on `turns`. Low real-world frequency
+   (transcripts are usually append-only).
 
-2. **Timezone "today"/"week"** (`cli.py`): `date.today()` (local) is compared to
-   `substr(timestamp,1,10)` (UTC). Near midnight, users far from UTC see the
-   wrong day. The dashboard's `getRangeBounds` has the same local-vs-UTC seam.
-   **Fix:** compare in a single, explicit timezone.
+2. **Timezone "today"/"week"** (`cli.py`): `date.today()` (local) was compared to
+   `substr(timestamp,1,10)` (UTC), so near midnight users far from UTC saw the
+   wrong day; the dashboard's `getRangeBounds` had the same seam. **Fixed:** the
+   CLI uses a UTC date (`_utc_today()`) and `getRangeBounds` uses UTC date math.
 
 3. **Dashboard query cost** (`dashboard.py:get_dashboard_data`): every
-   `/api/data` hit runs all GROUP BY/JOIN queries from scratch and the client
-   re-fetches the full history each 30s. Fine today; it won't scale to very large
-   DBs. **Fix:** an mtime-keyed result cache + server-side date filtering.
+   `/api/data` hit re-ran all GROUP BY/JOIN queries. **Fixed:** the payload is now
+   cached keyed on the DB's path + mtime, so the 30s poll reuses it until a
+   scan/ingest changes the DB. *Note:* the client still receives full history and
+   filters client-side; server-side date filtering remains a larger future change
+   (acceptable at current scale).
 
 ## Verified safe (refuted findings)
 
