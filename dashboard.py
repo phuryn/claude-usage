@@ -209,6 +209,29 @@ def get_dashboard_data(db_path=DB_PATH):
         "status":         r["status"],
     } for r in top_dispatch_rows]
 
+    # Per-source daily from ccusage (other agent CLIs). Excludes the unified
+    # 'ccusage-all' so Claude Code (counted natively) is never double-counted.
+    try:
+        cda_rows = conn.execute("""
+            SELECT day, source, input_tokens, output_tokens,
+                   cache_read_tokens, cache_creation_tokens, total_tokens, cost_usd
+            FROM ccusage_daily_cache
+            WHERE source != 'ccusage-all'
+            ORDER BY day
+        """).fetchall()
+        ccusage_daily = [{
+            "day":            r["day"],
+            "source":         (r["source"] or "").replace("ccusage-", ""),
+            "input":          r["input_tokens"] or 0,
+            "output":         r["output_tokens"] or 0,
+            "cache_read":     r["cache_read_tokens"] or 0,
+            "cache_creation": r["cache_creation_tokens"] or 0,
+            "total":          r["total_tokens"] or 0,
+            "cost":           r["cost_usd"] or 0,
+        } for r in cda_rows]
+    except sqlite3.OperationalError:
+        ccusage_daily = []
+
     # Optional ccusage billing-window summary (5h windows + P90 baseline).
     # Guarded so a bridge issue can never take down the dashboard.
     try:
@@ -227,6 +250,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "subagent_by_type": subagent_by_type,
         "top_dispatches":  top_dispatches,
         "billing":         billing,
+        "ccusage_daily":   ccusage_daily,
         "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -463,6 +487,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="chart-card wide">
       <h2 id="subagent-chart-title">Subagent Tokens by Type</h2>
       <div class="chart-wrap"><canvas id="chart-subagent"></canvas></div>
+    </div>
+    <div class="chart-card wide" id="multiagent-card" style="display:none">
+      <h2>Other Agent CLIs (via ccusage) <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0;font-size:11px">&middot; non-Claude tokens; Claude Code shown natively above</span></h2>
+      <div class="chart-wrap"><canvas id="chart-multiagent"></canvas></div>
     </div>
   </div>
   <div class="table-card">
@@ -1191,6 +1219,18 @@ function applyFilter() {
     selectedModels.has(d.model) && (!start || d.start_date >= start) && (!end || d.start_date <= end)
   ).slice(0, 20);
 
+  // Other agent CLIs (ccusage per-source, non-Claude) — range-filtered, by source.
+  const maMap = {};
+  for (const r of (rawData.ccusage_daily || [])) {
+    if (start && r.day < start) continue;
+    if (end && r.day > end) continue;
+    if (!maMap[r.source]) maMap[r.source] = { source: r.source, total: 0, cost: 0 };
+    maMap[r.source].total += r.total;
+    maMap[r.source].cost  += r.cost;
+  }
+  const byMultiAgent = Object.values(maMap).filter(s => s.total > 0)
+    .sort((a, b) => b.total - a.total);
+
   // Update daily chart title
   document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
   document.getElementById('hourly-chart-title').textContent = 'Average Hourly Distribution \u2014 ' + RANGE_LABELS[selectedRange];
@@ -1204,6 +1244,7 @@ function applyFilter() {
   renderSubagentChart(byAgentType);
   renderTopDispatches(filteredDispatches);
   renderBilling(rawData.billing);
+  renderMultiAgent(byMultiAgent);
   lastFilteredSessions = sortSessions(filteredSessions);
   lastByModel = byModel;
   lastByProject = sortProjects(byProject);
@@ -1538,6 +1579,40 @@ function renderBilling(b) {
       `<div class="bw-metric">Projected end-of-window<strong>${proj}</strong></div>` +
       `<div class="bw-metric">Window cost so far<strong>${fmtCostBig(a.cost_usd || 0)}</strong></div>` +
     `</div>`;
+}
+
+function renderMultiAgent(bySource) {
+  const el = document.getElementById('chart-multiagent');
+  const card = document.getElementById('multiagent-card');
+  if (charts.multiagent) charts.multiagent.destroy();
+  if (!bySource.length) { charts.multiagent = null; card.style.display = 'none'; return; }
+  card.style.display = '';
+  charts.multiagent = new Chart(el.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: bySource.map(s => s.source),
+      datasets: [{
+        label: 'Tokens',
+        data: bySource.map(s => s.total),
+        backgroundColor: bySource.map((s, i) => MODEL_COLORS[i % MODEL_COLORS.length]),
+        hoverBackgroundColor: bySource.map((s, i) => MODEL_COLORS[i % MODEL_COLORS.length]),
+      }]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false, resizeDelay: 150,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: {
+          label: ctx => ` ${fmt(ctx.raw)} tokens`,
+          footer: items => ` ccusage est. ${fmtCostBig(bySource[items[0].dataIndex].cost)}`,
+        } }
+      },
+      scales: {
+        x: { ticks: { color: C.axis, callback: v => fmt(v) }, grid: { color: C.border } },
+        y: { ticks: { color: C.axis, font: { size: 11 } }, grid: { color: C.border } },
+      }
+    }
+  });
 }
 
 // Fills a table card's footer with the row-reveal control. Three states:

@@ -26,6 +26,11 @@ from scanner import DB_PATH, get_db, init_db
 CCUSAGE_SPEC = os.environ.get("CCUSAGE_SPEC", "ccusage@latest")
 _TIMEOUT_S = 90
 
+# Non-Claude agent CLIs ccusage can read. Claude Code is intentionally excluded
+# here — it's covered billing-accurately by the native scanner, and including the
+# unified `ccusage daily` (which also counts Claude) would double-count it.
+CCUSAGE_EXTRA_SOURCES = ["codex", "gemini", "copilot", "amp", "droid", "opencode"]
+
 
 def detect_runtime():
     """Locate an npx/bunx runner. On Windows shutil.which returns npx.cmd, which
@@ -245,7 +250,7 @@ def ingest(db_path=DB_PATH, verbose=True, rt=None):
         if verbose:
             print("[ccusage] runner found but no data returned (first run downloads "
                   "the package; check network/version).")
-        return {"available": True, "blocks": 0, "daily": 0}
+        return {"available": True, "blocks": 0, "daily": 0, "sources": {}}
 
     conn = get_db(db_path)
     init_db(conn)
@@ -253,11 +258,25 @@ def ingest(db_path=DB_PATH, verbose=True, rt=None):
     dl = daily_to_rows(daily, "ccusage-all", ingested_at)
     upsert_billing_windows(conn, bw)
     upsert_ccusage_daily(conn, dl)
+
+    # Per-source daily totals for the OTHER agent CLIs (Claude Code is already
+    # covered, billing-accurately, by the native scanner). Best effort: a source
+    # the user doesn't use returns nothing and is skipped.
+    sources = {}
+    for src in CCUSAGE_EXTRA_SOURCES:
+        srows = daily_to_rows(
+            run_ccusage([src, "daily", "--json", "--offline"], rt),
+            f"ccusage-{src}", ingested_at)
+        if srows:
+            upsert_ccusage_daily(conn, srows)
+            sources[src] = len(srows)
+
     conn.commit()
     conn.close()
     if verbose:
-        print(f"[ccusage] ingested {len(bw)} billing windows, {len(dl)} daily rows")
-    return {"available": True, "blocks": len(bw), "daily": len(dl)}
+        extra = (" + " + ", ".join(f"{k}:{v}" for k, v in sources.items())) if sources else ""
+        print(f"[ccusage] ingested {len(bw)} billing windows, {len(dl)} daily rows{extra}")
+    return {"available": True, "blocks": len(bw), "daily": len(dl), "sources": sources}
 
 
 if __name__ == "__main__":

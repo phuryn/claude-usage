@@ -140,10 +140,16 @@ class TestIngestOrchestration(unittest.TestCase):
             cb.run_ccusage = orig
         self.assertEqual(res["available"], True)
         self.assertEqual(res["blocks"], 2)
-        self.assertEqual(res["daily"], 1)
+        self.assertEqual(res["daily"], 1)            # unified ccusage-all
+        self.assertEqual(len(res["sources"]), len(cb.CCUSAGE_EXTRA_SOURCES))
         conn = get_db(self.db_path)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM billing_windows").fetchone()[0], 2)
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM ccusage_daily_cache").fetchone()[0], 1)
+        # unified (1) + one row per extra source
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM ccusage_daily_cache").fetchone()[0],
+            1 + len(cb.CCUSAGE_EXTRA_SOURCES))
+        self.assertIsNotNone(
+            conn.execute("SELECT 1 FROM ccusage_daily_cache WHERE source='ccusage-codex'").fetchone())
         conn.close()
 
 
