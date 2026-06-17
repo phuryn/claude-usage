@@ -89,7 +89,7 @@ class TestParseJsonlFile(unittest.TestCase):
             _make_user_record(),
             _make_assistant_record(),
         ])
-        metas, turns, line_count = parse_jsonl_file(path)
+        metas, turns, _, line_count = parse_jsonl_file(path)
         self.assertEqual(len(metas), 1)
         self.assertEqual(len(turns), 1)
         self.assertEqual(metas[0]["session_id"], "sess-1")
@@ -102,7 +102,7 @@ class TestParseJsonlFile(unittest.TestCase):
             _make_assistant_record(input_tokens=0, output_tokens=0,
                                    cache_read=0, cache_creation=0),
         ])
-        _, turns, _ = parse_jsonl_file(path)
+        _, turns, _, _ = parse_jsonl_file(path)
         self.assertEqual(len(turns), 0)
 
     def test_skips_non_assistant_user_types(self):
@@ -110,7 +110,7 @@ class TestParseJsonlFile(unittest.TestCase):
             json.dumps({"type": "system", "sessionId": "s1"}),
             _make_assistant_record(session_id="s1"),
         ])
-        metas, turns, _ = parse_jsonl_file(path)
+        metas, turns, _, _ = parse_jsonl_file(path)
         self.assertEqual(len(turns), 1)
 
     def test_handles_malformed_json(self):
@@ -118,12 +118,12 @@ class TestParseJsonlFile(unittest.TestCase):
             "not valid json",
             _make_assistant_record(),
         ])
-        _, turns, _ = parse_jsonl_file(path)
+        _, turns, _, _ = parse_jsonl_file(path)
         self.assertEqual(len(turns), 1)
 
     def test_handles_empty_file(self):
         path = self._write_jsonl("test.jsonl", [])
-        metas, turns, _ = parse_jsonl_file(path)
+        metas, turns, _, _ = parse_jsonl_file(path)
         self.assertEqual(len(metas), 0)
         self.assertEqual(len(turns), 0)
 
@@ -132,7 +132,7 @@ class TestParseJsonlFile(unittest.TestCase):
             _make_assistant_record(session_id="s1"),
             _make_assistant_record(session_id="s2"),
         ])
-        metas, turns, _ = parse_jsonl_file(path)
+        metas, turns, _, _ = parse_jsonl_file(path)
         self.assertEqual(len(metas), 2)
         self.assertEqual(len(turns), 2)
 
@@ -142,7 +142,7 @@ class TestParseJsonlFile(unittest.TestCase):
             _make_assistant_record(timestamp="2026-04-08T09:05:00Z"),
             _make_assistant_record(timestamp="2026-04-08T09:10:00Z"),
         ])
-        metas, _, _ = parse_jsonl_file(path)
+        metas, _, _, _ = parse_jsonl_file(path)
         self.assertEqual(metas[0]["first_timestamp"], "2026-04-08T09:00:00Z")
         self.assertEqual(metas[0]["last_timestamp"], "2026-04-08T09:10:00Z")
 
@@ -161,7 +161,7 @@ class TestParseJsonlFile(unittest.TestCase):
             },
         })
         path = self._write_jsonl("test.jsonl", [record])
-        _, turns, _ = parse_jsonl_file(path)
+        _, turns, _, _ = parse_jsonl_file(path)
         self.assertEqual(turns[0]["tool_name"], "Read")
 
 
@@ -188,7 +188,7 @@ class TestMessageIdDedup(unittest.TestCase):
             # Streaming event 3: final usage (same message)
             _make_assistant_record(message_id="msg-abc", input_tokens=150, output_tokens=80),
         ])
-        _, turns, _ = parse_jsonl_file(path)
+        _, turns, _, _ = parse_jsonl_file(path)
         self.assertEqual(len(turns), 1)
         # Last record wins (has final tallies)
         self.assertEqual(turns[0]["input_tokens"], 150)
@@ -201,7 +201,7 @@ class TestMessageIdDedup(unittest.TestCase):
             _make_assistant_record(message_id="msg-1", input_tokens=100),
             _make_assistant_record(message_id="msg-2", input_tokens=200),
         ])
-        _, turns, _ = parse_jsonl_file(path)
+        _, turns, _, _ = parse_jsonl_file(path)
         self.assertEqual(len(turns), 2)
 
     def test_records_without_message_id_kept(self):
@@ -210,7 +210,7 @@ class TestMessageIdDedup(unittest.TestCase):
             _make_assistant_record(input_tokens=100),
             _make_assistant_record(input_tokens=200),
         ])
-        _, turns, _ = parse_jsonl_file(path)
+        _, turns, _, _ = parse_jsonl_file(path)
         self.assertEqual(len(turns), 2)
 
     def test_mixed_with_and_without_ids(self):
@@ -220,7 +220,7 @@ class TestMessageIdDedup(unittest.TestCase):
             _make_assistant_record(message_id="msg-1", input_tokens=100),  # deduped
             _make_assistant_record(input_tokens=200),  # no id, kept
         ])
-        _, turns, _ = parse_jsonl_file(path)
+        _, turns, _, _ = parse_jsonl_file(path)
         self.assertEqual(len(turns), 2)  # 1 deduped + 1 without id
         token_sums = sorted([t["input_tokens"] for t in turns])
         self.assertEqual(token_sums, [100, 200])
@@ -664,14 +664,14 @@ class TestParseJsonlFileLineCount(unittest.TestCase):
             f.write(_make_user_record() + "\n")
             f.write(_make_assistant_record() + "\n")
             f.write(_make_assistant_record(timestamp="2026-04-08T10:01:00Z") + "\n")
-        _, _, line_count = parse_jsonl_file(path)
+        _, _, _, line_count = parse_jsonl_file(path)
         self.assertEqual(line_count, 3)
 
     def test_empty_file_returns_zero(self):
         path = os.path.join(self.tmpdir, "empty.jsonl")
         with open(path, "w") as f:
             pass
-        _, _, line_count = parse_jsonl_file(path)
+        _, _, _, line_count = parse_jsonl_file(path)
         self.assertEqual(line_count, 0)
 
 

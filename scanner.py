@@ -74,7 +74,9 @@ def init_db(conn):
             cache_creation_tokens   INTEGER DEFAULT 0,
             tool_name               TEXT,
             cwd                     TEXT,
-            message_id              TEXT
+            message_id              TEXT,
+            is_subagent             INTEGER DEFAULT 0,
+            agent_id                TEXT
         );
 
         CREATE TABLE IF NOT EXISTS processed_files (
@@ -83,21 +85,45 @@ def init_db(conn):
             lines   INTEGER
         );
 
+        CREATE TABLE IF NOT EXISTS agents (
+            agent_id              TEXT PRIMARY KEY,
+            agent_type            TEXT,
+            dispatched_in_session TEXT,
+            completed_at          TEXT,
+            status                TEXT,
+            total_tokens          INTEGER,
+            total_duration_ms     INTEGER,
+            tool_use_count        INTEGER
+        );
+
         CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
         CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
         CREATE INDEX IF NOT EXISTS idx_sessions_first ON sessions(first_timestamp);
+        CREATE INDEX IF NOT EXISTS idx_agents_type ON agents(agent_type);
     """)
     # Add message_id column if upgrading from older schema
     try:
         conn.execute("SELECT message_id FROM turns LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE turns ADD COLUMN message_id TEXT")
+    # Subagent attribution columns (added in a later schema version)
+    _ensure_column(conn, "turns", "is_subagent", "INTEGER DEFAULT 0")
+    _ensure_column(conn, "turns", "agent_id", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(is_subagent)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_agent_id ON turns(agent_id)")
     # Conditional unique index: only dedup non-null message IDs
     conn.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_message_id
         ON turns(message_id) WHERE message_id IS NOT NULL AND message_id != ''
     """)
     conn.commit()
+
+
+def _ensure_column(conn, table, column, decl):
+    """Add a column to an existing table if it isn't already present."""
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 def project_name_from_cwd(cwd):
@@ -111,8 +137,90 @@ def project_name_from_cwd(cwd):
     return parts[-1] if parts else "unknown"
 
 
+def is_subagent_record(record, source_path=""):
+    """True if a record belongs to a dispatched subagent (Task/Agent tool).
+
+    Subagents are detected three ways: an explicit ``isSidechain`` flag, an
+    ``agentId`` on the record (or its ``data`` wrapper), or a transcript path
+    under a ``subagents`` directory (Claude Code writes one jsonl per subagent).
+    """
+    if record.get("isSidechain"):
+        return True
+    if record.get("agentId"):
+        return True
+    data = record.get("data")
+    if isinstance(data, dict) and data.get("agentId"):
+        return True
+    sp = str(source_path).replace("\\", "/").lower()
+    return "/subagents/" in sp
+
+
+def record_agent_id(record):
+    """Pull the subagent id off a record, if any (top-level or data wrapper)."""
+    agent_id = record.get("agentId")
+    if not agent_id:
+        data = record.get("data")
+        if isinstance(data, dict):
+            agent_id = data.get("agentId")
+    return agent_id
+
+
+def extract_agent_dispatch(record):
+    """Pull subagent identity from a parent's tool_result record.
+
+    Claude Code writes a ``toolUseResult`` dict on the user-side record that
+    closes out an Agent/Task tool invocation. It carries ``agentId`` (matching
+    the subagent jsonl's records) and ``agentType`` (the human-readable type
+    such as 'general-purpose' or 'Explore') plus aggregate stats.
+    """
+    if record.get("type") != "user":
+        return None
+    tur = record.get("toolUseResult")
+    if not isinstance(tur, dict):
+        return None
+    agent_id = tur.get("agentId")
+    agent_type = tur.get("agentType")
+    if not agent_id or not agent_type:
+        return None
+    return {
+        "agent_id": agent_id,
+        "agent_type": agent_type,
+        "dispatched_in_session": record.get("sessionId"),
+        "completed_at": record.get("timestamp", ""),
+        "status": tur.get("status"),
+        "total_tokens": tur.get("totalTokens"),
+        "total_duration_ms": tur.get("totalDurationMs"),
+        "tool_use_count": tur.get("totalToolUseCount"),
+    }
+
+
+def upsert_agents(conn, agents):
+    """Insert or update agent dispatch metadata. Last write wins per agent_id."""
+    if not agents:
+        return
+    conn.executemany("""
+        INSERT INTO agents
+            (agent_id, agent_type, dispatched_in_session, completed_at,
+             status, total_tokens, total_duration_ms, tool_use_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(agent_id) DO UPDATE SET
+            agent_type            = excluded.agent_type,
+            dispatched_in_session = excluded.dispatched_in_session,
+            completed_at          = excluded.completed_at,
+            status                = excluded.status,
+            total_tokens          = excluded.total_tokens,
+            total_duration_ms     = excluded.total_duration_ms,
+            tool_use_count        = excluded.tool_use_count
+    """, [
+        (a["agent_id"], a["agent_type"], a.get("dispatched_in_session"),
+         a.get("completed_at"), a.get("status"),
+         a.get("total_tokens"), a.get("total_duration_ms"), a.get("tool_use_count"))
+        for a in agents
+    ])
+
+
 def parse_jsonl_file(filepath):
-    """Parse a JSONL file and return (session_metas, turns, line_count).
+    """Parse a JSONL file and return (session_metas, turns, agents, line_count).
 
     Deduplicates streaming events by message.id — Claude Code logs multiple
     JSONL records per API response, all sharing the same message.id. Only the
@@ -121,6 +229,7 @@ def parse_jsonl_file(filepath):
     seen_messages = {}  # message_id -> turn dict (dedup streaming records)
     turns_no_id = []    # turns without a message_id (kept as-is)
     session_meta = {}   # session_id -> dict
+    agents = {}         # agent_id -> dispatch dict
     line_count = 0
 
     try:
@@ -141,6 +250,11 @@ def parse_jsonl_file(filepath):
                 session_id = record.get("sessionId")
                 if not session_id:
                     continue
+
+                if rtype == "user":
+                    dispatch = extract_agent_dispatch(record)
+                    if dispatch is not None:
+                        agents[dispatch["agent_id"]] = dispatch
 
                 timestamp = record.get("timestamp", "")
                 cwd = record.get("cwd", "")
@@ -201,6 +315,8 @@ def parse_jsonl_file(filepath):
                         "tool_name": tool_name,
                         "cwd": cwd,
                         "message_id": message_id,
+                        "is_subagent": 1 if is_subagent_record(record, filepath) else 0,
+                        "agent_id": record_agent_id(record),
                     }
 
                     # Dedup: last record per message_id wins (final usage tallies)
@@ -213,7 +329,7 @@ def parse_jsonl_file(filepath):
         print(f"  Warning: error reading {filepath}: {e}")
 
     turns = turns_no_id + list(seen_messages.values())
-    return list(session_meta.values()), turns, line_count
+    return list(session_meta.values()), turns, list(agents.values()), line_count
 
 
 def aggregate_sessions(session_metas, turns):
@@ -312,13 +428,15 @@ def insert_turns(conn, turns):
     conn.executemany("""
         INSERT OR IGNORE INTO turns
             (session_id, timestamp, model, input_tokens, output_tokens,
-             cache_read_tokens, cache_creation_tokens, tool_name, cwd, message_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             cache_read_tokens, cache_creation_tokens, tool_name, cwd, message_id,
+             is_subagent, agent_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
         (t["session_id"], t["timestamp"], t["model"],
          t["input_tokens"], t["output_tokens"],
          t["cache_read_tokens"], t["cache_creation_tokens"],
-         t["tool_name"], t["cwd"], t.get("message_id", ""))
+         t["tool_name"], t["cwd"], t.get("message_id", ""),
+         t.get("is_subagent", 0), t.get("agent_id"))
         for t in turns
     ])
 
@@ -371,7 +489,8 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
 
         if is_new:
             # New file: full parse (single read, returns line count)
-            session_metas, turns, line_count = parse_jsonl_file(filepath)
+            session_metas, turns, agents, line_count = parse_jsonl_file(filepath)
+            upsert_agents(conn, agents)
 
             if turns or session_metas:
                 sessions = aggregate_sessions(session_metas, turns)
@@ -388,6 +507,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
             seen_messages = {}  # message_id -> turn (dedup streaming)
             turns_no_id = []
             new_session_metas = {}
+            agents = {}         # agent_id -> dispatch dict
             line_count = 0
 
             try:
@@ -410,6 +530,11 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                         session_id = record.get("sessionId")
                         if not session_id:
                             continue
+
+                        if rtype == "user":
+                            dispatch = extract_agent_dispatch(record)
+                            if dispatch is not None:
+                                agents[dispatch["agent_id"]] = dispatch
 
                         timestamp = record.get("timestamp", "")
                         cwd = record.get("cwd", "")
@@ -465,6 +590,8 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                                 "tool_name": tool_name,
                                 "cwd": cwd,
                                 "message_id": message_id,
+                                "is_subagent": 1 if is_subagent_record(record, filepath) else 0,
+                                "agent_id": record_agent_id(record),
                             }
 
                             if message_id:
@@ -483,6 +610,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                 continue
 
             new_turns = turns_no_id + list(seen_messages.values())
+            upsert_agents(conn, list(agents.values()))
 
             if new_turns or new_session_metas:
                 sessions = aggregate_sessions(list(new_session_metas.values()), new_turns)
