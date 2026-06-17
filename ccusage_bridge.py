@@ -14,6 +14,8 @@ Nothing here is required for the core tool to work.
 import json
 import os
 import shutil
+import sqlite3
+import statistics
 import subprocess
 from datetime import datetime, timezone
 
@@ -182,6 +184,47 @@ def upsert_ccusage_daily(conn, rows):
         f"ON CONFLICT(day, source) DO UPDATE SET {updates}",
         [tuple(r[c] for c in _DC_COLS) for r in rows],
     )
+
+
+# ── Plan-limit baseline (Monitor-style P90 of your own history) ─────────────────
+
+def compute_p90_limit(window_totals, floor=0):
+    """The 90th-percentile of your completed 5h-window totals — a personal
+    'typical heavy window' baseline. Anthropic's hard token limit isn't exposed
+    anywhere, so (like Claude-Code-Usage-Monitor) we use your own history as the
+    yardstick. Returns `floor` when there isn't enough history."""
+    vals = [int(v) for v in window_totals if v and v > 0]
+    if not vals:
+        return floor
+    if len(vals) == 1:
+        return max(vals[0], floor)
+    p90 = statistics.quantiles(vals, n=10)[8]  # 9 cut points; [8] = 90th pct
+    return max(int(p90), floor)
+
+
+def summarize_billing(conn):
+    """Read billing_windows into a dashboard-ready summary. Returns
+    {'available': False} when ccusage has never populated the table (no Node),
+    so the UI can show an install prompt instead of an empty card."""
+    try:
+        rows = conn.execute(
+            "SELECT * FROM billing_windows ORDER BY start_time"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {"available": False}
+    if not rows:
+        return {"available": False}
+
+    windows = [dict(r) for r in rows]
+    completed_totals = [w["total_tokens"] for w in windows if not w["is_active"]]
+    active = next((w for w in windows if w["is_active"]), None)
+    return {
+        "available": True,
+        "window_count": len(windows),
+        "plan_limit_estimate": compute_p90_limit(completed_totals),
+        "active": active,
+        "recent": windows[-30:],
+    }
 
 
 # ── Orchestration ───────────────────────────────────────────────────────────────

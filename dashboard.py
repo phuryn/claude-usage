@@ -209,6 +209,14 @@ def get_dashboard_data(db_path=DB_PATH):
         "status":         r["status"],
     } for r in top_dispatch_rows]
 
+    # Optional ccusage billing-window summary (5h windows + P90 baseline).
+    # Guarded so a bridge issue can never take down the dashboard.
+    try:
+        from ccusage_bridge import summarize_billing
+        billing = summarize_billing(conn)
+    except Exception:
+        billing = {"available": False}
+
     conn.close()
 
     return {
@@ -218,6 +226,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "sessions_all":    sessions_all,
         "subagent_by_type": subagent_by_type,
         "top_dispatches":  top_dispatches,
+        "billing":         billing,
         "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 

@@ -147,5 +147,41 @@ class TestIngestOrchestration(unittest.TestCase):
         conn.close()
 
 
+class TestP90AndSummary(unittest.TestCase):
+    def test_p90_empty_returns_floor(self):
+        self.assertEqual(cb.compute_p90_limit([], floor=19000), 19000)
+        self.assertEqual(cb.compute_p90_limit([0, None]), 0)
+
+    def test_p90_single_value(self):
+        self.assertEqual(cb.compute_p90_limit([500], floor=100), 500)
+        self.assertEqual(cb.compute_p90_limit([50], floor=100), 100)
+
+    def test_p90_multiple_is_high_percentile(self):
+        vals = list(range(10, 110, 10))  # 10..100
+        p90 = cb.compute_p90_limit(vals)
+        self.assertGreaterEqual(p90, 90)
+        self.assertIsInstance(p90, int)
+
+    def test_summarize_billing_empty(self):
+        db = Path(tempfile.mkdtemp()) / "u.db"
+        conn = get_db(db); init_db(conn)
+        self.assertEqual(cb.summarize_billing(conn), {"available": False})
+        conn.close()
+
+    def test_summarize_billing_populated(self):
+        db = Path(tempfile.mkdtemp()) / "u.db"
+        conn = get_db(db); init_db(conn)
+        cb.upsert_billing_windows(conn, cb.blocks_to_rows(BLOCKS_FIXTURE, "t1"))
+        conn.commit()
+        s = cb.summarize_billing(conn)
+        self.assertTrue(s["available"])
+        self.assertEqual(s["window_count"], 2)
+        self.assertIsNotNone(s["active"])
+        self.assertEqual(s["active"]["is_active"], 1)
+        # one completed window (total 7,569,286) -> P90 == that value
+        self.assertEqual(s["plan_limit_estimate"], 7569286)
+        conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
