@@ -22,6 +22,12 @@
 
 - Footer now notes that figures are transcript-derived estimates (Claude Code doesn't write every request to disk) and may not match Anthropic billing exactly, and that native vs ccusage numbers are shown separately, never summed.
 
+### Fixes
+
+- **Scanner:** a transcript rewritten *shorter* (e.g. compaction) no longer gets skipped forever — the shrink path now syncs the stored line count, not just the mtime, so later appends are still ingested.
+- **CLI:** `today` and `week` now compute their date window in **UTC** to match the UTC transcript timestamps (previously used the local date, off by one near midnight away from UTC).
+- **Dashboard:** the `/api/data` payload is cached keyed on the DB's path + mtime, so the 30-second poll doesn't re-run every GROUP BY/JOIN when nothing changed; any scan/ingest invalidates it. Dashboard date ranges (week/month/relative) are now computed in UTC for consistency with the data.
+
 ## v1.4.0 — 2026-06-15
 
 ### Dashboard

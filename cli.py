@@ -12,7 +12,7 @@ import os
 import sys
 import sqlite3
 from pathlib import Path
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta, timezone
 
 from scanner import VERSION
 # Pricing lives in a single module shared by the CLI and (via /api/data) the
@@ -20,6 +20,13 @@ from scanner import VERSION
 from pricing import PRICING, get_pricing, calc_cost
 
 DB_PATH = Path.home() / ".claude" / "usage.db"
+
+
+def _utc_today():
+    """Today's date in UTC. Transcript timestamps are stored as UTC ISO strings,
+    so day-range filters must use the UTC date too — otherwise `today` / `week`
+    are off by one near midnight for users far from UTC."""
+    return datetime.now(timezone.utc).date()
 
 def fmt(n):
     if n >= 1_000_000:
@@ -58,7 +65,7 @@ def cmd_scan(projects_dir=None):
 def cmd_today():
     conn = require_db()
     conn.row_factory = sqlite3.Row
-    today = date.today().isoformat()
+    today = _utc_today().isoformat()
 
     rows = conn.execute("""
         SELECT
@@ -128,7 +135,7 @@ def cmd_week():
     conn = require_db()
     conn.row_factory = sqlite3.Row
 
-    today_d = date.today()
+    today_d = _utc_today()
     start_d = today_d - timedelta(days=6)
     start = start_d.isoformat()
     end = today_d.isoformat()

@@ -718,9 +718,13 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                 print(f"  Warning: {e}")
 
             if line_count <= old_lines:
-                # File didn't grow (mtime changed but no new content)
-                conn.execute("UPDATE processed_files SET mtime = ? WHERE path = ?",
-                             (mtime, filepath))
+                # File didn't grow (mtime changed but no new content) — or it was
+                # rewritten SHORTER (e.g. transcript compaction). Sync BOTH mtime
+                # and the stored line count: if a shrunk file kept its old, larger
+                # `lines`, the next scan's mtime check would skip it forever and
+                # later appends past the new length would never be re-ingested.
+                conn.execute("UPDATE processed_files SET mtime = ?, lines = ? WHERE path = ?",
+                             (mtime, line_count, filepath))
                 conn.commit()
                 skipped_files += 1
                 continue

@@ -24,10 +24,23 @@ DB_PATH = Path.home() / ".claude" / "usage.db"
 # would misfire there because the Marketplace publish lags the GitHub release).
 SURFACE = "web"
 
+# Cache the assembled /api/data payload keyed on the DB file's path + mtime, so
+# repeated polls (the client refreshes every 30s) don't re-run every GROUP BY /
+# JOIN when nothing has changed. Any scan/ingest commit bumps usage.db's mtime
+# and invalidates it. Single entry — the dashboard only ever reads one DB.
+_DATA_CACHE = {}
+
 
 def get_dashboard_data(db_path=DB_PATH):
     if not db_path.exists():
         return {"error": "Database not found. Run: python cli.py scan"}
+
+    try:
+        cache_key = (str(db_path), db_path.stat().st_mtime)
+    except OSError:
+        cache_key = None
+    if cache_key is not None and _DATA_CACHE.get("key") == cache_key:
+        return _DATA_CACHE["data"]
 
     conn = sqlite3.connect(db_path)
     # The dashboard reads while a background scan may be committing (cmd_dashboard
@@ -243,7 +256,7 @@ def get_dashboard_data(db_path=DB_PATH):
 
     conn.close()
 
-    return {
+    result = {
         "all_models":      all_models,
         "daily_by_model":  daily_by_model,
         "hourly_by_model": hourly_by_model,
@@ -255,6 +268,10 @@ def get_dashboard_data(db_path=DB_PATH):
         "pricing":         PRICING,
         "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    if cache_key is not None:
+        _DATA_CACHE["key"] = cache_key
+        _DATA_CACHE["data"] = result
+    return result
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -840,6 +857,9 @@ function rangeIncludesToday(range) {
 }
 
 function getRangeBounds(range) {
+  // All bounds are computed in UTC to match the UTC date strings in the data
+  // (substr(timestamp,1,10)); mixing local calendar math with UTC serialization
+  // shifted week/month/relative ranges by a day near boundaries off-UTC.
   if (range === 'all') return { start: null, end: null };
   const today = new Date();
   const iso = d => d.toISOString().slice(0, 10);
@@ -848,25 +868,25 @@ function getRangeBounds(range) {
     return { start: t, end: t };
   }
   if (range === 'week') {
-    const day = today.getDay();
+    const day = today.getUTCDay();
     const diffToMon = day === 0 ? 6 : day - 1;
-    const mon = new Date(today); mon.setDate(today.getDate() - diffToMon);
-    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+    const mon = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - diffToMon));
+    const sun = new Date(mon); sun.setUTCDate(mon.getUTCDate() + 6);
     return { start: iso(mon), end: iso(sun) };
   }
   if (range === 'month') {
-    const start = new Date(today.getFullYear(), today.getMonth(), 1);
-    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    const start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 0));
     return { start: iso(start), end: iso(end) };
   }
   if (range === 'prev-month') {
-    const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    const end = new Date(today.getFullYear(), today.getMonth(), 0);
+    const start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
+    const end = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 0));
     return { start: iso(start), end: iso(end) };
   }
   const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
   const d = new Date();
-  d.setDate(d.getDate() - days);
+  d.setUTCDate(d.getUTCDate() - days);
   return { start: iso(d), end: null };
 }
 
