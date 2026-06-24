@@ -307,6 +307,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .model-cb-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .filter-btn { padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; white-space: nowrap; }
   .filter-btn:hover { border-color: var(--accent); color: var(--text); }
+  .tier-btn { padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--text); font-size: 11px; cursor: pointer; white-space: nowrap; font-weight: 500; }
+  .tier-btn:hover { border-color: var(--accent); background: var(--raised); }
+  /* Provider group header inside the model panel */
+  .model-group-header { display: flex; align-items: center; gap: 6px; padding: 8px 8px 4px; }
+  .model-group-label-text { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); flex: 1; }
+  .model-group-all { padding: 1px 7px; border-radius: 3px; border: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
+  .model-group-all:hover { border-color: var(--accent); color: var(--text); }
+  /* Tier badges inside provider group headers */
+  .provider-tier-badge { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 5px; border-radius: 3px; }
+  .provider-tier-badge.enterprise { background: #1a3a5c; color: #60a5fa; }
+  .provider-tier-badge.individual { background: #1a3a2c; color: #4ade80; }
   /* Date range — a compact dropdown. The old segmented button row (8 buttons)
      wrapped badly in the narrow VS Code panel; a single select stays put. Styled
      to match the model trigger. */
@@ -455,6 +466,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div id="model-checkboxes"></div>
     </div>
   </div>
+  <div class="filter-sep"></div>
+  <div class="filter-label">View&nbsp;by</div>
+  <button class="tier-btn" onclick="selectTierModels('enterprise')" title="Show only enterprise-tier providers (OpenAI, Google, xAI, Perplexity)">Enterprise</button>
+  <button class="tier-btn" onclick="selectTierModels('individual')" title="Show only individual-tier providers (Anthropic)">Individual</button>
+  <button class="filter-btn" onclick="selectAllModels()" title="Show all providers">All</button>
   <div class="filter-sep"></div>
   <div class="filter-label">Range</div>
   <div class="range-select">
@@ -832,21 +848,29 @@ const PROVIDER_FALLBACKS = [
   ['sonar',               'sonar'],
 ];
 
-function isBillable(model) {
-  if (!model) return false;
+// ── Provider metadata ──────────────────────────────────────────────────────────
+// Mirrors cli.py's PROVIDER_META. "tier" drives the Enterprise / Individual
+// quick-filter buttons in the filter bar.
+// To add a new provider: append an entry here and update cli.py to match.
+const PROVIDER_META = {
+  Anthropic:  { tier: 'individual', keywords: ['claude', 'fable', 'mythos', 'opus', 'sonnet', 'haiku'] },
+  OpenAI:     { tier: 'enterprise', keywords: ['gpt-', 'o3', 'o4-mini', 'o3-mini'] },
+  Google:     { tier: 'enterprise', keywords: ['gemini', 'nanobanana'] },
+  xAI:        { tier: 'enterprise', keywords: ['grok'] },
+  Perplexity: { tier: 'enterprise', keywords: ['sonar'] },
+};
+
+function getProvider(model) {
+  if (!model) return null;
   const m = model.toLowerCase();
-  // Anthropic
-  if (m.includes('fable') || m.includes('mythos') ||
-      m.includes('opus') || m.includes('sonnet') || m.includes('haiku')) return true;
-  // OpenAI
-  if (m.startsWith('o3') || m.startsWith('o4') || m.includes('gpt-')) return true;
-  // Google
-  if (m.includes('gemini')) return true;
-  // xAI
-  if (m.includes('grok')) return true;
-  // Perplexity
-  if (m.includes('sonar') || m.includes('nanobanana')) return true;
-  return false;
+  for (const [name, meta] of Object.entries(PROVIDER_META)) {
+    if (meta.keywords.some(kw => m.includes(kw))) return name;
+  }
+  return null;
+}
+
+function isBillable(model) {
+  return getProvider(model) !== null;
 }
 
 function getPricing(model) {
@@ -1100,8 +1124,7 @@ function buildFilterUI(allModels) {
   allModelsList = [...allModels];
   selectedModels = readURLModels(allModels);
   const sorted = sortedModels(allModels);
-  const anthropic = sorted.filter(m => isBillable(m));
-  const other     = sorted.filter(m => !isBillable(m));
+
   const rowHTML = m => {
     const checked = selectedModels.has(m);
     return `<label class="model-cb-label ${checked ? 'checked' : ''}" data-model="${esc(m)}" title="${esc(m)}">
@@ -1110,42 +1133,121 @@ function buildFilterUI(allModels) {
       <span class="model-cb-text">${esc(m)}</span>
     </label>`;
   };
+
+  // Group models by provider; unknown models go to an "Other" bucket.
+  const groups = {};
+  for (const m of sorted) {
+    const prov = getProvider(m) || 'Other';
+    if (!groups[prov]) groups[prov] = [];
+    groups[prov].push(m);
+  }
+
+  const providerOrder = [...Object.keys(PROVIDER_META), 'Other'];
+  const presentGroups = providerOrder.filter(p => groups[p]?.length);
+  const multiGroup = presentGroups.length > 1;
+
   let html = '';
-  // Only show a group heading when both groups are present — a single-group
-  // list doesn't need a label.
-  const labelled = anthropic.length && other.length;
-  if (anthropic.length) {
-    if (labelled) html += '<div class="model-group-label">Anthropic</div>';
-    html += anthropic.map(rowHTML).join('');
+  for (const prov of presentGroups) {
+    const ms = groups[prov];
+    if (!ms?.length) continue;
+    if (multiGroup) {
+      const tier = PROVIDER_META[prov]?.tier;
+      const badge = tier ? `<span class="provider-tier-badge ${tier}">${tier}</span>` : '';
+      const allSel = ms.every(m => selectedModels.has(m));
+      html += `<div class="model-group-header">
+        <span class="model-group-label-text">${esc(prov)}</span>${badge}
+        <button class="model-group-all" onclick="selectProviderModels('${esc(prov)}')"
+          title="Select only ${esc(prov)} models">${allSel ? '✓ ' : ''}All</button>
+      </div>`;
+    }
+    html += ms.map(rowHTML).join('');
   }
-  if (other.length) {
-    if (labelled) html += '<div class="model-group-label">Other providers</div>';
-    html += other.map(rowHTML).join('');
-  }
+
   document.getElementById('model-checkboxes').innerHTML = html;
   updateModelTriggerLabel();
 }
 
+// Select only the models belonging to a named provider.
+function selectProviderModels(providerName) {
+  const sorted = sortedModels(allModelsList);
+  const sorted2 = [...sorted];
+  const provModels = sorted2.filter(m => (getProvider(m) || 'Other') === providerName);
+  selectedModels = new Set(provModels);
+  rebuildCheckboxes();
+  updateModelTriggerLabel();
+  pushURLModels();
+  renderAll();
+}
+
+// Select all models whose provider has the given tier ("enterprise" / "individual").
+function selectTierModels(tier) {
+  const tierModels = allModelsList.filter(m => {
+    const prov = getProvider(m);
+    return prov && PROVIDER_META[prov]?.tier === tier;
+  });
+  // If nothing matches the tier (e.g. user has no enterprise-model data), keep current selection.
+  if (!tierModels.length) return;
+  selectedModels = new Set(tierModels);
+  rebuildCheckboxes();
+  updateModelTriggerLabel();
+  pushURLModels();
+  renderAll();
+}
+
+function rebuildCheckboxes() {
+  document.querySelectorAll('.model-cb-label').forEach(label => {
+    const m = label.dataset.model;
+    const checked = selectedModels.has(m);
+    label.classList.toggle('checked', checked);
+    const cb = label.querySelector('input');
+    if (cb) cb.checked = checked;
+  });
+  // Refresh group "All" button highlights
+  document.querySelectorAll('.model-group-all').forEach(btn => {
+    const prov = btn.closest('.model-group-header')?.querySelector('.model-group-label-text')?.textContent;
+    if (!prov) return;
+    const ms = allModelsList.filter(m => (getProvider(m) || 'Other') === prov);
+    const allSel = ms.length && ms.every(m => selectedModels.has(m));
+    btn.textContent = (allSel ? '✓ ' : '') + 'All';
+  });
+}
+
 // Collapsed trigger text, in priority order:
-//   "All models"     — everything selected
-//   "No models"      — nothing selected
-//   "All Anthropic"  — every Anthropic model (opus/sonnet/haiku/mythos/fable)
-//                      selected and no other provider; "+N" if some others too
-//   "Fable 5, Opus 4.7 +5" — otherwise, first two names + overflow count
+//   "All models"        — everything selected
+//   "No models"         — nothing selected
+//   "All Enterprise"    — all enterprise-tier models selected, none others
+//   "All Individual"    — all individual-tier models selected, none others
+//   "All OpenAI"        — single provider fully selected (any tier)
+//   "Fable 5, GPT-4o +3" — fallback: first two names + overflow count
 function updateModelTriggerLabel() {
   const labelEl = document.getElementById('model-trigger-label');
   if (!labelEl) return;
   const n = selectedModels.size;
   if (n === 0)                    { labelEl.textContent = 'No models';  return; }
   if (n === allModelsList.length) { labelEl.textContent = 'All models'; return; }
-  const anthropic = allModelsList.filter(m => isBillable(m));
-  const others    = allModelsList.filter(m => !isBillable(m));
-  if (anthropic.length && anthropic.every(m => selectedModels.has(m))) {
-    // n < total (handled above), so when others exist at least one is unselected.
-    const otherSel = others.filter(m => selectedModels.has(m)).length;
-    labelEl.textContent = otherSel ? 'All Anthropic +' + otherSel : 'All Anthropic';
-    return;
+
+  // Check for single-tier quick-select
+  for (const tier of ['enterprise', 'individual']) {
+    const tierModels = allModelsList.filter(m => {
+      const p = getProvider(m); return p && PROVIDER_META[p]?.tier === tier;
+    });
+    if (tierModels.length && tierModels.every(m => selectedModels.has(m)) &&
+        allModelsList.filter(m => selectedModels.has(m) && !tierModels.includes(m)).length === 0) {
+      labelEl.textContent = 'All ' + tier.charAt(0).toUpperCase() + tier.slice(1);
+      return;
+    }
   }
+
+  // Check for single-provider selection
+  for (const prov of Object.keys(PROVIDER_META)) {
+    const pm = allModelsList.filter(m => getProvider(m) === prov);
+    if (pm.length && pm.every(m => selectedModels.has(m)) &&
+        allModelsList.filter(m => selectedModels.has(m) && getProvider(m) !== prov).length === 0) {
+      labelEl.textContent = 'All ' + prov;
+      return;
+    }
+  }
+
   const chosen = sortedModels(allModelsList).filter(m => selectedModels.has(m));
   const shown = chosen.slice(0, 2).map(shortModelName);
   const extra = chosen.length - shown.length;

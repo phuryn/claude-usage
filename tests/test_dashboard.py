@@ -411,10 +411,11 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertIn("chart.js", HTML_TEMPLATE.lower())
 
     def test_template_has_substring_matching(self):
-        """Verify getPricing falls back to substring match for unknown models."""
-        self.assertIn("m.includes('opus')", HTML_TEMPLATE)
-        self.assertIn("m.includes('sonnet')", HTML_TEMPLATE)
-        self.assertIn("m.includes('haiku')", HTML_TEMPLATE)
+        """Verify provider keyword fallback is present (via PROVIDER_META or PROVIDER_FALLBACKS)."""
+        # PROVIDER_META drives getProvider(); PROVIDER_FALLBACKS drives getPricing().
+        # Either approach covers substring fallback — just ensure both are present.
+        self.assertIn("PROVIDER_META", HTML_TEMPLATE)
+        self.assertIn("PROVIDER_FALLBACKS", HTML_TEMPLATE)
 
     def test_unknown_models_return_null(self):
         """Verify getPricing returns null for non-Anthropic models."""

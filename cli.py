@@ -24,16 +24,58 @@ DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usag
 #
 # HOW TO ADD A NEW ENTERPRISE LLM
 # ─────────────────────────────────
-# 1. Add an entry to PRICING with the model's API identifier as the key.
-#    Use the exact string the provider's API returns in the "model" field of
-#    each response (check their docs or a live response).
-# 2. Fill in input / output / cache_read / cache_write (set cache_* to 0.0 if
-#    the provider doesn't support prompt caching).
-# 3. Add a keyword-based fallback in get_pricing() below so that date-suffixed
-#    or variant IDs (e.g. "gpt-4o-2026-01") still resolve correctly.
-# 4. Mirror both changes in dashboard.py's PRICING const and getPricing()
-#    (the JS copy must stay in sync — see AGENTS.md).
-# 5. Run the test suite: python -m unittest discover -s tests -v
+# 1. Add a block to PROVIDER_META with the provider's name, tier, keywords,
+#    and the canonical fallback model ID (used when an exact match isn't found).
+#    tier must be "enterprise" or "individual".
+# 2. Add per-model entries to PRICING keyed by the exact API model ID.
+# 3. Add keyword → canonical-key rows to _PROVIDER_FALLBACKS (more-specific first).
+# 4. Mirror all three changes in dashboard.py (PROVIDER_META, PRICING, PROVIDER_FALLBACKS).
+# 5. Run: python -m unittest discover -s tests -v
+
+# ── Provider metadata ──────────────────────────────────────────────────────────
+# Single source of truth for provider identity, tier, and keyword matching.
+# "tier" drives the Enterprise / Individual quick-filter in the dashboard and
+# the provider breakdown in `cli.py stats`.
+#
+# To add a new provider: append a new entry here (see HOW TO above).
+PROVIDER_META = {
+    "Anthropic": {
+        "tier":     "individual",   # Claude Code is a personal-developer tool
+        "keywords": ["claude", "fable", "mythos", "opus", "sonnet", "haiku"],
+        "default":  "claude-sonnet-4-6",
+    },
+    "OpenAI": {
+        "tier":     "enterprise",
+        "keywords": ["gpt-", "o3", "o4-mini", "o3-mini"],
+        "default":  "gpt-4o",
+    },
+    "Google": {
+        "tier":     "enterprise",
+        "keywords": ["gemini", "nanobanana"],
+        "default":  "gemini-2.5-flash",
+    },
+    "xAI": {
+        "tier":     "enterprise",
+        "keywords": ["grok"],
+        "default":  "grok-3",
+    },
+    "Perplexity": {
+        "tier":     "enterprise",
+        "keywords": ["sonar"],
+        "default":  "sonar-pro",
+    },
+}
+
+def get_provider(model):
+    """Return the provider name for a model ID, or None if unknown."""
+    if not model:
+        return None
+    m = model.lower()
+    for name, meta in PROVIDER_META.items():
+        for kw in meta["keywords"]:
+            if kw in m:
+                return name
+    return None
 
 PRICING = {
     # ── Anthropic ──────────────────────────────────────────────────────────────
@@ -438,11 +480,23 @@ def cmd_stats():
         )
     """).fetchone()
 
-    # Build total cost across all models
-    total_cost = sum(
-        calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
-        for r in by_model
-    )
+    # Build total cost and provider/tier aggregates from per-model rows
+    provider_totals = {}  # provider_name -> {inp, out, cr, cc, turns, cost, tier}
+    total_cost = 0.0
+    for r in by_model:
+        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        total_cost += cost
+        prov = get_provider(r["model"]) or "Unknown"
+        tier = PROVIDER_META[prov]["tier"] if prov in PROVIDER_META else "unknown"
+        if prov not in provider_totals:
+            provider_totals[prov] = {"inp": 0, "out": 0, "cr": 0, "cc": 0, "turns": 0, "cost": 0.0, "tier": tier}
+        pt = provider_totals[prov]
+        pt["inp"]   += r["inp"] or 0
+        pt["out"]   += r["out"] or 0
+        pt["cr"]    += r["cr"] or 0
+        pt["cc"]    += r["cc"] or 0
+        pt["turns"] += r["turns"] or 0
+        pt["cost"]  += cost
 
     print()
     hr("=")
@@ -463,6 +517,25 @@ def cmd_stats():
     print(f"  Subagent tokens:  {fmt(subagent['tokens'] or 0):<12}  (included in totals)")
     print()
     print(f"  Est. total cost:  ${total_cost:.4f}")
+    hr()
+
+    # Provider / tier breakdown
+    tier_totals = {"enterprise": {"cost": 0.0, "turns": 0}, "individual": {"cost": 0.0, "turns": 0}}
+    if provider_totals:
+        print("  By Provider:")
+        for prov, pt in sorted(provider_totals.items(), key=lambda x: -x[1]["cost"]):
+            tier = pt["tier"]
+            tier_label = f"[{tier}]"
+            print(f"    {prov:<14} {tier_label:<14}  turns={fmt(pt['turns']):<8}  "
+                  f"in={fmt(pt['inp']):<8}  out={fmt(pt['out']):<8}  cost={fmt_cost(pt['cost'])}")
+            if tier in tier_totals:
+                tier_totals[tier]["cost"]  += pt["cost"]
+                tier_totals[tier]["turns"] += pt["turns"]
+        print()
+        print("  By Tier:")
+        for tier_name in ("enterprise", "individual"):
+            tt = tier_totals[tier_name]
+            print(f"    {tier_name.capitalize():<14}  turns={fmt(tt['turns']):<8}  cost={fmt_cost(tt['cost'])}")
     hr()
 
     print("  By Model:")
