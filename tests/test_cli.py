@@ -101,7 +101,7 @@ class TestGetPricing(unittest.TestCase):
 
     def test_unknown_model_returns_none(self):
         self.assertIsNone(get_pricing("glm-5.1"))
-        self.assertIsNone(get_pricing("gpt-4o"))
+        self.assertIsNone(get_pricing("llama-4-scout"))
         self.assertIsNone(get_pricing("some-unknown-model"))
 
     def test_none_model_returns_none(self):
@@ -155,8 +155,25 @@ class TestCalcCost(unittest.TestCase):
         self.assertEqual(cost, 0.0)
 
     def test_non_anthropic_model_costs_zero(self):
-        cost = calc_cost("gpt-4o", 1_000_000, 500_000, 0, 0)
+        # Truly unknown providers (e.g. local/open-source models) should cost $0.
+        cost = calc_cost("llama-4-scout", 1_000_000, 500_000, 0, 0)
         self.assertEqual(cost, 0.0)
+
+    def test_openai_model_costs_nonzero(self):
+        cost = calc_cost("gpt-4o", 1_000_000, 0, 0, 0)
+        self.assertAlmostEqual(cost, 2.50)
+
+    def test_grok_model_pricing(self):
+        cost = calc_cost("grok-3", 1_000_000, 0, 0, 0)
+        self.assertAlmostEqual(cost, 3.00)
+
+    def test_gemini_model_pricing(self):
+        cost = calc_cost("gemini-2.5-pro", 1_000_000, 0, 0, 0)
+        self.assertAlmostEqual(cost, 1.25)
+
+    def test_sonar_model_pricing(self):
+        cost = calc_cost("sonar-pro", 1_000_000, 0, 0, 0)
+        self.assertAlmostEqual(cost, 3.00)
 
 
 class TestFmt(unittest.TestCase):

@@ -465,7 +465,7 @@ class TestPricingParity(unittest.TestCase):
         import re
         prices = {}
         for match in re.finditer(
-            r"'(claude-[^']+)':\s*\{\s*input:\s*([\d.]+),\s*output:\s*([\d.]+)",
+            r"'([^']+)':\s*\{\s*input:\s*([\d.]+),\s*output:\s*([\d.]+)",
             HTML_TEMPLATE
         ):
             model, inp, out = match.group(1), float(match.group(2)), float(match.group(3))

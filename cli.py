@@ -18,22 +18,129 @@ from scanner import VERSION
 
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
 
+# All prices are per million tokens (USD), as of June 2026.
+# cache_read / cache_write only apply to providers that support prompt caching;
+# leave both as 0.0 for providers that don't (e.g. OpenAI, Grok, Perplexity).
+#
+# HOW TO ADD A NEW ENTERPRISE LLM
+# ─────────────────────────────────
+# 1. Add an entry to PRICING with the model's API identifier as the key.
+#    Use the exact string the provider's API returns in the "model" field of
+#    each response (check their docs or a live response).
+# 2. Fill in input / output / cache_read / cache_write (set cache_* to 0.0 if
+#    the provider doesn't support prompt caching).
+# 3. Add a keyword-based fallback in get_pricing() below so that date-suffixed
+#    or variant IDs (e.g. "gpt-4o-2026-01") still resolve correctly.
+# 4. Mirror both changes in dashboard.py's PRICING const and getPricing()
+#    (the JS copy must stay in sync — see AGENTS.md).
+# 5. Run the test suite: python -m unittest discover -s tests -v
+
 PRICING = {
-    # Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
-    # (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
+    # ── Anthropic ──────────────────────────────────────────────────────────────
+    # Fable / Mythos — most capable class, priced at 2× Opus.
     "claude-fable-5":    {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50},
     "claude-mythos-5":   {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50},
-    "claude-opus-4-8":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
-    "claude-opus-4-7":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
-    "claude-opus-4-6":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
-    "claude-opus-4-5":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
-    "claude-sonnet-4-7": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
-    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
-    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
-    "claude-haiku-4-7":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25},
-    "claude-haiku-4-6":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25},
-    "claude-haiku-4-5":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write": 1.25},
+    "claude-opus-4-8":   {"input":  5.00, "output": 25.00, "cache_read": 0.50, "cache_write":  6.25},
+    "claude-opus-4-7":   {"input":  5.00, "output": 25.00, "cache_read": 0.50, "cache_write":  6.25},
+    "claude-opus-4-6":   {"input":  5.00, "output": 25.00, "cache_read": 0.50, "cache_write":  6.25},
+    "claude-opus-4-5":   {"input":  5.00, "output": 25.00, "cache_read": 0.50, "cache_write":  6.25},
+    "claude-sonnet-4-7": {"input":  3.00, "output": 15.00, "cache_read": 0.30, "cache_write":  3.75},
+    "claude-sonnet-4-6": {"input":  3.00, "output": 15.00, "cache_read": 0.30, "cache_write":  3.75},
+    "claude-sonnet-4-5": {"input":  3.00, "output": 15.00, "cache_read": 0.30, "cache_write":  3.75},
+    "claude-haiku-4-7":  {"input":  1.00, "output":  5.00, "cache_read": 0.10, "cache_write":  1.25},
+    "claude-haiku-4-6":  {"input":  1.00, "output":  5.00, "cache_read": 0.10, "cache_write":  1.25},
+    "claude-haiku-4-5":  {"input":  1.00, "output":  5.00, "cache_read": 0.10, "cache_write":  1.25},
+
+    # ── OpenAI ────────────────────────────────────────────────────────────────
+    # Reasoning models (o-series)
+    "o3":              {"input": 10.00, "output": 40.00, "cache_read": 2.50, "cache_write": 0.0},
+    "o4-mini":         {"input":  1.10, "output":  4.40, "cache_read": 0.275,"cache_write": 0.0},
+    "o3-mini":         {"input":  1.10, "output":  4.40, "cache_read": 0.55, "cache_write": 0.0},
+    # GPT-4.1 family
+    "gpt-4.1":         {"input":  2.00, "output":  8.00, "cache_read": 0.50, "cache_write": 0.0},
+    "gpt-4.1-mini":    {"input":  0.40, "output":  1.60, "cache_read": 0.10, "cache_write": 0.0},
+    "gpt-4.1-nano":    {"input":  0.10, "output":  0.40, "cache_read": 0.025,"cache_write": 0.0},
+    # GPT-4o family
+    "gpt-4o":          {"input":  2.50, "output": 10.00, "cache_read": 1.25, "cache_write": 0.0},
+    "gpt-4o-mini":     {"input":  0.15, "output":  0.60, "cache_read": 0.075,"cache_write": 0.0},
+
+    # ── Google Gemini ─────────────────────────────────────────────────────────
+    # Gemini 2.5 — pricing shown for prompts ≤200k tokens; >200k is 2× input.
+    "gemini-2.5-pro":         {"input":  1.25, "output": 10.00, "cache_read": 0.31, "cache_write": 0.0},
+    "gemini-2.5-flash":       {"input":  0.30, "output":  2.50, "cache_read": 0.075,"cache_write": 0.0},
+    "gemini-2.5-flash-lite":  {"input":  0.10, "output":  0.40, "cache_read": 0.025,"cache_write": 0.0},
+    # Gemini 2.0
+    "gemini-2.0-flash":       {"input":  0.10, "output":  0.40, "cache_read": 0.025,"cache_write": 0.0},
+    "gemini-2.0-flash-lite":  {"input":  0.075,"output":  0.30, "cache_read": 0.0,  "cache_write": 0.0},
+    # Gemini Nano — on-device / edge; effectively $0 (billed via device, not API).
+    "gemini-nano":            {"input":  0.0,  "output":  0.0,  "cache_read": 0.0,  "cache_write": 0.0},
+    # Nanobanana — Google's experimental ultra-small model (alias for Nano tier).
+    "nanobanana":             {"input":  0.0,  "output":  0.0,  "cache_read": 0.0,  "cache_write": 0.0},
+
+    # ── xAI Grok ──────────────────────────────────────────────────────────────
+    "grok-3":          {"input":  3.00, "output": 15.00, "cache_read": 0.0, "cache_write": 0.0},
+    "grok-3-fast":     {"input":  5.00, "output": 25.00, "cache_read": 0.0, "cache_write": 0.0},
+    "grok-3-mini":     {"input":  0.30, "output":  0.50, "cache_read": 0.0, "cache_write": 0.0},
+    "grok-3-mini-fast":{"input":  0.60, "output":  4.00, "cache_read": 0.0, "cache_write": 0.0},
+    "grok-2":          {"input":  2.00, "output": 10.00, "cache_read": 0.0, "cache_write": 0.0},
+    "grok-2-mini":     {"input":  0.20, "output":  0.40, "cache_read": 0.0, "cache_write": 0.0},
+
+    # ── Perplexity Sonar ──────────────────────────────────────────────────────
+    # Sonar models include live web search grounding; per-request search fees
+    # (≈$5/1000 requests for sonar-pro) are NOT reflected here — token costs only.
+    "sonar-pro":              {"input":  3.00, "output": 15.00, "cache_read": 0.0, "cache_write": 0.0},
+    "sonar":                  {"input":  1.00, "output":  1.00, "cache_read": 0.0, "cache_write": 0.0},
+    "sonar-reasoning-pro":    {"input":  2.00, "output":  8.00, "cache_read": 0.0, "cache_write": 0.0},
+    "sonar-reasoning":        {"input":  1.00, "output":  5.00, "cache_read": 0.0, "cache_write": 0.0},
+    "sonar-deep-research":    {"input":  2.00, "output":  8.00, "cache_read": 0.0, "cache_write": 0.0},
 }
+
+# ── Provider keyword registry ──────────────────────────────────────────────────
+# Maps a substring that appears in model IDs to the canonical fallback key in
+# PRICING.  Order matters only within a provider family (more specific first).
+# When adding a new enterprise provider, append an entry here instead of
+# touching get_pricing()'s if-chain.
+_PROVIDER_FALLBACKS = [
+    # Anthropic
+    ("fable",          "claude-fable-5"),
+    ("mythos",         "claude-mythos-5"),
+    ("opus",           "claude-opus-4-8"),
+    ("sonnet",         "claude-sonnet-4-6"),
+    ("haiku",          "claude-haiku-4-5"),
+    # OpenAI — check reasoning models before generic gpt-4 catches them
+    ("o3-mini",        "o3-mini"),
+    ("o4-mini",        "o4-mini"),
+    ("o3",             "o3"),
+    ("gpt-4.1-mini",   "gpt-4.1-mini"),
+    ("gpt-4.1-nano",   "gpt-4.1-nano"),
+    ("gpt-4.1",        "gpt-4.1"),
+    ("gpt-4o-mini",    "gpt-4o-mini"),
+    ("gpt-4o",         "gpt-4o"),
+    # Google Gemini
+    ("gemini-2.5-pro",        "gemini-2.5-pro"),
+    ("gemini-2.5-flash-lite", "gemini-2.5-flash-lite"),
+    ("gemini-2.5-flash",      "gemini-2.5-flash"),
+    ("gemini-2.0-flash-lite", "gemini-2.0-flash-lite"),
+    ("gemini-2.0-flash",      "gemini-2.0-flash"),
+    ("gemini-nano",           "gemini-nano"),
+    ("nanobanana",            "nanobanana"),
+    ("gemini",                "gemini-2.5-flash"),   # unknown Gemini → flash tier
+    # xAI Grok
+    ("grok-3-mini-fast", "grok-3-mini-fast"),
+    ("grok-3-mini",      "grok-3-mini"),
+    ("grok-3-fast",      "grok-3-fast"),
+    ("grok-3",           "grok-3"),
+    ("grok-2-mini",      "grok-2-mini"),
+    ("grok-2",           "grok-2"),
+    ("grok",             "grok-3"),                 # unknown Grok → Grok 3
+    # Perplexity Sonar
+    ("sonar-reasoning-pro", "sonar-reasoning-pro"),
+    ("sonar-reasoning",     "sonar-reasoning"),
+    ("sonar-deep-research", "sonar-deep-research"),
+    ("sonar-pro",           "sonar-pro"),
+    ("sonar",               "sonar"),
+]
+
 
 def get_pricing(model):
     if not model:
@@ -43,16 +150,10 @@ def get_pricing(model):
     for key in PRICING:
         if model.startswith(key):
             return PRICING[key]
-    # Substring fallback: match model family by keyword
     m = model.lower()
-    if "fable" in m or "mythos" in m:
-        return PRICING["claude-fable-5"]
-    if "opus" in m:
-        return PRICING["claude-opus-4-8"]
-    if "sonnet" in m:
-        return PRICING["claude-sonnet-4-6"]
-    if "haiku" in m:
-        return PRICING["claude-haiku-4-5"]
+    for keyword, fallback_key in _PROVIDER_FALLBACKS:
+        if keyword in m:
+            return PRICING[fallback_key]
     return None
 
 def calc_cost(model, inp, out, cache_read, cache_creation):

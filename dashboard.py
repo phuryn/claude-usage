@@ -725,10 +725,18 @@ function tzDisplayName(tzMode) {
   }
 }
 
-// ── Pricing (Anthropic API, June 2026) ─────────────────────────────────────
+// ── Pricing (multi-provider, June 2026) ────────────────────────────────────
+// All prices are per million tokens (USD).
+// cache_read / cache_write are 0 for providers that don't support prompt caching.
+//
+// HOW TO ADD A NEW ENTERPRISE LLM
+// ─────────────────────────────────
+// 1. Add an entry to PRICING keyed by the exact model ID the provider API returns.
+// 2. Add a fallback entry to PROVIDER_FALLBACKS so date-suffixed/variant IDs resolve.
+// 3. Mirror both changes in cli.py's PRICING dict and _PROVIDER_FALLBACKS list.
+// 4. Run: python -m unittest discover -s tests -v
 const PRICING = {
-  // Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
-  // (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
+  // ── Anthropic ──────────────────────────────────────────────────────────────
   'claude-fable-5':    { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
   'claude-mythos-5':   { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
   'claude-opus-4-8':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
@@ -741,13 +749,104 @@ const PRICING = {
   'claude-haiku-4-7':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
   'claude-haiku-4-6':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
   'claude-haiku-4-5':  { input:  1.00, output:  5.00, cache_write:  1.25, cache_read: 0.10 },
+
+  // ── OpenAI ─────────────────────────────────────────────────────────────────
+  'o3':              { input: 10.00, output: 40.00, cache_write: 0.0, cache_read: 2.50  },
+  'o4-mini':         { input:  1.10, output:  4.40, cache_write: 0.0, cache_read: 0.275 },
+  'o3-mini':         { input:  1.10, output:  4.40, cache_write: 0.0, cache_read: 0.55  },
+  'gpt-4.1':         { input:  2.00, output:  8.00, cache_write: 0.0, cache_read: 0.50  },
+  'gpt-4.1-mini':    { input:  0.40, output:  1.60, cache_write: 0.0, cache_read: 0.10  },
+  'gpt-4.1-nano':    { input:  0.10, output:  0.40, cache_write: 0.0, cache_read: 0.025 },
+  'gpt-4o':          { input:  2.50, output: 10.00, cache_write: 0.0, cache_read: 1.25  },
+  'gpt-4o-mini':     { input:  0.15, output:  0.60, cache_write: 0.0, cache_read: 0.075 },
+
+  // ── Google Gemini ──────────────────────────────────────────────────────────
+  // 2.5-pro pricing is for prompts ≤200k tokens; >200k tokens charges 2× input rate.
+  'gemini-2.5-pro':        { input:  1.25, output: 10.00, cache_write: 0.0, cache_read: 0.31  },
+  'gemini-2.5-flash':      { input:  0.30, output:  2.50, cache_write: 0.0, cache_read: 0.075 },
+  'gemini-2.5-flash-lite': { input:  0.10, output:  0.40, cache_write: 0.0, cache_read: 0.025 },
+  'gemini-2.0-flash':      { input:  0.10, output:  0.40, cache_write: 0.0, cache_read: 0.025 },
+  'gemini-2.0-flash-lite': { input:  0.075,output:  0.30, cache_write: 0.0, cache_read: 0.0   },
+  // Nano / Nanobanana — on-device; billed via device, not API ($0 token cost).
+  'gemini-nano':            { input:  0.0,  output:  0.0,  cache_write: 0.0, cache_read: 0.0   },
+  'nanobanana':             { input:  0.0,  output:  0.0,  cache_write: 0.0, cache_read: 0.0   },
+
+  // ── xAI Grok ───────────────────────────────────────────────────────────────
+  'grok-3':           { input:  3.00, output: 15.00, cache_write: 0.0, cache_read: 0.0 },
+  'grok-3-fast':      { input:  5.00, output: 25.00, cache_write: 0.0, cache_read: 0.0 },
+  'grok-3-mini':      { input:  0.30, output:  0.50, cache_write: 0.0, cache_read: 0.0 },
+  'grok-3-mini-fast': { input:  0.60, output:  4.00, cache_write: 0.0, cache_read: 0.0 },
+  'grok-2':           { input:  2.00, output: 10.00, cache_write: 0.0, cache_read: 0.0 },
+  'grok-2-mini':      { input:  0.20, output:  0.40, cache_write: 0.0, cache_read: 0.0 },
+
+  // ── Perplexity Sonar ───────────────────────────────────────────────────────
+  // Per-request search grounding fees (~$5/1000 req for sonar-pro) are NOT included.
+  'sonar-pro':           { input:  3.00, output: 15.00, cache_write: 0.0, cache_read: 0.0 },
+  'sonar':               { input:  1.00, output:  1.00, cache_write: 0.0, cache_read: 0.0 },
+  'sonar-reasoning-pro': { input:  2.00, output:  8.00, cache_write: 0.0, cache_read: 0.0 },
+  'sonar-reasoning':     { input:  1.00, output:  5.00, cache_write: 0.0, cache_read: 0.0 },
+  'sonar-deep-research': { input:  2.00, output:  8.00, cache_write: 0.0, cache_read: 0.0 },
 };
+
+// Provider keyword fallbacks — checked in order when a model ID isn't an exact
+// key in PRICING.  More-specific substrings must come before broader ones.
+// To add a new enterprise provider, append entries here and to PRICING above.
+const PROVIDER_FALLBACKS = [
+  // Anthropic
+  ['fable',          'claude-fable-5'],
+  ['mythos',         'claude-mythos-5'],
+  ['opus',           'claude-opus-4-8'],
+  ['sonnet',         'claude-sonnet-4-6'],
+  ['haiku',          'claude-haiku-4-5'],
+  // OpenAI
+  ['o3-mini',        'o3-mini'],
+  ['o4-mini',        'o4-mini'],
+  ['o3',             'o3'],
+  ['gpt-4.1-mini',   'gpt-4.1-mini'],
+  ['gpt-4.1-nano',   'gpt-4.1-nano'],
+  ['gpt-4.1',        'gpt-4.1'],
+  ['gpt-4o-mini',    'gpt-4o-mini'],
+  ['gpt-4o',         'gpt-4o'],
+  // Google Gemini
+  ['gemini-2.5-pro',        'gemini-2.5-pro'],
+  ['gemini-2.5-flash-lite', 'gemini-2.5-flash-lite'],
+  ['gemini-2.5-flash',      'gemini-2.5-flash'],
+  ['gemini-2.0-flash-lite', 'gemini-2.0-flash-lite'],
+  ['gemini-2.0-flash',      'gemini-2.0-flash'],
+  ['gemini-nano',            'gemini-nano'],
+  ['nanobanana',             'nanobanana'],
+  ['gemini',                 'gemini-2.5-flash'],
+  // xAI Grok
+  ['grok-3-mini-fast', 'grok-3-mini-fast'],
+  ['grok-3-mini',      'grok-3-mini'],
+  ['grok-3-fast',      'grok-3-fast'],
+  ['grok-3',           'grok-3'],
+  ['grok-2-mini',      'grok-2-mini'],
+  ['grok-2',           'grok-2'],
+  ['grok',             'grok-3'],
+  // Perplexity Sonar
+  ['sonar-reasoning-pro', 'sonar-reasoning-pro'],
+  ['sonar-reasoning',     'sonar-reasoning'],
+  ['sonar-deep-research', 'sonar-deep-research'],
+  ['sonar-pro',           'sonar-pro'],
+  ['sonar',               'sonar'],
+];
 
 function isBillable(model) {
   if (!model) return false;
   const m = model.toLowerCase();
-  return m.includes('fable') || m.includes('mythos') ||
-         m.includes('opus') || m.includes('sonnet') || m.includes('haiku');
+  // Anthropic
+  if (m.includes('fable') || m.includes('mythos') ||
+      m.includes('opus') || m.includes('sonnet') || m.includes('haiku')) return true;
+  // OpenAI
+  if (m.startsWith('o3') || m.startsWith('o4') || m.includes('gpt-')) return true;
+  // Google
+  if (m.includes('gemini')) return true;
+  // xAI
+  if (m.includes('grok')) return true;
+  // Perplexity
+  if (m.includes('sonar') || m.includes('nanobanana')) return true;
+  return false;
 }
 
 function getPricing(model) {
@@ -757,10 +856,9 @@ function getPricing(model) {
     if (model.startsWith(key)) return PRICING[key];
   }
   const m = model.toLowerCase();
-  if (m.includes('fable') || m.includes('mythos')) return PRICING['claude-fable-5'];
-  if (m.includes('opus'))   return PRICING['claude-opus-4-8'];
-  if (m.includes('sonnet')) return PRICING['claude-sonnet-4-6'];
-  if (m.includes('haiku'))  return PRICING['claude-haiku-4-5'];
+  for (const [keyword, fallbackKey] of PROVIDER_FALLBACKS) {
+    if (m.includes(keyword)) return PRICING[fallbackKey];
+  }
   return null;
 }
 
