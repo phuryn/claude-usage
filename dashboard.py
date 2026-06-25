@@ -391,6 +391,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .budget-alert.critical .budget-bar-fill { background: #d9503c; }
 
   #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .view-by-group { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
   .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
   .filter-sep { width: 1px; height: 22px; background: var(--border); flex-shrink: 0; }
   /* Model multi-select: a compact trigger in the bar that opens a grouped panel. */
@@ -565,13 +566,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     /* Rescan button gets its own row, full-width, minimum 44px tap height */
     #rescan-btn { width: 100%; min-height: 44px; font-size: 13px; margin-top: 2px; }
 
-    /* Filter bar: allow everything to wrap naturally; each item ≥44px tall */
-    #filter-bar { flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 14px; }
-    #filter-bar > * { width: 100%; }
+    /* Filter bar: wrap rows; dropdowns go full-width, button group stays inline */
+    #filter-bar { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; }
     .filter-sep { display: none; }
+    /* Model dropdown row: label + trigger expand to full available width */
+    .model-select { flex: 1 1 100%; }
     .model-trigger { min-width: unset; max-width: unset; width: 100%; min-height: 44px; font-size: 13px; }
     .model-panel { min-width: unset; max-width: 100%; width: 100%; left: 0; right: 0; }
+    /* Range select row: label + select expand to remaining width */
+    .range-select { flex: 1 1 100%; }
     .range-select select { width: 100%; min-height: 44px; font-size: 13px; padding: 0 10px; }
+    /* View-by group stays in one horizontal row — buttons are short enough */
+    .view-by-group { flex: 1 1 100%; justify-content: flex-start; flex-wrap: nowrap; }
+    .view-by-group .tier-btn, .view-by-group .filter-btn { min-height: 40px; flex: 1; text-align: center; }
 
     /* Jump bar: horizontal scroll instead of wrapping (avoids multiline sticky bar) */
     #jump-bar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 5px 14px; }
@@ -627,10 +634,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </div>
   <div class="filter-sep"></div>
-  <div class="filter-label">View&nbsp;by</div>
-  <button class="tier-btn" onclick="selectTierModels('enterprise')" title="Show only enterprise-tier providers (OpenAI, Google, xAI, Perplexity)">Enterprise</button>
-  <button class="tier-btn" onclick="selectTierModels('individual')" title="Show only individual-tier providers (Anthropic)">Individual</button>
-  <button class="filter-btn" onclick="selectAllModels()" title="Show all providers">All</button>
+  <div class="view-by-group">
+    <div class="filter-label">View&nbsp;by</div>
+    <button class="tier-btn" onclick="selectTierModels('enterprise')" title="Show only enterprise-tier providers (OpenAI, Google, xAI, Perplexity)">Enterprise</button>
+    <button class="tier-btn" onclick="selectTierModels('individual')" title="Show only individual-tier providers (Anthropic)">Individual</button>
+    <button class="filter-btn" onclick="selectAllModels()" title="Show all providers">All</button>
+  </div>
   <div class="filter-sep"></div>
   <div class="filter-label">Range</div>
   <div class="range-select">
