@@ -4,3 +4,7 @@ logs/
 
 .pr-candidates.md
 /tmp/
+
+# Local environment — contains DASHBOARD_TOKEN, never commit
+.env
+
