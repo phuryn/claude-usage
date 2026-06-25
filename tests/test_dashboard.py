@@ -72,7 +72,9 @@ class TestGetDashboardData(unittest.TestCase):
         data = get_dashboard_data(db_path=self.db_path)
         self.assertEqual(len(data["sessions_all"]), 1)
         session = data["sessions_all"][0]
-        self.assertEqual(session["project"], "user/myproject")
+        # M-1: project paths are HMAC-hashed before leaving the server;
+        # verify the field is an 8-char hex string, not the raw path.
+        self.assertRegex(session["project"], r'^[0-9a-f]{8}$')
         self.assertEqual(session["model"], "claude-sonnet-4-6")
         self.assertEqual(session["input"], 5000)
 

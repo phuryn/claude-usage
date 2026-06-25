@@ -1,19 +1,9 @@
 {
-  "name": "claude-usage-phuryn",
-  "displayName": "Claude Code Usage by Paweł Huryn",
-  "description": "Embed your Claude Code usage dashboard (token counts, costs, sessions, projects) directly inside VS Code. Reads local JSONL transcripts, no API calls.",
+  "name": "claude-usage-internal",
+  "displayName": "Claude Code Usage",
+  "description": "Internal usage dashboard — token counts, costs, sessions, and projects. Reads local JSONL transcripts, no API calls.",
   "version": "1.5.0",
-  "publisher": "PawelHuryn",
-  "author": {
-    "name": "Paweł Huryn",
-    "url": "https://www.productcompass.pm"
-  },
   "license": "MIT",
-  "homepage": "https://github.com/phuryn/claude-usage",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/phuryn/claude-usage"
-  },
   "engines": {
     "vscode": "^1.94.0"
   },

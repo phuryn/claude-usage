@@ -2,17 +2,55 @@
 dashboard.py - Local web dashboard served on localhost:8080.
 """
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import sqlite3
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 from datetime import datetime
 
 from scanner import VERSION, init_db
 
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
+
+# ── SECURITY [C-1]: Token-based access control ────────────────────────────────
+# Set DASHBOARD_TOKEN in the environment to require a Bearer token on every
+# request.  In production this should be replaced by a corporate SSO reverse
+# proxy (e.g. nginx + oauth2-proxy against your SAML/OIDC IdP) that validates
+# the employee identity before forwarding requests here.
+#
+# Usage:
+#   export DASHBOARD_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+#   python cli.py dashboard
+#
+# Then access the dashboard with the token in the Authorization header:
+#   curl -H "Authorization: Bearer $DASHBOARD_TOKEN" http://localhost:8080/
+# or append it as a query parameter (for browser use):
+#   http://localhost:8080/?token=<value>
+#
+# If the env var is not set the check is skipped (open access, localhost only).
+# Sixth Street deployment MUST set this variable.
+_DASHBOARD_TOKEN: str | None = os.environ.get("DASHBOARD_TOKEN") or None
+
+# ── SECURITY [M-1]: Privacy-preserving path hashing ──────────────────────────
+# Project paths and git branch names are hashed with HMAC-SHA256 before being
+# returned by the API.  This means /Users/jivika/sixthstreet/portfolio-model
+# becomes "a3f8c2d1" — internal project names never leave the server in plaintext.
+# The hash is consistent per run, so the dashboard can still group/filter by
+# project.  A new random salt is generated each process start; persistence of
+# human-readable names across restarts is intentionally sacrificed for privacy.
+_PRIVACY_SALT: bytes = secrets.token_bytes(32)
+
+
+def _privacy_hash(value: str) -> str:
+    """Return an 8-char HMAC-SHA256 hex digest of value, keyed by a per-process salt."""
+    if not value or value in ("unknown", ""):
+        return value
+    return hmac.new(_PRIVACY_SALT, value.encode(), hashlib.sha256).hexdigest()[:8]
 
 # Which surface is rendering the dashboard: "web" (standalone `cli.py dashboard`)
 # or "vscode" (embedded in the extension's sidebar webview). serve() sets this
@@ -123,8 +161,10 @@ def get_dashboard_data(db_path=DB_PATH):
             duration_min = 0
         sessions_all.append({
             "session_id":    r["session_id"][:8],
-            "project":       r["project_name"] or "unknown",
-            "branch":        r["git_branch"] or "",
+            # SECURITY [M-1]: Project paths and branch names are HMAC-hashed so
+            # internal names never appear in API responses in plaintext.
+            "project":       _privacy_hash(r["project_name"] or "unknown"),
+            "branch":        _privacy_hash(r["git_branch"] or ""),
             "last":          (r["last_timestamp"] or "")[:16].replace("T", " "),
             "last_date":     (r["last_timestamp"] or "")[:10],
             "duration_min":  duration_min,
@@ -2406,6 +2446,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def _check_auth(self) -> bool:
+        """SECURITY [C-1 + H-1]: Enforce token-based access control.
+
+        Accepts the token in two places:
+          1. Authorization: Bearer <token>  header  (preferred — for API clients
+             and for the VS Code extension webview, which can set headers)
+          2. ?token=<value>  query parameter         (fallback — for plain browser
+             navigation where you can't set custom headers)
+
+        Why this resolves H-1 (CSRF):
+          CSRF attacks exploit cookie-based sessions — the browser automatically
+          attaches cookies to cross-origin requests.  A Bearer token in a custom
+          Authorization header cannot be forged by a third-party page because the
+          Same-Origin Policy blocks cross-origin code from setting that header.
+          Therefore no separate CSRF token is needed when using Bearer auth.
+
+        Returns True if auth passes (or if DASHBOARD_TOKEN is not configured).
+        Sends a 401 and returns False if auth fails.
+        """
+        if _DASHBOARD_TOKEN is None:
+            return True  # Token auth not configured; open access (localhost only)
+
+        # Check Authorization header first
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            provided = auth_header[len("Bearer "):]
+            if secrets.compare_digest(provided, _DASHBOARD_TOKEN):
+                return True
+
+        # Fallback: check ?token= query parameter
+        qs = parse_qs(urlparse(self.path).query)
+        token_param = qs.get("token", [""])[0]
+        if token_param and secrets.compare_digest(token_param, _DASHBOARD_TOKEN):
+            return True
+
+        # Auth failed — respond with 401 and a WWW-Authenticate hint
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Bearer realm="Claude Usage Dashboard"')
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Unauthorized. Set Authorization: Bearer <DASHBOARD_TOKEN>.")
+        return False
+
     def _send_security_headers(self):
         # SECURITY [L-2]: Defensive HTTP response headers.
         #
@@ -2426,6 +2509,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
 
     def do_GET(self):
+        if not self._check_auth():
+            return
         # self.path includes the query string, but every URL the UI emits has
         # one (e.g. "/?range=all"); compare the bare path so bookmarkable
         # URLs don't fall through to 404.
@@ -2479,6 +2564,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
+        if not self._check_auth():
+            return
         path = urlparse(self.path).path
         if path == "/api/rescan":
             # Incremental scan: ingest new/changed JSONL without touching
