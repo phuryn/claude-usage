@@ -295,6 +295,121 @@ def calc_cost(model, inp, out, cache_read, cache_creation):
         return base * ABACUS_MARKUP
     return base
 
+# ── Budget guardrails ─────────────────────────────────────────────────────────
+# Set any of these env vars to enable spend alerts.  Unset (or 0) = no limit.
+#
+#   BUDGET_DAILY=50        alert when today's spend exceeds $50
+#   BUDGET_MONTHLY=500     alert when this calendar month's spend exceeds $500
+#   BUDGET_SESSION=10      alert when any single session costs more than $10
+#
+# The CLI prints a warning and exits with code 2 when a threshold is breached.
+# The dashboard surfaces a red banner in the UI.  Both use the same thresholds.
+
+def _parse_budget(env_var: str) -> float | None:
+    """Return float threshold from env var, or None if unset/zero/invalid."""
+    raw = os.environ.get(env_var, "").strip()
+    if not raw:
+        return None
+    try:
+        val = float(raw)
+        return val if val > 0 else None
+    except ValueError:
+        print(f"  WARNING: {env_var}={raw!r} is not a valid number — ignored.", file=sys.stderr)
+        return None
+
+BUDGET_DAILY:   float | None = _parse_budget("BUDGET_DAILY")
+BUDGET_MONTHLY: float | None = _parse_budget("BUDGET_MONTHLY")
+BUDGET_SESSION: float | None = _parse_budget("BUDGET_SESSION")
+
+
+def check_budget_alerts(conn) -> list[dict]:
+    """Query the DB and return a list of active budget breach dicts.
+
+    Each dict has keys: level ("warning"/"critical"), window, spent, limit, pct.
+    "critical" fires when spend >= 100 % of the limit.
+    "warning"  fires when spend >= 80 % of the limit (early heads-up).
+    Returns [] when no thresholds are configured or none are breached.
+    """
+    conn.row_factory = sqlite3.Row
+    alerts = []
+
+    def _alert(window: str, limit: float, spent: float) -> None:
+        if limit is None or limit <= 0:
+            return
+        pct = spent / limit * 100
+        if pct >= 80:
+            alerts.append({
+                "level":  "critical" if pct >= 100 else "warning",
+                "window": window,
+                "spent":  spent,
+                "limit":  limit,
+                "pct":    pct,
+            })
+
+    today = date.today()
+
+    # ── Daily ──────────────────────────────────────────────────────────────────
+    if BUDGET_DAILY:
+        rows = conn.execute("""
+            SELECT COALESCE(model,'unknown') as model,
+                   SUM(input_tokens) as inp, SUM(output_tokens) as out,
+                   SUM(cache_read_tokens) as cr, SUM(cache_creation_tokens) as cc
+            FROM turns WHERE substr(timestamp,1,10) = ?
+            GROUP BY model
+        """, (today.isoformat(),)).fetchall()
+        daily_cost = sum(calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0) for r in rows)
+        _alert("daily", BUDGET_DAILY, daily_cost)
+
+    # ── Monthly ────────────────────────────────────────────────────────────────
+    if BUDGET_MONTHLY:
+        month_start = today.replace(day=1).isoformat()
+        rows = conn.execute("""
+            SELECT COALESCE(model,'unknown') as model,
+                   SUM(input_tokens) as inp, SUM(output_tokens) as out,
+                   SUM(cache_read_tokens) as cr, SUM(cache_creation_tokens) as cc
+            FROM turns WHERE substr(timestamp,1,10) >= ?
+            GROUP BY model
+        """, (month_start,)).fetchall()
+        monthly_cost = sum(calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0) for r in rows)
+        _alert("monthly", BUDGET_MONTHLY, monthly_cost)
+
+    # ── Per-session ────────────────────────────────────────────────────────────
+    if BUDGET_SESSION:
+        sessions = conn.execute("""
+            SELECT session_id, COALESCE(model,'unknown') as model,
+                   SUM(input_tokens) as inp, SUM(output_tokens) as out,
+                   SUM(cache_read_tokens) as cr, SUM(cache_creation_tokens) as cc
+            FROM turns
+            GROUP BY session_id, model
+        """).fetchall()
+        # Aggregate per session (may span multiple models)
+        session_costs: dict[str, float] = {}
+        for r in sessions:
+            session_costs[r["session_id"]] = session_costs.get(r["session_id"], 0.0) + \
+                calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        worst_session = max(session_costs.values(), default=0.0)
+        _alert("session", BUDGET_SESSION, worst_session)
+
+    return alerts
+
+
+def _print_budget_alerts(alerts: list[dict]) -> bool:
+    """Print budget alerts to stdout. Returns True if any critical threshold breached."""
+    if not alerts:
+        return False
+    any_critical = False
+    print()
+    for a in alerts:
+        icon = "🚨" if a["level"] == "critical" else "⚠️ "
+        label = a["window"].capitalize()
+        print(f"  {icon}  BUDGET {a['level'].upper()} [{label}]  "
+              f"${a['spent']:.2f} of ${a['limit']:.2f} ({a['pct']:.0f}%)")
+        if a["level"] == "critical":
+            any_critical = True
+    print()
+    return any_critical
+
+
 def fmt(n):
     if n >= 1_000_000:
         return f"{n/1_000_000:.2f}M"
@@ -387,8 +502,12 @@ def cmd_today():
     print(f"  Cache read:       {fmt(total_cr)}")
     print(f"  Cache creation:   {fmt(total_cc)}")
     hr()
-    print()
+
+    alerts = check_budget_alerts(conn)
     conn.close()
+    if _print_budget_alerts(alerts):
+        sys.exit(2)   # non-zero so monitoring scripts can act on it
+    print()
 
 
 def cmd_week():
@@ -483,8 +602,12 @@ def cmd_week():
     print(f"  Cache read:          {fmt(total_cr)}")
     print(f"  Cache creation:      {fmt(total_cc)}")
     hr()
-    print()
+
+    alerts = check_budget_alerts(conn)
     conn.close()
+    if _print_budget_alerts(alerts):
+        sys.exit(2)
+    print()
 
 
 def cmd_stats():
@@ -643,8 +766,12 @@ def cmd_stats():
         print(f"    Output:  {fmt(int(daily_avg['avg_out'] or 0))}")
 
     hr("=")
-    print()
+
+    alerts = check_budget_alerts(conn)
     conn.close()
+    if _print_budget_alerts(alerts):
+        sys.exit(2)
+    print()
 
 
 def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, surface=None):

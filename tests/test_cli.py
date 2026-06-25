@@ -1,11 +1,15 @@
 """Tests for cli.py - pricing, formatting, and cost calculation."""
 
 import io
+import sqlite3
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import date
+from pathlib import Path
 from unittest import mock
 import cli
-from cli import get_pricing, calc_cost, fmt, fmt_cost, PRICING
+from cli import get_pricing, calc_cost, fmt, fmt_cost, PRICING, check_budget_alerts
 
 
 class TestGetPricing(unittest.TestCase):
@@ -225,6 +229,110 @@ class TestCalcCost(unittest.TestCase):
         from cli import get_provider
         self.assertEqual(get_provider("abacus/claude-sonnet-4-6"), "Abacus")
         self.assertEqual(get_provider("abacus-gpt-4o"), "Abacus")
+
+
+class TestBudgetGuardrails(unittest.TestCase):
+    """Budget threshold detection and alert generation."""
+
+    def _make_db(self, daily_cost_tokens=0, session_cost_tokens=0):
+        """Create a temp DB with controllable spend.
+
+        daily_cost_tokens input tokens of claude-sonnet-4-6 today →
+        cost = tokens * $3/MTok.
+        """
+        tf = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        conn = sqlite3.connect(tf.name)
+        conn.row_factory = sqlite3.Row
+        import scanner
+        scanner.init_db(conn)
+        today = date.today().isoformat() + "T12:00:00Z"
+        if daily_cost_tokens:
+            conn.execute("""
+                INSERT INTO turns
+                  (session_id, timestamp, model, input_tokens, output_tokens,
+                   cache_read_tokens, cache_creation_tokens)
+                VALUES ('sess-daily', ?, 'claude-sonnet-4-6', ?, 0, 0, 0)
+            """, (today, daily_cost_tokens))
+        if session_cost_tokens:
+            conn.execute("""
+                INSERT INTO turns
+                  (session_id, timestamp, model, input_tokens, output_tokens,
+                   cache_read_tokens, cache_creation_tokens)
+                VALUES ('sess-big', ?, 'claude-sonnet-4-6', ?, 0, 0, 0)
+            """, (today, session_cost_tokens))
+        conn.commit()
+        return conn, Path(tf.name)
+
+    def test_no_alerts_when_no_thresholds(self):
+        conn, _ = self._make_db(daily_cost_tokens=1_000_000)
+        with mock.patch.object(cli, "BUDGET_DAILY", None), \
+             mock.patch.object(cli, "BUDGET_MONTHLY", None), \
+             mock.patch.object(cli, "BUDGET_SESSION", None):
+            alerts = check_budget_alerts(conn)
+        self.assertEqual(alerts, [])
+
+    def test_no_alerts_when_under_80_pct(self):
+        # $3 spend vs $10 limit = 30% — below the 80% warning threshold
+        conn, _ = self._make_db(daily_cost_tokens=1_000_000)  # $3.00
+        with mock.patch.object(cli, "BUDGET_DAILY", 10.0), \
+             mock.patch.object(cli, "BUDGET_MONTHLY", None), \
+             mock.patch.object(cli, "BUDGET_SESSION", None):
+            alerts = check_budget_alerts(conn)
+        self.assertEqual(alerts, [])
+
+    def test_warning_at_80_pct(self):
+        # $3 spend vs $3.75 limit = 80% → warning (not critical)
+        conn, _ = self._make_db(daily_cost_tokens=1_000_000)  # $3.00
+        with mock.patch.object(cli, "BUDGET_DAILY", 3.75), \
+             mock.patch.object(cli, "BUDGET_MONTHLY", None), \
+             mock.patch.object(cli, "BUDGET_SESSION", None):
+            alerts = check_budget_alerts(conn)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["level"], "warning")
+        self.assertEqual(alerts[0]["window"], "daily")
+
+    def test_critical_at_100_pct(self):
+        # $3 spend vs $3.00 limit = 100% → critical
+        conn, _ = self._make_db(daily_cost_tokens=1_000_000)  # $3.00
+        with mock.patch.object(cli, "BUDGET_DAILY", 3.00), \
+             mock.patch.object(cli, "BUDGET_MONTHLY", None), \
+             mock.patch.object(cli, "BUDGET_SESSION", None):
+            alerts = check_budget_alerts(conn)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["level"], "critical")
+
+    def test_session_threshold_fires_on_expensive_session(self):
+        # 2M tokens of Sonnet = $6.00; session limit = $5 → critical
+        conn, _ = self._make_db(session_cost_tokens=2_000_000)  # $6.00
+        with mock.patch.object(cli, "BUDGET_DAILY", None), \
+             mock.patch.object(cli, "BUDGET_MONTHLY", None), \
+             mock.patch.object(cli, "BUDGET_SESSION", 5.0):
+            alerts = check_budget_alerts(conn)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["window"], "session")
+        self.assertEqual(alerts[0]["level"], "critical")
+
+    def test_multiple_windows_can_alert_simultaneously(self):
+        # Breach both daily and session thresholds at once
+        conn, _ = self._make_db(daily_cost_tokens=1_000_000,  # $3.00
+                                 session_cost_tokens=1_000_000)
+        with mock.patch.object(cli, "BUDGET_DAILY", 3.00), \
+             mock.patch.object(cli, "BUDGET_MONTHLY", None), \
+             mock.patch.object(cli, "BUDGET_SESSION", 2.00):
+            alerts = check_budget_alerts(conn)
+        windows = {a["window"] for a in alerts}
+        self.assertIn("daily",   windows)
+        self.assertIn("session", windows)
+
+    def test_parse_budget_invalid_value_returns_none(self):
+        with mock.patch.dict("os.environ", {"BUDGET_DAILY": "not-a-number"}):
+            val = cli._parse_budget("BUDGET_DAILY")
+        self.assertIsNone(val)
+
+    def test_parse_budget_zero_returns_none(self):
+        with mock.patch.dict("os.environ", {"BUDGET_DAILY": "0"}):
+            val = cli._parse_budget("BUDGET_DAILY")
+        self.assertIsNone(val)
 
 
 class TestFmt(unittest.TestCase):

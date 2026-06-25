@@ -45,6 +45,46 @@ _DASHBOARD_TOKEN: str | None = os.environ.get("DASHBOARD_TOKEN") or None
 # human-readable names across restarts is intentionally sacrificed for privacy.
 _PRIVACY_SALT: bytes = secrets.token_bytes(32)
 
+# ── Budget guardrails ─────────────────────────────────────────────────────────
+# Thresholds are read from the same env vars as cli.py so you only configure once.
+# Set BUDGET_DAILY / BUDGET_MONTHLY / BUDGET_SESSION to dollar amounts.
+# The dashboard surfaces a banner when spend reaches 80 % (warning) or 100 % (critical).
+
+def _parse_budget_threshold(env_var: str) -> float | None:
+    raw = os.environ.get(env_var, "").strip()
+    if not raw:
+        return None
+    try:
+        val = float(raw)
+        return val if val > 0 else None
+    except ValueError:
+        return None
+
+_BUDGET_DAILY:   float | None = _parse_budget_threshold("BUDGET_DAILY")
+_BUDGET_MONTHLY: float | None = _parse_budget_threshold("BUDGET_MONTHLY")
+_BUDGET_SESSION: float | None = _parse_budget_threshold("BUDGET_SESSION")
+
+
+def _get_budget_alerts_for_api(db_path: Path) -> list[dict]:
+    """Compute budget alerts for the /api/data response.
+
+    Mirrors the logic in cli.py check_budget_alerts() so the dashboard banner
+    stays in sync with the CLI warnings without importing cli (which would create
+    a circular dependency via scanner).
+    """
+    import cli as _cli   # lazy import — avoids circular at module load time
+
+    if not any([_BUDGET_DAILY, _BUDGET_MONTHLY, _BUDGET_SESSION]):
+        return []
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    alerts = _cli.check_budget_alerts(conn)
+    conn.close()
+    return alerts
+
+
+# ── Abacus.AI platform markup ──────────────────────────────────────────────────
 # Abacus.AI platform markup — applied on top of the underlying model's per-token
 # price for any model ID prefixed with "abacus/".  1.0 = passthrough (no markup).
 # Override: export ABACUS_MARKUP=1.15  (adds 15 % to all Abacus-routed queries)
@@ -271,6 +311,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "subagent_by_type": subagent_by_type,
         "top_dispatches":  top_dispatches,
         "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "budget_alerts":   _get_budget_alerts_for_api(db_path=db_path),
     }
 
 
@@ -334,6 +375,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
   #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
   #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ── Budget alert banner ─────────────────────────────────────────────────── */
+  #budget-banner { padding: 10px 24px; font-size: 13px; font-weight: 500; display: flex; flex-direction: column; gap: 4px; }
+  .budget-alert { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 6px; border-left: 4px solid; }
+  .budget-alert.warning  { background: rgba(217,151,50,0.12); border-color: #d99732; color: #d99732; }
+  .budget-alert.critical { background: rgba(217,80,60,0.15);  border-color: #d9503c; color: #d9503c; }
+  .budget-alert .budget-label { flex: 1; }
+  .budget-alert .budget-bar-wrap { width: 120px; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; }
+  .budget-alert .budget-bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
+  .budget-alert.warning  .budget-bar-fill { background: #d99732; }
+  .budget-alert.critical .budget-bar-fill { background: #d9503c; }
 
   #filter-bar { background: var(--card); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
@@ -493,6 +545,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
+<!-- Budget alert banner — hidden until JS populates it from /api/data budget_alerts -->
+<div id="budget-banner" style="display:none"></div>
 <header>
   <div class="header-title">
     <span class="header-icon" role="img" aria-label="Claude Usage"></span>
@@ -2169,6 +2223,34 @@ function exportDispatchesCSV() {
   downloadCSV('subagent_dispatches', header, rows);
 }
 
+// ── Budget banner ─────────────────────────────────────────────────────────
+function renderBudgetBanner(alerts) {
+  const banner = document.getElementById('budget-banner');
+  if (!alerts || alerts.length === 0) {
+    banner.style.display = 'none';
+    banner.innerHTML = '';
+    return;
+  }
+  const LABELS = { daily: 'Today', monthly: 'This month', session: 'Single session' };
+  banner.innerHTML = alerts.map(a => {
+    const pct  = Math.min(a.pct, 100).toFixed(0);
+    const fill  = Math.min(a.pct, 100).toFixed(1);
+    const label = LABELS[a.window] || a.window;
+    const icon  = a.level === 'critical' ? '🚨' : '⚠️';
+    return `<div class="budget-alert ${esc(a.level)}">
+      <span>${icon}</span>
+      <span class="budget-label">
+        <strong>${label} budget ${a.level}</strong> —
+        $${a.spent.toFixed(2)} of $${a.limit.toFixed(2)} (${pct}%)
+      </span>
+      <div class="budget-bar-wrap" title="${fill}% of limit">
+        <div class="budget-bar-fill" style="width:${fill}%"></div>
+      </div>
+    </div>`;
+  }).join('');
+  banner.style.display = 'flex';
+}
+
 // ── Rescan ────────────────────────────────────────────────────────────────
 async function triggerRescan() {
   const btn = document.getElementById('rescan-btn');
@@ -2206,6 +2288,9 @@ async function loadData() {
 
     const isFirstLoad = rawData === null;
     rawData = d;
+
+    // ── Budget alert banner ──────────────────────────────────────────────────
+    renderBudgetBanner(d.budget_alerts || []);
 
     if (isFirstLoad) {
       // Restore range from URL into the dropdown
