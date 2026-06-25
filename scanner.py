@@ -190,7 +190,10 @@ def _ensure_column(conn, table, column, decl):
     if decl not in _ALLOWED_DECLS:
         raise ValueError(f"_ensure_column: decl '{decl}' not in allowlist")
 
-    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    # Use positional index (column 1 = name) rather than r["name"] so this
+    # works regardless of whether conn.row_factory is sqlite3.Row or the default
+    # tuple factory.  PRAGMA table_info columns are: (cid, name, type, ...).
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
     if column not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
