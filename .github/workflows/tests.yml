@@ -14,10 +14,14 @@ jobs:
         python-version: ["3.9", "3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v5
+      # SECURITY [H-2]: SHA-pinned action references prevent supply-chain attacks
+      # where a floating tag (e.g. @v5) is silently moved to a malicious commit.
+      # Update SHAs when upgrading action versions:
+      #   curl -s https://api.github.com/repos/actions/<name>/git/ref/tags/vX | jq -r .object.sha
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # actions/checkout@v5
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 

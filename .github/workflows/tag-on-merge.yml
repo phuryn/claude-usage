@@ -19,6 +19,12 @@ on:
   push:
     branches: [main]
 
+# SECURITY [H-3]: Least-privilege permissions — grant only what this workflow
+# actually needs.  The default GITHUB_TOKEN permission is "read all / write none"
+# at the repo level, so any permission block replaces the default entirely.
+# contents:write is required to push tags and create GitHub Releases.
+# Everything else (issues, pull-requests, packages, etc.) stays at the default
+# "none", limiting the damage if the workflow or a compromised action is hijacked.
 permissions:
   contents: write
 
@@ -27,7 +33,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      # SECURITY [H-2]: SHA-pinned action reference.
+      # Floating tags like @v5 can be silently moved to a different (malicious)
+      # commit by the action author or a supply-chain attacker who gains access
+      # to the actions/checkout repo.  Pinning to an immutable commit SHA
+      # guarantees the exact code we audited is what runs in CI.
+      # To update: find the new SHA for the desired tag with
+      #   curl -s https://api.github.com/repos/actions/checkout/git/ref/tags/vX | jq -r .object.sha
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # actions/checkout@v5
         with:
           # Need enough history to diff the whole push range (`before..after`)
           # not just the tip commit. fetch-depth: 0 = full clone; small repo,
@@ -103,7 +116,7 @@ jobs:
 
       - name: Set up Node (to build the .vsix)
         if: steps.detect.outputs.version != ''
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # actions/setup-node@v5
         with:
           node-version: "20"
           cache: "npm"

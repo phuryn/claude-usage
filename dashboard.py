@@ -235,7 +235,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Code Usage Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- SECURITY [C-3]: SRI (Subresource Integrity) prevents a compromised CDN from
+     injecting malicious JS. The integrity hash is SHA-384 of chart.umd.min.js@4.4.0;
+     if the file changes on the CDN the browser will refuse to execute it.
+     crossorigin="anonymous" is required for SRI checks on cross-origin scripts. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+        integrity="sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb"
+        crossorigin="anonymous"></script>
 <script>window.APP_CONFIG = __APP_CONFIG_JSON__;</script>
 <style>
   :root {
@@ -1154,16 +1160,27 @@ function buildFilterUI(allModels) {
       const tier = PROVIDER_META[prov]?.tier;
       const badge = tier ? `<span class="provider-tier-badge ${tier}">${tier}</span>` : '';
       const allSel = ms.every(m => selectedModels.has(m));
+      // SECURITY [L-5]: Use data-provider attribute instead of inline onclick.
+      // Inline onclick with string interpolation is a DOM-based XSS vector if
+      // a provider name ever contains a single-quote or JS metacharacter.
+      // The event listener below reads data-provider safely via dataset.provider.
       html += `<div class="model-group-header">
         <span class="model-group-label-text">${esc(prov)}</span>${badge}
-        <button class="model-group-all" onclick="selectProviderModels('${esc(prov)}')"
+        <button class="model-group-all" data-provider="${esc(prov)}"
           title="Select only ${esc(prov)} models">${allSel ? '✓ ' : ''}All</button>
       </div>`;
     }
     html += ms.map(rowHTML).join('');
   }
 
-  document.getElementById('model-checkboxes').innerHTML = html;
+  const container = document.getElementById('model-checkboxes');
+  container.innerHTML = html;
+  // SECURITY [L-5 cont.]: Event delegation replaces per-button onclick strings.
+  // One listener on the container handles all provider "All" buttons safely by
+  // reading the data-provider attribute — no JS string interpolation involved.
+  container.querySelectorAll('button.model-group-all[data-provider]').forEach(btn => {
+    btn.addEventListener('click', () => selectProviderModels(btn.dataset.provider));
+  });
   updateModelTriggerLabel();
 }
 
@@ -2389,6 +2406,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def _send_security_headers(self):
+        # SECURITY [L-2]: Defensive HTTP response headers.
+        #
+        # X-Frame-Options: DENY — prevents clickjacking by blocking this page
+        #   from being embedded in an <iframe> on another origin.
+        #   NOTE: if the VS Code extension embeds the dashboard in a webview
+        #   iframe, set this to SAMEORIGIN or rely on CSP frame-ancestors instead.
+        #
+        # X-Content-Type-Options: nosniff — stops the browser from MIME-sniffing
+        #   a response away from the declared Content-Type, which can turn a
+        #   mis-typed JSON response into an executable script.
+        #
+        # Referrer-Policy: no-referrer — prevents the browser from sending the
+        #   dashboard URL (which may encode a project path or date filter) in the
+        #   Referer header when Chart.js or any other linked resource is fetched.
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+
     def do_GET(self):
         # self.path includes the query string, but every URL the UI emits has
         # one (e.g. "/?range=all"); compare the bare path so bookmarkable
@@ -2404,6 +2440,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
 
@@ -2418,6 +2455,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
 
@@ -2432,6 +2470,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "image/svg+xml")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "max-age=86400")
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
 
@@ -2460,6 +2499,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
         else:

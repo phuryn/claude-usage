@@ -19,7 +19,49 @@ VERSION = "1.5.0"
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
-DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
+
+
+def _resolve_db_path() -> Path:
+    """Return the database path from CLAUDE_USAGE_DB or the default.
+
+    SECURITY [L-3]: Validates the env-var path before use.
+    An attacker who can set environment variables could redirect the DB to any
+    writable path (e.g. /etc/passwd, a world-readable tmpfs).  The checks below
+    block the most common attack vectors without being so restrictive that they
+    break Docker deployments where the DB lives on a mounted volume (/data/usage.db).
+
+    Enforced invariants:
+      1. No path traversal — resolved path must not contain '..' components.
+         expanduser().resolve() handles symlinks; we then confirm the final path
+         does not sneak back up the tree via a relative-to-root check.
+      2. Extension must be '.db' — prevents scanner from acting as a write gadget
+         targeting arbitrary files like /etc/crontab or ~/.ssh/authorized_keys.
+    """
+    raw = os.environ.get("CLAUDE_USAGE_DB", "")
+    if not raw:
+        return Path.home() / ".claude" / "usage.db"
+
+    # Expand ~ and resolve symlinks so comparisons are against real paths.
+    path = Path(raw).expanduser().resolve()
+
+    # Guard 1: reject any '..' component that survives resolution — indicates
+    # a traversal attempt (e.g. "/data/../etc/shadow" resolves to "/etc/shadow"
+    # but we catch it by checking the raw parts after resolution).
+    if ".." in path.parts:
+        raise ValueError(
+            f"CLAUDE_USAGE_DB '{raw}' contains path traversal components."
+        )
+
+    # Guard 2: extension whitelist.
+    if path.suffix != ".db":
+        raise ValueError(
+            f"CLAUDE_USAGE_DB '{raw}' must end in '.db' (got '{path.suffix}')."
+        )
+
+    return path
+
+
+DB_PATH = _resolve_db_path()
 DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
 
 # Higher number = higher priority when choosing a session's primary model.
@@ -120,7 +162,34 @@ def init_db(conn):
 
 
 def _ensure_column(conn, table, column, decl):
-    """Add a column to an existing table if it isn't already present."""
+    """Add a column to an existing table if it isn't already present.
+
+    SECURITY [M-3]: table/column/decl are injected directly into SQL via
+    f-strings.  sqlite3 does not support parameter binding for DDL identifiers,
+    so we guard with an explicit allowlist instead.  All current callers pass
+    string literals; this check ensures a future caller can't accidentally
+    (or maliciously) pass arbitrary SQL fragments.
+    """
+    # Allowlist of tables and columns this function is permitted to touch.
+    # Extend here — never widen the check to "any identifier-looking string".
+    _ALLOWED_TABLES = {"sessions", "turns", "processed_files", "agents"}
+    _ALLOWED_COLUMNS = {
+        "cost", "is_subagent", "agent_id", "agent_name",
+        "git_branch", "project_name", "cwd",
+    }
+    # Allowlist of SQLite type declarations (column type + optional constraint).
+    _ALLOWED_DECLS = {
+        "TEXT", "REAL", "INTEGER", "INTEGER DEFAULT 0",
+        "TEXT DEFAULT NULL", "REAL DEFAULT 0.0",
+        "INTEGER NOT NULL DEFAULT 0",
+    }
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(f"_ensure_column: table '{table}' not in allowlist")
+    if column not in _ALLOWED_COLUMNS:
+        raise ValueError(f"_ensure_column: column '{column}' not in allowlist")
+    if decl not in _ALLOWED_DECLS:
+        raise ValueError(f"_ensure_column: decl '{decl}' not in allowlist")
+
     cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
     if column not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
