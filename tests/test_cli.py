@@ -175,6 +175,57 @@ class TestCalcCost(unittest.TestCase):
         cost = calc_cost("sonar-pro", 1_000_000, 0, 0, 0)
         self.assertAlmostEqual(cost, 3.00)
 
+    def test_abacus_slash_prefix_resolves_to_underlying_model(self):
+        # "abacus/claude-sonnet-4-6" should price identically to "claude-sonnet-4-6"
+        # at the default markup of 1.0.
+        cost_abacus = calc_cost("abacus/claude-sonnet-4-6", 1_000_000, 0, 0, 0)
+        cost_direct = calc_cost("claude-sonnet-4-6", 1_000_000, 0, 0, 0)
+        self.assertAlmostEqual(cost_abacus, cost_direct)
+
+    def test_abacus_dash_prefix_resolves_to_underlying_model(self):
+        # "abacus-gpt-4o" should resolve to gpt-4o pricing.
+        cost = calc_cost("abacus-gpt-4o", 1_000_000, 0, 0, 0)
+        self.assertAlmostEqual(cost, 2.50)  # same as gpt-4o input rate
+
+    def test_abacus_markup_applied(self):
+        import cli as cli_mod
+        original = cli_mod.ABACUS_MARKUP
+        try:
+            cli_mod.ABACUS_MARKUP = 1.5  # 50 % markup
+            cost = calc_cost("abacus/gpt-4o", 1_000_000, 0, 0, 0)
+            # 1M input tokens of gpt-4o = $2.50 base × 1.5 markup = $3.75
+            self.assertAlmostEqual(cost, 3.75)
+        finally:
+            cli_mod.ABACUS_MARKUP = original  # restore so other tests are unaffected
+
+    def test_abacus_markup_zero_costs_nothing(self):
+        # ABACUS_MARKUP=0.0 means Abacus is billed separately (flat/credits);
+        # show $0 here to avoid double-counting.
+        import cli as cli_mod
+        original = cli_mod.ABACUS_MARKUP
+        try:
+            cli_mod.ABACUS_MARKUP = 0.0
+            cost = calc_cost("abacus/claude-opus-4-6", 1_000_000, 0, 0, 0)
+            self.assertAlmostEqual(cost, 0.0)
+        finally:
+            cli_mod.ABACUS_MARKUP = original
+
+    def test_direct_model_unaffected_by_abacus_markup(self):
+        # Markup should NOT apply to non-Abacus model IDs.
+        import cli as cli_mod
+        original = cli_mod.ABACUS_MARKUP
+        try:
+            cli_mod.ABACUS_MARKUP = 2.0
+            cost = calc_cost("gpt-4o", 1_000_000, 0, 0, 0)
+            self.assertAlmostEqual(cost, 2.50)  # unchanged
+        finally:
+            cli_mod.ABACUS_MARKUP = original
+
+    def test_abacus_provider_identified(self):
+        from cli import get_provider
+        self.assertEqual(get_provider("abacus/claude-sonnet-4-6"), "Abacus")
+        self.assertEqual(get_provider("abacus-gpt-4o"), "Abacus")
+
 
 class TestFmt(unittest.TestCase):
     def test_millions(self):

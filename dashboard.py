@@ -45,6 +45,11 @@ _DASHBOARD_TOKEN: str | None = os.environ.get("DASHBOARD_TOKEN") or None
 # human-readable names across restarts is intentionally sacrificed for privacy.
 _PRIVACY_SALT: bytes = secrets.token_bytes(32)
 
+# Abacus.AI platform markup — applied on top of the underlying model's per-token
+# price for any model ID prefixed with "abacus/".  1.0 = passthrough (no markup).
+# Override: export ABACUS_MARKUP=1.15  (adds 15 % to all Abacus-routed queries)
+_ABACUS_MARKUP: float = float(os.environ.get("ABACUS_MARKUP", "1.0"))
+
 
 def _privacy_hash(value: str) -> str:
     """Return an 8-char HMAC-SHA256 hex digest of value, keyed by a per-process salt."""
@@ -854,6 +859,9 @@ const PRICING = {
 // key in PRICING.  More-specific substrings must come before broader ones.
 // To add a new enterprise provider, append entries here and to PRICING above.
 const PROVIDER_FALLBACKS = [
+  // Abacus.AI — fallback for unresolvable Abacus model IDs after prefix strip.
+  // Prefix stripping happens in getPricing() before this list is consulted.
+  ['abacus', 'gpt-4o'],
   // Anthropic
   ['fable',          'claude-fable-5'],
   ['mythos',         'claude-mythos-5'],
@@ -904,10 +912,36 @@ const PROVIDER_META = {
   Google:     { tier: 'enterprise', keywords: ['gemini', 'nanobanana'] },
   xAI:        { tier: 'enterprise', keywords: ['grok'] },
   Perplexity: { tier: 'enterprise', keywords: ['sonar'] },
+  // Abacus.AI — enterprise AI platform that routes to underlying LLMs.
+  // Model IDs in logs are typically "abacus/claude-sonnet-4-6", "abacus/gpt-4o", etc.
+  // The prefix is stripped before resolving the underlying model price; the
+  // ABACUS_MARKUP multiplier (server-injected as window.APP_CONFIG.abacusMarkup)
+  // is then applied on top.
+  Abacus:     { tier: 'enterprise', keywords: ['abacus'] },
 };
+
+// Abacus markup multiplier — injected from the Python ABACUS_MARKUP env var.
+// 1.0 = passthrough (underlying model rates only).
+// Set ABACUS_MARKUP=1.15 in the server environment to add a 15% platform fee.
+const ABACUS_MARKUP = (window.APP_CONFIG && window.APP_CONFIG.abacusMarkup != null)
+  ? window.APP_CONFIG.abacusMarkup
+  : 1.0;
+
+// Strip "abacus/" or "abacus-" prefix from a model ID so the underlying
+// model can be resolved in PRICING and PROVIDER_FALLBACKS.
+function stripAbacusPrefix(model) {
+  if (!model) return model;
+  const lower = model.toLowerCase();
+  if (lower.startsWith('abacus/'))  return model.slice('abacus/'.length);
+  if (lower.startsWith('abacus-'))  return model.slice('abacus-'.length);
+  return model;
+}
 
 function getProvider(model) {
   if (!model) return null;
+  // Abacus-prefixed IDs are attributed to Abacus regardless of the underlying
+  // model, so "abacus/claude-sonnet-4-6" shows under Abacus, not Anthropic.
+  if (stripAbacusPrefix(model) !== model) return 'Abacus';
   const m = model.toLowerCase();
   for (const [name, meta] of Object.entries(PROVIDER_META)) {
     if (meta.keywords.some(kw => m.includes(kw))) return name;
@@ -921,11 +955,13 @@ function isBillable(model) {
 
 function getPricing(model) {
   if (!model) return null;
-  if (PRICING[model]) return PRICING[model];
+  // Strip Abacus routing prefix before resolving underlying model price.
+  const resolved = stripAbacusPrefix(model);
+  if (PRICING[resolved]) return PRICING[resolved];
   for (const key of Object.keys(PRICING)) {
-    if (model.startsWith(key)) return PRICING[key];
+    if (resolved.startsWith(key)) return PRICING[key];
   }
-  const m = model.toLowerCase();
+  const m = resolved.toLowerCase();
   for (const [keyword, fallbackKey] of PROVIDER_FALLBACKS) {
     if (m.includes(keyword)) return PRICING[fallbackKey];
   }
@@ -936,12 +972,15 @@ function calcCost(model, inp, out, cacheRead, cacheCreation) {
   if (!isBillable(model)) return 0;
   const p = getPricing(model);
   if (!p) return 0;
-  return (
+  const base = (
     inp           * p.input       / 1e6 +
     out           * p.output      / 1e6 +
     cacheRead     * p.cache_read  / 1e6 +
     cacheCreation * p.cache_write / 1e6
   );
+  // Apply Abacus markup only when the raw model string has the Abacus prefix.
+  if (model && stripAbacusPrefix(model) !== model) return base * ABACUS_MARKUP;
+  return base;
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────────
@@ -2519,7 +2558,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Inject runtime config (version + surface) the page can't know at
             # author time. json.dumps produces a valid JS object literal for the
             # `window.APP_CONFIG = __APP_CONFIG_JSON__;` placeholder in the head.
-            config = json.dumps({"version": VERSION, "surface": SURFACE})
+            config = json.dumps({"version": VERSION, "surface": SURFACE, "abacusMarkup": _ABACUS_MARKUP})
             html = HTML_TEMPLATE.replace("__APP_CONFIG_JSON__", config)
             body = html.encode("utf-8")
             self.send_response(200)

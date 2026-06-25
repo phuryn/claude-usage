@@ -64,18 +64,79 @@ PROVIDER_META = {
         "keywords": ["sonar"],
         "default":  "sonar-pro",
     },
+    # ── Abacus.AI ────────────────────────────────────────────────────────────────
+    # Abacus is an enterprise AI platform that routes queries to underlying LLMs
+    # (Claude, GPT-4o, Gemini, Grok, Sonar, etc.) based on query type or user
+    # selection.  Model IDs in JSONL logs are typically prefixed with "abacus/"
+    # (e.g. "abacus/claude-sonnet-4-6", "abacus/gpt-4o").
+    #
+    # Cost = underlying_model_price × ABACUS_MARKUP
+    #
+    # Set ABACUS_MARKUP in your environment once your firm confirms the billing
+    # structure with Abacus:
+    #   export ABACUS_MARKUP=1.0    # passthrough — pay underlying model rates only
+    #   export ABACUS_MARKUP=1.15   # 15 % platform markup on top of model rates
+    #   export ABACUS_MARKUP=0.0    # Abacus billed separately (flat seat/credit);
+    #                                # show $0 in this dashboard to avoid double-count
+    "Abacus": {
+        "tier":     "enterprise",
+        "keywords": ["abacus"],     # matches "abacus/...", "abacus-...", etc.
+        "default":  "gpt-4o",       # Abacus default when no underlying model resolved
+    },
 }
 
 def get_provider(model):
-    """Return the provider name for a model ID, or None if unknown."""
+    """Return the provider name for a model ID, or None if unknown.
+
+    Abacus-prefixed IDs (e.g. "abacus/gpt-4o") are attributed to Abacus
+    regardless of which underlying model they contain, so they appear as a
+    distinct provider group in the dashboard rather than being merged into
+    the underlying provider (Anthropic, OpenAI, etc.).
+    """
     if not model:
         return None
+    # Check for Abacus routing prefix before the general keyword scan, so
+    # "abacus/claude-sonnet-4-6" is attributed to Abacus, not Anthropic.
+    if _strip_abacus_prefix(model) != model:
+        return "Abacus"
     m = model.lower()
     for name, meta in PROVIDER_META.items():
         for kw in meta["keywords"]:
             if kw in m:
                 return name
     return None
+
+
+# ── Abacus.AI markup multiplier ───────────────────────────────────────────────
+# Abacus routes to underlying LLMs; this multiplier is applied on top of the
+# underlying model's per-token price to account for any platform fee.
+#
+# How to set:
+#   export ABACUS_MARKUP=1.0    # default — underlying model rates only
+#   export ABACUS_MARKUP=1.15   # 15 % Abacus platform markup
+#   export ABACUS_MARKUP=0.0    # Abacus billed separately (flat/credit); show $0 here
+#
+# Until your firm confirms the Abacus billing structure, leave at 1.0.
+ABACUS_MARKUP: float = float(os.environ.get("ABACUS_MARKUP", "1.0"))
+
+
+def _strip_abacus_prefix(model: str) -> str:
+    """Strip 'abacus/' or 'abacus-' prefix from a model ID string.
+
+    Abacus.AI JSONL logs may write model IDs in several forms:
+      abacus/claude-sonnet-4-6   → claude-sonnet-4-6
+      abacus-gpt-4o              → gpt-4o
+      ABACUS/gemini-2.5-pro      → gemini-2.5-pro   (case-normalised)
+      claude-sonnet-4-6          → claude-sonnet-4-6 (no-op if no prefix)
+
+    Adjust the prefix list below if your firm's Abacus deployment uses a
+    different naming convention (e.g. "abacusai/" or "ax/").
+    """
+    lower = model.lower()
+    for prefix in ("abacus/", "abacus-"):
+        if lower.startswith(prefix):
+            return model[len(prefix):]   # preserve original casing of model part
+    return model
 
 PRICING = {
     # ── Anthropic ──────────────────────────────────────────────────────────────
@@ -143,6 +204,11 @@ PRICING = {
 # When adding a new enterprise provider, append an entry here instead of
 # touching get_pricing()'s if-chain.
 _PROVIDER_FALLBACKS = [
+    # Abacus.AI — prefix-stripped in get_pricing() before this list is reached,
+    # so a bare "abacus" substring here only fires for truly unresolvable Abacus
+    # model IDs where the underlying model can't be identified.  Falls back to gpt-4o
+    # (Abacus's most common default) so cost is non-zero rather than silently $0.
+    ("abacus", "gpt-4o"),
     # Anthropic
     ("fable",          "claude-fable-5"),
     ("mythos",         "claude-mythos-5"),
@@ -185,29 +251,49 @@ _PROVIDER_FALLBACKS = [
 
 
 def get_pricing(model):
+    """Return the pricing dict for a model ID, or None if unknown.
+
+    For Abacus-prefixed model IDs (e.g. "abacus/claude-sonnet-4-6"), the
+    prefix is stripped and the underlying model's price is returned.
+    The ABACUS_MARKUP multiplier is applied separately in calc_cost() so
+    that get_pricing() always returns base rates.
+    """
     if not model:
         return None
-    if model in PRICING:
-        return PRICING[model]
+    # Strip Abacus routing prefix before resolving the underlying model price.
+    resolved = _strip_abacus_prefix(model)
+    if resolved in PRICING:
+        return PRICING[resolved]
     for key in PRICING:
-        if model.startswith(key):
+        if resolved.startswith(key):
             return PRICING[key]
-    m = model.lower()
+    m = resolved.lower()
     for keyword, fallback_key in _PROVIDER_FALLBACKS:
         if keyword in m:
             return PRICING[fallback_key]
     return None
 
+
 def calc_cost(model, inp, out, cache_read, cache_creation):
+    """Return the USD cost for a single turn.
+
+    For Abacus-routed models the ABACUS_MARKUP multiplier is applied on top
+    of the underlying model's per-token price.  Set ABACUS_MARKUP=0.0 if
+    Abacus is billed separately (flat seat or credits) to avoid double-counting.
+    """
     p = get_pricing(model)
     if not p:
         return 0.0
-    return (
+    base = (
         inp            * p["input"]       / 1_000_000 +
         out            * p["output"]      / 1_000_000 +
         cache_read     * p["cache_read"]  / 1_000_000 +
         cache_creation * p["cache_write"] / 1_000_000
     )
+    # Apply Abacus markup only to Abacus-prefixed model strings.
+    if model and _strip_abacus_prefix(model) != model:
+        return base * ABACUS_MARKUP
+    return base
 
 def fmt(n):
     if n >= 1_000_000:
