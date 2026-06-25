@@ -350,14 +350,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* VS Code-style scrollbars. The dashboard renders inside a webview iframe,
      which doesn't inherit VS Code's --vscode-* theme variables, so we set the
      scrollbar here: no arrows, grey thumb (#28292B, #8B8B8D on hover) over a
-     #121314 track, in a 21px gutter. Also fits the dark UI standalone. */
-  * { scrollbar-width: auto; scrollbar-color: #28292B #121314; }
-  ::-webkit-scrollbar { width: 21px; height: 21px; }
+     #121314 track, in a 21px gutter. Also fits the dark UI standalone.
+     On touch / mobile we hide native scrollbars to avoid double-scrollbar mess;
+     the thin fallback keeps it tidy in mobile Safari / Chrome. */
+  * { scrollbar-width: thin; scrollbar-color: #28292B #121314; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: #121314; }
-  ::-webkit-scrollbar-thumb { background-color: #28292B; border: 3px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb { background-color: #28292B; border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
   ::-webkit-scrollbar-thumb:hover { background-color: #8B8B8D; }
   ::-webkit-scrollbar-thumb:active { background-color: #8B8B8D; }
   ::-webkit-scrollbar-corner { background: #121314; }
+  @media (pointer: coarse) { * { scrollbar-width: none; } ::-webkit-scrollbar { display: none; } }
 
   header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
   header h1 { font-size: 18px; font-weight: 600; color: var(--text); }
@@ -541,7 +544,59 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .table-card.collapsed > *:not(.section-title):not(.section-header),
   .table-card.collapsed .section-header > *:not(.section-title) { display: none; }
 
-  @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } .chart-card.wide { grid-column: 1; } }
+  /* ── Responsive layout ─────────────────────────────────────────────────── */
+  /* Tablet (≤768px): collapse charts to single column */
+  @media (max-width: 768px) {
+    .charts-grid { grid-template-columns: 1fr; }
+    .chart-card.wide { grid-column: 1; }
+    .container { padding: 16px; }
+    #jump-bar { padding: 6px 16px; gap: 4px; }
+    header { padding: 12px 16px; }
+    #filter-bar { padding: 8px 16px; gap: 8px; }
+    .table-card { padding: 14px; }
+    .stats-row { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  }
+
+  /* Phone (≤480px): stack header, full-width controls, larger tap targets */
+  @media (max-width: 480px) {
+    /* Stack title + rescan button vertically */
+    header { flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px 14px; }
+    header .header-meta { font-size: 11px; }
+    /* Rescan button gets its own row, full-width, minimum 44px tap height */
+    #rescan-btn { width: 100%; min-height: 44px; font-size: 13px; margin-top: 2px; }
+
+    /* Filter bar: allow everything to wrap naturally; each item ≥44px tall */
+    #filter-bar { flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 14px; }
+    #filter-bar > * { width: 100%; }
+    .filter-sep { display: none; }
+    .model-trigger { min-width: unset; max-width: unset; width: 100%; min-height: 44px; font-size: 13px; }
+    .model-panel { min-width: unset; max-width: 100%; width: 100%; left: 0; right: 0; }
+    .range-select select { width: 100%; min-height: 44px; font-size: 13px; padding: 0 10px; }
+
+    /* Jump bar: horizontal scroll instead of wrapping (avoids multiline sticky bar) */
+    #jump-bar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 5px 14px; }
+    #jump-bar::-webkit-scrollbar { display: none; }
+    .jump-trigger { min-height: 36px; flex-shrink: 0; }
+
+    /* Stats cards: 2-column grid on phone */
+    .stats-row { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .stat-card { padding: 14px 12px; }
+    .stat-card .value { font-size: 20px; }
+    .stat-card .label { font-size: 11px; }
+
+    /* Budget banner: hide fill bar on very narrow screens */
+    .budget-alert .budget-bar-wrap { display: none; }
+
+    /* Tables: tighter padding + smaller font on phone */
+    .table-card { padding: 10px; }
+    table { font-size: 12px; }
+    th, td { padding: 6px 8px; }
+
+    /* Inline footer links stack */
+    .footer-content { font-size: 11px; }
+
+    .container { padding: 10px 12px; }
+  }
 </style>
 </head>
 <body>
