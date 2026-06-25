@@ -4,15 +4,13 @@
 [![claude-code](https://img.shields.io/badge/claude--code-black?style=flat-square)](https://claude.ai/code)
 [![Companion: burnstop](https://img.shields.io/badge/companion-burnstop-blue?style=flat-square)](https://github.com/phuryn/burnstop)
 
-**Pro and Max subscribers get a progress bar. This gives you the full picture.**
+**About:** Local dashboard tracking LLM token usage, costs, and session history. Originally built by [phuryn](https://github.com/phuryn/claude-usage).
 
 Claude Code writes detailed usage logs locally — token counts, models, sessions, projects — regardless of your plan. This dashboard reads those logs and turns them into charts and cost estimates. Works on API, Pro, and Max plans.
 
 ![Claude Usage Dashboard](docs/screenshot.png)
 
-Available as a **web app** (`python cli.py dashboard`) and as a [**VS Code extension**](https://marketplace.visualstudio.com/items?itemName=PawelHuryn.claude-usage-phuryn).
-
-**Created by:** [The Product Compass Newsletter](https://www.productcompass.pm)
+Run it as a local web app with `python cli.py dashboard`.
 
 ---
 
@@ -20,10 +18,10 @@ Available as a **web app** (`python cli.py dashboard`) and as a [**VS Code exten
 
 Works on **API, Pro, and Max plans** — Claude Code writes local usage logs regardless of subscription type. This tool reads those logs and gives you visibility that Anthropic's UI doesn't provide.
 
-Captures usage from:
+Captures usage from local Claude Code transcript files, including:
 - **Claude Code CLI** (`claude` command in terminal)
-- **VS Code extension** (Claude Code sidebar)
 - **Dispatched Code sessions** (sessions routed through Claude Code)
+- **Xcode Claude integration sessions** when the local Xcode transcript directory exists
 
 **Not captured:**
 - **Cowork sessions** — these run server-side and do not write local JSONL transcripts
@@ -41,40 +39,46 @@ Captures usage from:
 
 No `pip install`, no virtual environment, no build step.
 
-### macOS / Linux (Homebrew)
+### macOS / Linux
 ```
-brew install --formula https://raw.githubusercontent.com/phuryn/claude-usage/main/Formula/claude-usage.rb
-claude-usage dashboard
-```
-
-After install, the `claude-usage` command is on your `PATH` and accepts the same subcommands as `python cli.py` (`scan`, `today`, `stats`, `dashboard`).
-
-### macOS / Linux (clone)
-```
-git clone https://github.com/phuryn/claude-usage
-cd claude-usage
+git clone https://github.com/krnv9h68j4-max/claude-usage-jdt.git
+cd claude-usage-jdt
 python3 cli.py dashboard
 ```
 
+Opens the dashboard at **http://localhost:8080** after scanning local transcripts.
+
 ### Windows
 ```
-git clone https://github.com/phuryn/claude-usage
-cd claude-usage
+git clone https://github.com/krnv9h68j4-max/claude-usage-jdt.git
+cd claude-usage-jdt
 python cli.py dashboard
 ```
 
 ### Docker
 ```
-git clone https://github.com/phuryn/claude-usage
-cd claude-usage
+git clone https://github.com/krnv9h68j4-max/claude-usage-jdt.git
+cd claude-usage-jdt
 bash scripts/run-docker.sh
 ```
 
-Opens the dashboard at **http://localhost:9898**.
-
-The script builds the image, then runs the container with:
-- `~/.claude` mounted **read-only** — the container can read your transcripts but cannot modify them
+Opens the containerized dashboard at **http://localhost:9898**. The script pulls the latest code, builds the image, and runs the container with:
+- `~/.claude` mounted **read-only** — the container can read transcripts but cannot modify them
 - A named Docker volume (`claude-usage-data`) for the SQLite database — persisted across restarts, isolated from your home directory
+
+### Common commands
+
+```
+python cli.py scan                  # Scan JSONL files into ~/.claude/usage.db
+python cli.py today                 # Today's usage by model
+python cli.py week                  # Last 7 days, per-day and by-model
+python cli.py stats                 # All-time usage statistics
+python cli.py dashboard             # Scan + serve http://localhost:8080
+HOST=0.0.0.0 PORT=9000 python cli.py dashboard
+python cli.py scan --projects-dir /path/to/transcripts
+```
+
+The scanner is incremental — re-running `scan` is fast and only processes new or changed files.
 
 ---
 
@@ -128,7 +132,7 @@ Claude Code writes one JSONL file per session to `~/.claude/projects/`. Each lin
 
 ## Cost estimates
 
-Costs are calculated using **Anthropic API pricing as of June 2026** ([claude.com/pricing#api](https://claude.com/pricing#api)).
+Costs shown in the CLI and dashboard are calculated with the Anthropic pricing table embedded in this fork's `cli.py` and `dashboard.py`, updated against **Anthropic API pricing as of June 2026** ([claude.com/pricing#api](https://claude.com/pricing#api)).
 
 **Only models whose name contains `fable`, `mythos`, `opus`, `sonnet`, or `haiku` are included in cost calculations.** Local models, unknown models, and any other model names are excluded (shown as `n/a`).
 
@@ -139,27 +143,27 @@ Costs are calculated using **Anthropic API pricing as of June 2026** ([claude.co
 | claude-opus-4-8 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
 | claude-opus-4-7 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
 | claude-opus-4-6 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
+| claude-opus-4-5 | $5.00/MTok | $25.00/MTok | $6.25/MTok | $0.50/MTok |
+| claude-sonnet-4-7 | $3.00/MTok | $15.00/MTok | $3.75/MTok | $0.30/MTok |
 | claude-sonnet-4-6 | $3.00/MTok | $15.00/MTok | $3.75/MTok | $0.30/MTok |
+| claude-sonnet-4-5 | $3.00/MTok | $15.00/MTok | $3.75/MTok | $0.30/MTok |
+| claude-haiku-4-7 | $1.00/MTok | $5.00/MTok | $1.25/MTok | $0.10/MTok |
+| claude-haiku-4-6 | $1.00/MTok | $5.00/MTok | $1.25/MTok | $0.10/MTok |
 | claude-haiku-4-5 | $1.00/MTok | $5.00/MTok | $1.25/MTok | $0.10/MTok |
 
 > **Note:** These are API prices. If you use Claude Code via a Max or Pro subscription, your actual cost structure is different (subscription-based, not per-token).
 
----
+For context, these are comparable API prices from other major LLM providers as of June 2026. They are **not** used by this dashboard's cost calculation unless the code is extended to include those model families.
 
-## VS Code extension
+| Provider | Model | Input | Cached / Cache Read | Output | Source |
+|----------|-------|-------|---------------------|--------|--------|
+| OpenAI | gpt-5.5 | $2.50/MTok short context; $5.00/MTok long context | $0.25/MTok short context; $0.50/MTok long context | $15.00/MTok short context; $22.50/MTok long context | [OpenAI API pricing](https://developers.openai.com/api/docs/pricing) |
+| OpenAI | gpt-5.4 | $1.25/MTok short context; $2.50/MTok long context | $0.13/MTok short context; $0.25/MTok long context | $7.50/MTok short context; $11.25/MTok long context | [OpenAI API pricing](https://developers.openai.com/api/docs/pricing) |
+| Google | gemini-3.5-flash | $2.70/MTok | $0.27/MTok context caching | $16.20/MTok | [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) |
+| Google | gemini-3.1-flash-lite | $0.25/MTok text/image/video | $0.025/MTok context caching | $1.50/MTok | [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) |
+| xAI | grok-4.3 | $1.25/MTok | n/a | $2.50/MTok | [xAI model pricing](https://docs.x.ai/developers/models) |
 
-If you'd rather see the dashboard inside your editor, the same UI is available as a VS Code extension. Same data, same charts, embedded as an activity-bar sidebar.
-
-[**Install from the VS Code Marketplace →**](https://marketplace.visualstudio.com/items?itemName=PawelHuryn.claude-usage-phuryn)
-
-[**See in Open VSX Registry →**](https://open-vsx.org/extension/PawelHuryn/claude-usage-phuryn)
-
-![VS Code extension — daily usage](docs/usage1.png)
-![VS Code extension — hourly + projects](docs/usage2.png)
-
-The Python sources are bundled inside the `.vsix`, so the only end-user requirement is **Python 3.8+ on your `PATH`**. After install, click the gauge icon in the activity bar — the server spawns automatically and the dashboard renders in the sidebar.
-
-See [vscode-extension/README.md](vscode-extension/README.md) for settings, commands, discovery order, and local-install instructions.
+Always check the linked provider pages before making billing decisions; API pricing can change without a code change here.
 
 ---
 
@@ -171,6 +175,5 @@ See [vscode-extension/README.md](vscode-extension/README.md) for settings, comma
 | `dashboard.py` | HTTP server + single-page HTML/JS dashboard |
 | `cli.py` | `scan`, `today`, `stats`, `dashboard` commands |
 | `Formula/claude-usage.rb` | Homebrew formula — install with `brew install --formula <raw-url>` |
-| `vscode-extension/` | VS Code extension — embeds the dashboard inside VS Code |
 | `Dockerfile` | Container image definition |
 | `scripts/run-docker.sh` | Build and run the dashboard in Docker with a read-only `~/.claude` mount |
