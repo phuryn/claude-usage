@@ -10,7 +10,7 @@ from pathlib import Path
 from scanner import (
     get_db, init_db, project_name_from_cwd, parse_jsonl_file,
     aggregate_sessions, upsert_sessions, insert_turns, scan,
-    _backfill_topics, _meta_get, _meta_set,
+    _backfill_topics, _backfill_worktree_project_names, _meta_get, _meta_set,
 )
 
 
@@ -35,6 +35,28 @@ class TestProjectNameFromCwd(unittest.TestCase):
 
     def test_none(self):
         self.assertEqual(project_name_from_cwd(None), "unknown")
+
+    def test_worktree_folds_to_parent_project(self):
+        self.assertEqual(
+            project_name_from_cwd("/home/user/proj/.claude/worktrees/zen-joliot-603975"),
+            "user/proj")
+
+    def test_worktree_subdirectory_folds_too(self):
+        self.assertEqual(
+            project_name_from_cwd("/home/user/proj/.claude/worktrees/zen-joliot-603975/src/lib"),
+            "user/proj")
+
+    def test_worktree_windows_path(self):
+        self.assertEqual(
+            project_name_from_cwd("C:\\Users\\me\\proj\\.claude\\worktrees\\busy-saha-3b4e6c"),
+            "me/proj")
+
+    def test_plain_worktrees_dir_is_not_folded(self):
+        # Only Claude Code's .claude/worktrees marker triggers folding
+        self.assertEqual(project_name_from_cwd("/home/user/worktrees/foo"), "worktrees/foo")
+
+    def test_worktree_at_filesystem_root(self):
+        self.assertEqual(project_name_from_cwd("/.claude/worktrees/foo"), "unknown")
 
 
 def _make_assistant_record(session_id="sess-1", model="claude-sonnet-4-6",
@@ -381,6 +403,57 @@ class TestAggregateSessions(unittest.TestCase):
         self.assertEqual(len(sessions), 1)
         self.assertEqual(sessions[0]["total_input_tokens"], 0)
         self.assertEqual(sessions[0]["turn_count"], 0)
+
+
+class TestWorktreeBackfill(unittest.TestCase):
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        self.conn = get_db(self.db_path)
+        init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.db_path)
+
+    def test_renames_worktree_sessions_and_leaves_others(self):
+        self.conn.execute(
+            "INSERT INTO sessions (session_id, project_name) "
+            "VALUES ('s1', 'worktrees/zen-joliot-603975')")
+        self.conn.execute(
+            "INSERT INTO turns (session_id, cwd) "
+            "VALUES ('s1', '/home/user/proj/.claude/worktrees/zen-joliot-603975')")
+        self.conn.execute(
+            "INSERT INTO sessions (session_id, project_name) VALUES ('s2', 'user/other')")
+        self.conn.execute(
+            "INSERT INTO turns (session_id, cwd) VALUES ('s2', '/home/user/other')")
+
+        renamed = _backfill_worktree_project_names(self.conn)
+        self.assertEqual(renamed, 1)
+
+        row = self.conn.execute(
+            "SELECT project_name FROM sessions WHERE session_id = 's1'").fetchone()
+        self.assertEqual(row["project_name"], "user/proj")
+        row = self.conn.execute(
+            "SELECT project_name FROM sessions WHERE session_id = 's2'").fetchone()
+        self.assertEqual(row["project_name"], "user/other")
+
+    def test_windows_worktree_cwd_is_renamed(self):
+        self.conn.execute(
+            "INSERT INTO sessions (session_id, project_name) "
+            "VALUES ('s1', 'worktrees/busy-saha-3b4e6c')")
+        self.conn.execute(
+            "INSERT INTO turns (session_id, cwd) "
+            "VALUES ('s1', 'C:\\Users\\me\\proj\\.claude\\worktrees\\busy-saha-3b4e6c')")
+        renamed = _backfill_worktree_project_names(self.conn)
+        self.assertEqual(renamed, 1)
+        row = self.conn.execute(
+            "SELECT project_name FROM sessions WHERE session_id = 's1'").fetchone()
+        self.assertEqual(row["project_name"], "me/proj")
+
+    def test_noop_on_empty_db(self):
+        self.assertEqual(_backfill_worktree_project_names(self.conn), 0)
 
 
 class TestDatabaseOperations(unittest.TestCase):

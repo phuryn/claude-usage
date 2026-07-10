@@ -227,9 +227,46 @@ def project_name_from_cwd(cwd):
         return "unknown"
     # Normalize to forward slashes, take last 2 components
     parts = cwd.replace("\\", "/").rstrip("/").split("/")
+    # Claude Code's per-session worktrees live at
+    # <project>/.claude/worktrees/<generated-name>/; attribute those sessions
+    # to the parent project instead of one ephemeral "project" per worktree.
+    for i in range(len(parts) - 1):
+        if parts[i] == ".claude" and parts[i + 1] == "worktrees":
+            parts = parts[:i]
+            if not any(parts):
+                return "unknown"
+            break
     if len(parts) >= 2:
         return "/".join(parts[-2:])
     return parts[-1] if parts else "unknown"
+
+
+def _backfill_worktree_project_names(conn):
+    """One-time rename of worktree sessions scanned before worktree folding.
+
+    Sessions whose cwd was ``<project>/.claude/worktrees/<name>`` got project
+    names like ``worktrees/<name>``. Re-derive the name from the cwd already
+    stored on the session's turns — no transcript re-read, turns are left
+    untouched, so token totals cannot drift. Runs once, gated by a flag in
+    schema_meta (see scan()). Returns the number of sessions renamed.
+    """
+    rows = conn.execute(
+        "SELECT s.session_id, s.project_name, MIN(t.cwd) AS cwd "
+        "FROM sessions s JOIN turns t ON t.session_id = s.session_id "
+        "WHERE t.cwd LIKE '%/.claude/worktrees/%' "
+        "   OR t.cwd LIKE '%\\.claude\\worktrees\\%' "
+        "GROUP BY s.session_id"
+    ).fetchall()
+    renamed = 0
+    for r in rows:
+        new_name = project_name_from_cwd(r["cwd"])
+        if new_name != r["project_name"]:
+            conn.execute(
+                "UPDATE sessions SET project_name = ? WHERE session_id = ?",
+                (new_name, r["session_id"]))
+            renamed += 1
+    conn.commit()
+    return renamed
 
 
 def is_subagent_record(record, source_path=""):
@@ -605,6 +642,17 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         conn.commit()
         if verbose and filled:
             print(f"Backfilled topic for {filled} existing session(s).")
+
+    # One-time rename for DBs whose sessions predate worktree folding: sessions
+    # run in <project>/.claude/worktrees/<name>/ were named "worktrees/<name>";
+    # re-derive their project_name from the cwd already stored on turns. Gated
+    # by the schema_meta 'worktree_fold_done' marker; no-ops on a fresh DB.
+    if _meta_get(conn, "worktree_fold_done") != "1":
+        renamed = _backfill_worktree_project_names(conn)
+        _meta_set(conn, "worktree_fold_done", "1")
+        conn.commit()
+        if verbose and renamed:
+            print(f"Reattributed {renamed} worktree session(s) to their parent project.")
 
     new_files = 0
     updated_files = 0
