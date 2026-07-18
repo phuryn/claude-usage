@@ -439,14 +439,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <header>
   <div class="header-title">
     <span class="header-icon" role="img" aria-label="Claude Usage"></span>
-    <h1>Claude Code Usage</h1>
+    <h1 data-i18n="header_title">Claude Code Usage</h1>
   </div>
-  <div class="meta" id="meta">Loading...</div>
-  <button id="rescan-btn" onclick="triggerRescan()" title="Scan for new usage since the last update. Adds new turns without affecting existing history.">&#x21bb; Rescan</button>
+  <div class="meta" id="meta" data-i18n="meta_loading">Loading...</div>
+  <button id="rescan-btn" onclick="triggerRescan()" data-i18n="rescan" data-i18n-title="rescan_title" title="Scan for new usage since the last update. Adds new turns without affecting existing history.">&#x21bb; Rescan</button>
 </header>
 
 <div id="filter-bar">
-  <div class="filter-label">Models</div>
+  <div class="filter-label" data-i18n="filter_models">Models</div>
   <div class="model-select" id="model-select">
     <button class="model-trigger" id="model-trigger" aria-haspopup="true" aria-expanded="false" onclick="toggleModelPanel(event)">
       <span id="model-trigger-label">All models</span>
@@ -454,16 +454,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </button>
     <div class="model-panel" id="model-panel" hidden>
       <div class="model-panel-actions">
-        <button class="filter-btn" onclick="selectAllModels()">All</button>
-        <button class="filter-btn" onclick="clearAllModels()">None</button>
+        <button class="filter-btn" onclick="selectAllModels()" data-i18n="btn_all">All</button>
+        <button class="filter-btn" onclick="clearAllModels()" data-i18n="btn_none">None</button>
       </div>
       <div id="model-checkboxes"></div>
     </div>
   </div>
   <div class="filter-sep"></div>
-  <div class="filter-label">Range</div>
+  <div class="filter-label" data-i18n="filter_range">Range</div>
   <div class="range-select">
-    <select id="range-select" aria-label="Date range" onchange="setRange(this.value)">
+    <select id="range-select" aria-label="Date range" data-i18n-aria="range_aria" onchange="setRange(this.value)">
       <option value="today">Today</option>
       <option value="week">This Week</option>
       <option value="month">This Month</option>
@@ -474,34 +474,49 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <option value="all">All Time</option>
     </select>
   </div>
+  <div class="filter-sep"></div>
+  <div class="filter-label" data-i18n="filter_language">Language</div>
+  <div class="range-select">
+    <select id="lang-select" aria-label="Language" data-i18n-aria="filter_language" onchange="setLang(this.value)">
+      <option value="en">English</option>
+      <option value="zh">&#20013;&#25991;</option>
+      <option value="es">Espa&#241;ol</option>
+      <option value="fr">Fran&#231;ais</option>
+      <option value="de">Deutsch</option>
+      <option value="ja">&#26085;&#26412;&#35486;</option>
+      <option value="ko">&#54620;&#44397;&#50612;</option>
+      <option value="pt">Portugu&#234;s</option>
+      <option value="ru">&#1056;&#1091;&#1089;&#1089;&#1082;&#1080;&#1081;</option>
+    </select>
+  </div>
 </div>
 
-<nav id="jump-bar" aria-label="Jump to section">
-  <button class="jump-link" data-target="stats-row">Overview</button>
+<nav id="jump-bar" aria-label="Jump to section" data-i18n-aria="jump_aria">
+  <button class="jump-link" data-target="stats-row" data-i18n="jump_overview">Overview</button>
   <div class="jump-menu">
     <button type="button" class="jump-trigger" aria-haspopup="true" aria-expanded="false">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M8 17v-4"/><path d="M13 17V8"/><path d="M18 17v-7"/></svg>
-      Graphs <span class="jump-caret">&#9662;</span>
+      <span data-i18n="jump_graphs">Graphs</span> <span class="jump-caret">&#9662;</span>
     </button>
     <div class="jump-panel">
-      <button class="jump-link" data-target="sec-daily">Daily</button>
-      <button class="jump-link" data-target="sec-hourly">Distribution</button>
-      <button class="jump-link" data-target="sec-models">By Model</button>
-      <button class="jump-link" data-target="sec-projects">Top Projects</button>
-      <button class="jump-link" data-target="sec-subagents">Subagents</button>
+      <button class="jump-link" data-target="sec-daily" data-i18n="jump_daily">Daily</button>
+      <button class="jump-link" data-target="sec-hourly" data-i18n="jump_distribution">Distribution</button>
+      <button class="jump-link" data-target="sec-models" data-i18n="jump_bymodel">By Model</button>
+      <button class="jump-link" data-target="sec-projects" data-i18n="jump_topprojects">Top Projects</button>
+      <button class="jump-link" data-target="sec-subagents" data-i18n="jump_subagents">Subagents</button>
     </div>
   </div>
   <div class="jump-menu jump-menu-end">
     <button type="button" class="jump-trigger" aria-haspopup="true" aria-expanded="false">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></svg>
-      Tables <span class="jump-caret">&#9662;</span>
+      <span data-i18n="jump_tables">Tables</span> <span class="jump-caret">&#9662;</span>
     </button>
     <div class="jump-panel">
-      <button class="jump-link" data-target="sec-cost-model">Cost by Model</button>
-      <button class="jump-link" data-target="sec-dispatches">Dispatches</button>
-      <button class="jump-link" data-target="sec-sessions">Sessions</button>
-      <button class="jump-link" data-target="sec-cost-project">Cost by Project</button>
-      <button class="jump-link" data-target="sec-cost-branch">Cost by Project &amp; Branch</button>
+      <button class="jump-link" data-target="sec-cost-model" data-i18n="jump_costmodel">Cost by Model</button>
+      <button class="jump-link" data-target="sec-dispatches" data-i18n="jump_dispatches">Dispatches</button>
+      <button class="jump-link" data-target="sec-sessions" data-i18n="jump_sessions">Sessions</button>
+      <button class="jump-link" data-target="sec-cost-project" data-i18n="jump_costproject">Cost by Project</button>
+      <button class="jump-link" data-target="sec-cost-branch" data-i18n="jump_costbranch">Cost by Project &amp; Branch</button>
     </div>
   </div>
 </nav>
@@ -517,22 +532,22 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div class="chart-header">
         <h2><span class="card-caret">&#9656;</span><span id="hourly-chart-title">Average Hourly Distribution</span></h2>
         <div class="chart-header-right">
-          <span class="peak-legend" title="Mon–Fri 05:00–11:00 PT — Anthropic peak-hour throttling window"><span class="peak-swatch"></span>Peak hours (PT)</span>
+          <span class="peak-legend" data-i18n-title="peak_title" title="Mon–Fri 05:00–11:00 PT — Anthropic peak-hour throttling window"><span class="peak-swatch"></span><span data-i18n="peak_legend">Peak hours (PT)</span></span>
           <span class="chart-day-count" id="hourly-day-count"></span>
           <div class="tz-group">
-            <button class="tz-btn" data-tz="local" onclick="setHourlyTZ('local')">Local</button>
-            <button class="tz-btn" data-tz="utc"   onclick="setHourlyTZ('utc')">UTC</button>
+            <button class="tz-btn" data-tz="local" onclick="setHourlyTZ('local')" data-i18n="tz_local">Local</button>
+            <button class="tz-btn" data-tz="utc"   onclick="setHourlyTZ('utc')" data-i18n="tz_utc">UTC</button>
           </div>
         </div>
       </div>
       <div class="chart-wrap"><canvas id="chart-hourly"></canvas></div>
     </div>
     <div class="chart-card" id="sec-models" data-card="model-chart">
-      <h2><span class="card-caret">&#9656;</span>By Model</h2>
+      <h2><span class="card-caret">&#9656;</span><span data-i18n="chart_bymodel">By Model</span></h2>
       <div class="chart-wrap"><canvas id="chart-model"></canvas></div>
     </div>
     <div class="chart-card" id="sec-projects" data-card="project-chart">
-      <h2><span class="card-caret">&#9656;</span>Top Projects by Tokens</h2>
+      <h2><span class="card-caret">&#9656;</span><span data-i18n="chart_topprojects">Top Projects by Tokens</span></h2>
       <div class="chart-wrap"><canvas id="chart-project"></canvas></div>
     </div>
     <div class="chart-card wide" id="sec-subagents" data-card="subagent-chart">
@@ -541,77 +556,77 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </div>
   <div class="table-card" id="sec-cost-model" data-card="cost-by-model">
-    <div class="section-title"><span class="card-caret">&#9656;</span>Cost by Model</div>
+    <div class="section-title"><span class="card-caret">&#9656;</span><span data-i18n="sec_costmodel">Cost by Model</span></div>
     <table>
       <thead><tr>
-        <th>Model</th>
-        <th class="sortable" onclick="setModelSort('turns')">Turns <span class="sort-icon" id="msort-turns"></span></th>
-        <th class="sortable" onclick="setModelSort('input')">Input <span class="sort-icon" id="msort-input"></span></th>
-        <th class="sortable" onclick="setModelSort('output')">Output <span class="sort-icon" id="msort-output"></span></th>
-        <th class="sortable" onclick="setModelSort('cache_read')">Cache Read <span class="sort-icon" id="msort-cache_read"></span></th>
-        <th class="sortable" onclick="setModelSort('cache_creation')">Cache Creation <span class="sort-icon" id="msort-cache_creation"></span></th>
-        <th class="sortable" onclick="setModelSort('cost')">Est. Cost <span class="sort-icon" id="msort-cost"></span></th>
+        <th data-i18n="th_model">Model</th>
+        <th class="sortable" onclick="setModelSort('turns')"><span data-i18n="th_turns">Turns</span> <span class="sort-icon" id="msort-turns"></span></th>
+        <th class="sortable" onclick="setModelSort('input')"><span data-i18n="th_input">Input</span> <span class="sort-icon" id="msort-input"></span></th>
+        <th class="sortable" onclick="setModelSort('output')"><span data-i18n="th_output">Output</span> <span class="sort-icon" id="msort-output"></span></th>
+        <th class="sortable" onclick="setModelSort('cache_read')"><span data-i18n="th_cache_read">Cache Read</span> <span class="sort-icon" id="msort-cache_read"></span></th>
+        <th class="sortable" onclick="setModelSort('cache_creation')"><span data-i18n="th_cache_creation">Cache Creation</span> <span class="sort-icon" id="msort-cache_creation"></span></th>
+        <th class="sortable" onclick="setModelSort('cost')"><span data-i18n="th_est_cost">Est. Cost</span> <span class="sort-icon" id="msort-cost"></span></th>
       </tr></thead>
       <tbody id="model-cost-body"></tbody>
     </table>
     <div class="table-foot" id="model-cost-foot"></div>
   </div>
   <div class="table-card" id="sec-dispatches" data-card="dispatches">
-    <div class="section-header"><div class="section-title"><span class="card-caret">&#9656;</span>Top Subagent Dispatches <span class="info-icon" tabindex="0" role="img" aria-label="About this table" title="Ranked by total tokens. &quot;unknown&quot; means the parent dispatch record wasn't found."><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></div><button class="export-btn" onclick="exportDispatchesCSV()" title="Export all filtered subagent dispatches to CSV">&#x2913; CSV</button></div>
+    <div class="section-header"><div class="section-title"><span class="card-caret">&#9656;</span><span data-i18n="sec_dispatches">Top Subagent Dispatches</span> <span class="info-icon" tabindex="0" role="img" aria-label="About this table" data-i18n-title="sec_dispatches_info" title="Ranked by total tokens. &quot;unknown&quot; means the parent dispatch record wasn't found."><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></div><button class="export-btn" onclick="exportDispatchesCSV()" data-i18n-title="csv_title_dispatches" title="Export all filtered subagent dispatches to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
-        <th>Type</th><th>Started</th><th>Model</th><th>Turns</th><th>Tool Uses</th>
-        <th>Duration</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Tokens</th><th>Est. Cost</th>
+        <th data-i18n="th_type">Type</th><th data-i18n="th_started">Started</th><th data-i18n="th_model">Model</th><th data-i18n="th_turns">Turns</th><th data-i18n="th_tool_uses">Tool Uses</th>
+        <th data-i18n="th_duration">Duration</th><th data-i18n="th_input">Input</th><th data-i18n="th_output">Output</th><th data-i18n="th_cache_read">Cache Read</th><th data-i18n="th_tokens">Tokens</th><th data-i18n="th_est_cost">Est. Cost</th>
       </tr></thead>
       <tbody id="dispatches-body"></tbody>
     </table>
     <div class="table-foot" id="dispatches-foot"></div>
   </div>
   <div class="table-card" id="sec-sessions" data-card="sessions">
-    <div class="section-header"><div class="section-title"><span class="card-caret">&#9656;</span>Recent Sessions</div><button class="export-btn" onclick="exportSessionsCSV()" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
+    <div class="section-header"><div class="section-title"><span class="card-caret">&#9656;</span><span data-i18n="sec_sessions">Recent Sessions</span></div><button class="export-btn" onclick="exportSessionsCSV()" data-i18n-title="csv_title_sessions" title="Export all filtered sessions to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
-        <th>Session</th>
-        <th>Project</th>
-        <th>Title</th>
-        <th class="sortable" onclick="setSessionSort('last')">Last Active <span class="sort-icon" id="sort-icon-last"></span></th>
-        <th class="sortable" onclick="setSessionSort('duration_min')">Duration <span class="sort-icon" id="sort-icon-duration_min"></span></th>
-        <th>Model</th>
-        <th class="sortable" onclick="setSessionSort('turns')">Turns <span class="sort-icon" id="sort-icon-turns"></span></th>
-        <th class="sortable" onclick="setSessionSort('input')">Input <span class="sort-icon" id="sort-icon-input"></span></th>
-        <th class="sortable" onclick="setSessionSort('output')">Output <span class="sort-icon" id="sort-icon-output"></span></th>
-        <th class="sortable" onclick="setSessionSort('cost')">Est. Cost <span class="sort-icon" id="sort-icon-cost"></span></th>
+        <th data-i18n="th_session">Session</th>
+        <th data-i18n="th_project">Project</th>
+        <th data-i18n="th_title">Title</th>
+        <th class="sortable" onclick="setSessionSort('last')"><span data-i18n="th_last_active">Last Active</span> <span class="sort-icon" id="sort-icon-last"></span></th>
+        <th class="sortable" onclick="setSessionSort('duration_min')"><span data-i18n="th_duration">Duration</span> <span class="sort-icon" id="sort-icon-duration_min"></span></th>
+        <th data-i18n="th_model">Model</th>
+        <th class="sortable" onclick="setSessionSort('turns')"><span data-i18n="th_turns">Turns</span> <span class="sort-icon" id="sort-icon-turns"></span></th>
+        <th class="sortable" onclick="setSessionSort('input')"><span data-i18n="th_input">Input</span> <span class="sort-icon" id="sort-icon-input"></span></th>
+        <th class="sortable" onclick="setSessionSort('output')"><span data-i18n="th_output">Output</span> <span class="sort-icon" id="sort-icon-output"></span></th>
+        <th class="sortable" onclick="setSessionSort('cost')"><span data-i18n="th_est_cost">Est. Cost</span> <span class="sort-icon" id="sort-icon-cost"></span></th>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
     </table>
     <div class="table-foot" id="sessions-foot"></div>
   </div>
   <div class="table-card" id="sec-cost-project" data-card="cost-by-project">
-    <div class="section-header"><div class="section-title"><span class="card-caret">&#9656;</span>Cost by Project</div><button class="export-btn" onclick="exportProjectsCSV()" title="Export all projects to CSV">&#x2913; CSV</button></div>
+    <div class="section-header"><div class="section-title"><span class="card-caret">&#9656;</span><span data-i18n="sec_costproject">Cost by Project</span></div><button class="export-btn" onclick="exportProjectsCSV()" data-i18n-title="csv_title_projects" title="Export all projects to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
-        <th>Project</th>
-        <th class="sortable" onclick="setProjectSort('sessions')">Sessions <span class="sort-icon" id="psort-sessions"></span></th>
-        <th class="sortable" onclick="setProjectSort('turns')">Turns <span class="sort-icon" id="psort-turns"></span></th>
-        <th class="sortable" onclick="setProjectSort('input')">Input <span class="sort-icon" id="psort-input"></span></th>
-        <th class="sortable" onclick="setProjectSort('output')">Output <span class="sort-icon" id="psort-output"></span></th>
-        <th class="sortable" onclick="setProjectSort('cost')">Est. Cost <span class="sort-icon" id="psort-cost"></span></th>
+        <th data-i18n="th_project">Project</th>
+        <th class="sortable" onclick="setProjectSort('sessions')"><span data-i18n="th_sessions">Sessions</span> <span class="sort-icon" id="psort-sessions"></span></th>
+        <th class="sortable" onclick="setProjectSort('turns')"><span data-i18n="th_turns">Turns</span> <span class="sort-icon" id="psort-turns"></span></th>
+        <th class="sortable" onclick="setProjectSort('input')"><span data-i18n="th_input">Input</span> <span class="sort-icon" id="psort-input"></span></th>
+        <th class="sortable" onclick="setProjectSort('output')"><span data-i18n="th_output">Output</span> <span class="sort-icon" id="psort-output"></span></th>
+        <th class="sortable" onclick="setProjectSort('cost')"><span data-i18n="th_est_cost">Est. Cost</span> <span class="sort-icon" id="psort-cost"></span></th>
       </tr></thead>
       <tbody id="project-cost-body"></tbody>
     </table>
     <div class="table-foot" id="project-cost-foot"></div>
   </div>
   <div class="table-card" id="sec-cost-branch" data-card="cost-by-branch">
-    <div class="section-header"><div class="section-title"><span class="card-caret">&#9656;</span>Cost by Project &amp; Branch</div><button class="export-btn" onclick="exportProjectBranchCSV()" title="Export project+branch breakdown to CSV">&#x2913; CSV</button></div>
+    <div class="section-header"><div class="section-title"><span class="card-caret">&#9656;</span><span data-i18n="sec_costbranch">Cost by Project &amp; Branch</span></div><button class="export-btn" onclick="exportProjectBranchCSV()" data-i18n-title="csv_title_branch" title="Export project+branch breakdown to CSV">&#x2913; CSV</button></div>
     <table>
       <thead><tr>
-        <th>Project</th>
-        <th>Branch</th>
-        <th class="sortable" onclick="setProjectBranchSort('sessions')">Sessions <span class="sort-icon" id="pbsort-sessions"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('turns')">Turns <span class="sort-icon" id="pbsort-turns"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('input')">Input <span class="sort-icon" id="pbsort-input"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('output')">Output <span class="sort-icon" id="pbsort-output"></span></th>
-        <th class="sortable" onclick="setProjectBranchSort('cost')">Est. Cost <span class="sort-icon" id="pbsort-cost"></span></th>
+        <th data-i18n="th_project">Project</th>
+        <th data-i18n="th_branch">Branch</th>
+        <th class="sortable" onclick="setProjectBranchSort('sessions')"><span data-i18n="th_sessions">Sessions</span> <span class="sort-icon" id="pbsort-sessions"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('turns')"><span data-i18n="th_turns">Turns</span> <span class="sort-icon" id="pbsort-turns"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('input')"><span data-i18n="th_input">Input</span> <span class="sort-icon" id="pbsort-input"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('output')"><span data-i18n="th_output">Output</span> <span class="sort-icon" id="pbsort-output"></span></th>
+        <th class="sortable" onclick="setProjectBranchSort('cost')"><span data-i18n="th_est_cost">Est. Cost</span> <span class="sort-icon" id="pbsort-cost"></span></th>
       </tr></thead>
       <tbody id="project-branch-cost-body"></tbody>
     </table>
@@ -621,13 +636,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <footer>
   <div class="footer-content">
-    <p>Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of June 2026. Only models containing <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
+    <p data-i18n-html="footer_pricing">Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of June 2026. Only models containing <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.</p>
     <p>
       GitHub: <a href="https://github.com/phuryn/claude-usage" target="_blank">https://github.com/phuryn/claude-usage</a>
       &nbsp;&middot;&nbsp;
-      Created by: <a href="https://www.productcompass.pm" target="_blank">The Product Compass Newsletter</a>
+      <span data-i18n="footer_created_by">Created by:</span> <a href="https://www.productcompass.pm" target="_blank">The Product Compass Newsletter</a>
       &nbsp;&middot;&nbsp;
-      License: MIT
+      <span data-i18n="footer_license">License: MIT</span>
     </p>
     <p id="footer-meta"></p>
   </div>
@@ -639,6 +654,765 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = String(s);
   return d.innerHTML;
+}
+
+// ── i18n ───────────────────────────────────────────────────────────────────
+// Language is chosen client-side (persisted in localStorage) and applied to the
+// static markup via data-i18n* attributes plus t() calls threaded through the
+// dynamic renderers. English is always the literal fallback in the template, so
+// the page still reads correctly if a key is missing or JS fails to run.
+const I18N = {
+  en: {
+    app_title: 'Claude Code Usage Dashboard',
+    header_title: 'Claude Code Usage',
+    meta_loading: 'Loading...',
+    meta_updated: 'Updated: {t}',
+    meta_autorefresh: 'Auto-refresh in 30s',
+    meta_retrying: '{e} — retrying…',
+    rescan: '↻ Rescan',
+    rescan_title: 'Scan for new usage since the last update. Adds new turns without affecting existing history.',
+    rescan_scanning: '↻ Scanning...',
+    rescan_result: '↻ Rescan ({new} new, {updated} updated)',
+    rescan_error: '↻ Rescan (error)',
+    filter_models: 'Models',
+    filter_range: 'Range',
+    filter_language: 'Language',
+    models_all: 'All models',
+    models_none_sel: 'No models',
+    models_all_anthropic: 'All Anthropic',
+    models_all_anthropic_plus: 'All Anthropic +{n}',
+    btn_all: 'All',
+    btn_none: 'None',
+    range_today: 'Today', range_week: 'This Week', range_month: 'This Month',
+    'range_prev-month': 'Previous Month', range_7d: 'Last 7 Days', range_30d: 'Last 30 Days',
+    range_90d: 'Last 90 Days', range_all: 'All Time', range_aria: 'Date range',
+    jump_aria: 'Jump to section', jump_overview: 'Overview', jump_graphs: 'Graphs',
+    jump_daily: 'Daily', jump_distribution: 'Distribution', jump_bymodel: 'By Model',
+    jump_topprojects: 'Top Projects', jump_subagents: 'Subagents', jump_tables: 'Tables',
+    jump_costmodel: 'Cost by Model', jump_dispatches: 'Dispatches', jump_sessions: 'Sessions',
+    jump_costproject: 'Cost by Project', jump_costbranch: 'Cost by Project & Branch',
+    chart_daily: 'Daily Token Usage', chart_hourly: 'Average Hourly Distribution',
+    chart_subagent: 'Subagent Tokens by Type', chart_bymodel: 'By Model',
+    chart_topprojects: 'Top Projects by Tokens',
+    peak_legend: 'Peak hours (PT)',
+    peak_title: 'Mon–Fri 05:00–11:00 PT — Anthropic peak-hour throttling window',
+    tz_local: 'Local', tz_utc: 'UTC',
+    axis_avg_turns: 'Avg turns / hour', axis_avg_output: 'Avg output tokens / hour',
+    axis_cache: 'Cache', axis_io: 'Input / Output',
+    series_input: 'Input', series_output: 'Output', series_cache_read: 'Cache Read',
+    series_cache_creation: 'Cache Creation', series_est_cost: 'Est. Cost',
+    tt_est_cost: ' Est. Cost: {c}', tt_tokens: ' {label}: {v} tokens',
+    tt_total: ' Total: {v} · {turns} turns', tt_series: ' {label}: {v}',
+    tt_peak_suffix: ' · Peak — Anthropic US hours',
+    tt_avg_turns: ' Avg turns: {v}', tt_avg_output: ' Avg output: {v}',
+    hourly_days: '{n} days averaged · {tz}', hourly_day: '{n} day averaged · {tz}',
+    hourly_nodata: 'No data · {tz}',
+    th_model: 'Model', th_turns: 'Turns', th_input: 'Input', th_output: 'Output',
+    th_cache_read: 'Cache Read', th_cache_creation: 'Cache Creation', th_est_cost: 'Est. Cost',
+    th_type: 'Type', th_started: 'Started', th_tool_uses: 'Tool Uses', th_duration: 'Duration',
+    th_tokens: 'Tokens', th_session: 'Session', th_project: 'Project', th_title: 'Title',
+    th_last_active: 'Last Active', th_sessions: 'Sessions', th_branch: 'Branch',
+    sec_costmodel: 'Cost by Model', sec_dispatches: 'Top Subagent Dispatches',
+    sec_dispatches_info: 'Ranked by total tokens. "unknown" means the parent dispatch record wasn\'t found.',
+    sec_sessions: 'Recent Sessions', sec_costproject: 'Cost by Project',
+    sec_costbranch: 'Cost by Project & Branch',
+    csv_title_dispatches: 'Export all filtered subagent dispatches to CSV',
+    csv_title_sessions: 'Export all filtered sessions to CSV',
+    csv_title_projects: 'Export all projects to CSV',
+    csv_title_branch: 'Export project+branch breakdown to CSV',
+    stat_sessions: 'Sessions', stat_turns: 'Turns', stat_input: 'Input Tokens',
+    stat_output: 'Output Tokens', stat_subagent: 'Subagent Tokens', stat_cache_read: 'Cache Read',
+    stat_cache_creation: 'Cache Creation', stat_est_cost: 'Est. Cost',
+    sub_included: 'included in totals', sub_from_cache: 'from prompt cache',
+    sub_writes_cache: 'writes to prompt cache', sub_pricing: 'API pricing, June 2026',
+    show_less: 'Show less ▴', show_more: 'Show more ▾',
+    csv_download_all: 'Download CSV to see all ({n})',
+    no_dispatches: 'No subagent dispatches in selected range.',
+    untitled: 'Untitled', duration_suffix: 'm',
+    collapse_title: 'Collapse / expand section',
+    footer_pricing: 'Cost estimates based on Anthropic API pricing (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) as of June 2026. Only models containing <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em>, or <em>haiku</em> in the name are included in cost calculations. Actual costs for Max/Pro subscribers differ from API pricing.',
+    footer_created_by: 'Created by:', footer_license: 'License: MIT',
+    footer_version: 'Version', footer_get_ext: 'Get the VS Code extension',
+    footer_update: 'Update to v{v}',
+  },
+  zh: {
+    app_title: 'Claude Code 用量看板',
+    header_title: 'Claude Code 用量',
+    meta_loading: '加载中…',
+    meta_updated: '更新时间：{t}',
+    meta_autorefresh: '30 秒后自动刷新',
+    meta_retrying: '{e} — 重试中…',
+    rescan: '↻ 重新扫描',
+    rescan_title: '扫描自上次更新以来的新用量。仅新增记录，不影响已有历史。',
+    rescan_scanning: '↻ 扫描中…',
+    rescan_result: '↻ 重新扫描（新增 {new}，更新 {updated}）',
+    rescan_error: '↻ 重新扫描（出错）',
+    filter_models: '模型',
+    filter_range: '时间范围',
+    filter_language: '语言',
+    models_all: '全部模型',
+    models_none_sel: '未选模型',
+    models_all_anthropic: '全部 Anthropic',
+    models_all_anthropic_plus: '全部 Anthropic +{n}',
+    btn_all: '全选',
+    btn_none: '清空',
+    range_today: '今天', range_week: '本周', range_month: '本月',
+    'range_prev-month': '上月', range_7d: '近 7 天', range_30d: '近 30 天',
+    range_90d: '近 90 天', range_all: '全部时间', range_aria: '时间范围',
+    jump_aria: '跳转到板块', jump_overview: '概览', jump_graphs: '图表',
+    jump_daily: '每日', jump_distribution: '分布', jump_bymodel: '按模型',
+    jump_topprojects: '热门项目', jump_subagents: '子代理', jump_tables: '表格',
+    jump_costmodel: '按模型费用', jump_dispatches: '调度', jump_sessions: '会话',
+    jump_costproject: '按项目费用', jump_costbranch: '按项目和分支费用',
+    chart_daily: '每日 Token 用量', chart_hourly: '平均每小时分布',
+    chart_subagent: '子代理 Token（按类型）', chart_bymodel: '按模型',
+    chart_topprojects: 'Token 最多的项目',
+    peak_legend: '高峰时段（PT）',
+    peak_title: '周一至周五 05:00–11:00 PT — Anthropic 高峰限流时段',
+    tz_local: '本地', tz_utc: 'UTC',
+    axis_avg_turns: '平均轮次 / 小时', axis_avg_output: '平均输出 Token / 小时',
+    axis_cache: '缓存', axis_io: '输入 / 输出',
+    series_input: '输入', series_output: '输出', series_cache_read: '缓存读取',
+    series_cache_creation: '缓存写入', series_est_cost: '预估费用',
+    tt_est_cost: ' 预估费用：{c}', tt_tokens: ' {label}：{v} tokens',
+    tt_total: ' 合计：{v} · {turns} 轮', tt_series: ' {label}：{v}',
+    tt_peak_suffix: ' · 高峰 — Anthropic 美区时段',
+    tt_avg_turns: ' 平均轮次：{v}', tt_avg_output: ' 平均输出：{v}',
+    hourly_days: '{n} 天平均 · {tz}', hourly_day: '{n} 天平均 · {tz}',
+    hourly_nodata: '无数据 · {tz}',
+    th_model: '模型', th_turns: '轮次', th_input: '输入', th_output: '输出',
+    th_cache_read: '缓存读取', th_cache_creation: '缓存写入', th_est_cost: '预估费用',
+    th_type: '类型', th_started: '开始时间', th_tool_uses: '工具调用', th_duration: '时长',
+    th_tokens: 'Token', th_session: '会话', th_project: '项目', th_title: '标题',
+    th_last_active: '最近活跃', th_sessions: '会话数', th_branch: '分支',
+    sec_costmodel: '按模型费用', sec_dispatches: '子代理调度排行',
+    sec_dispatches_info: '按总 Token 排序。“unknown”表示未找到父级调度记录。',
+    sec_sessions: '最近会话', sec_costproject: '按项目费用',
+    sec_costbranch: '按项目和分支费用',
+    csv_title_dispatches: '导出所有已筛选的子代理调度为 CSV',
+    csv_title_sessions: '导出所有已筛选的会话为 CSV',
+    csv_title_projects: '导出所有项目为 CSV',
+    csv_title_branch: '导出项目+分支明细为 CSV',
+    stat_sessions: '会话数', stat_turns: '轮次', stat_input: '输入 Token',
+    stat_output: '输出 Token', stat_subagent: '子代理 Token', stat_cache_read: '缓存读取',
+    stat_cache_creation: '缓存写入', stat_est_cost: '预估费用',
+    sub_included: '已计入总计', sub_from_cache: '来自提示缓存',
+    sub_writes_cache: '写入提示缓存', sub_pricing: 'API 定价，2026 年 6 月',
+    show_less: '收起 ▴', show_more: '展开 ▾',
+    csv_download_all: '下载 CSV 查看全部（{n}）',
+    no_dispatches: '所选范围内没有子代理调度。',
+    untitled: '未命名', duration_suffix: ' 分',
+    collapse_title: '折叠 / 展开板块',
+    footer_pricing: '费用估算基于 Anthropic API 定价（<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>），截至 2026 年 6 月。仅当模型名称包含 <em>fable</em>、<em>mythos</em>、<em>opus</em>、<em>sonnet</em> 或 <em>haiku</em> 时才计入费用计算。Max/Pro 订阅用户的实际费用与 API 定价不同。',
+    footer_created_by: '创建者：', footer_license: '许可证：MIT',
+    footer_version: '版本', footer_get_ext: '获取 VS Code 扩展',
+    footer_update: '更新到 v{v}',
+  },
+  es: {
+    app_title: 'Panel de uso de Claude Code',
+    header_title: 'Uso de Claude Code',
+    meta_loading: 'Cargando...',
+    meta_updated: 'Actualizado: {t}',
+    meta_autorefresh: 'Actualización automática en 30 s',
+    meta_retrying: '{e} — reintentando…',
+    rescan: '↻ Reescanear',
+    rescan_title: 'Buscar uso nuevo desde la última actualización. Añade turnos nuevos sin afectar el historial existente.',
+    rescan_scanning: '↻ Escaneando...',
+    rescan_result: '↻ Reescanear ({new} nuevos, {updated} actualizados)',
+    rescan_error: '↻ Reescanear (error)',
+    filter_models: 'Modelos',
+    filter_range: 'Rango',
+    filter_language: 'Idioma',
+    models_all: 'Todos los modelos',
+    models_none_sel: 'Ningún modelo',
+    models_all_anthropic: 'Todo Anthropic',
+    models_all_anthropic_plus: 'Todo Anthropic +{n}',
+    btn_all: 'Todos',
+    btn_none: 'Ninguno',
+    range_today: 'Hoy', range_week: 'Esta semana', range_month: 'Este mes',
+    'range_prev-month': 'Mes anterior', range_7d: 'Últimos 7 días', range_30d: 'Últimos 30 días',
+    range_90d: 'Últimos 90 días', range_all: 'Todo el tiempo', range_aria: 'Rango de fechas',
+    jump_aria: 'Ir a la sección', jump_overview: 'Resumen', jump_graphs: 'Gráficos',
+    jump_daily: 'Diario', jump_distribution: 'Distribución', jump_bymodel: 'Por modelo',
+    jump_topprojects: 'Proyectos', jump_subagents: 'Subagentes', jump_tables: 'Tablas',
+    jump_costmodel: 'Costo por modelo', jump_dispatches: 'Despachos', jump_sessions: 'Sesiones',
+    jump_costproject: 'Costo por proyecto', jump_costbranch: 'Costo por proyecto y rama',
+    chart_daily: 'Uso diario de tokens', chart_hourly: 'Distribución horaria media',
+    chart_subagent: 'Tokens de subagentes por tipo', chart_bymodel: 'Por modelo',
+    chart_topprojects: 'Proyectos con más tokens',
+    peak_legend: 'Horas pico (PT)',
+    peak_title: 'Lun–Vie 05:00–11:00 PT — ventana de limitación de horas pico de Anthropic',
+    tz_local: 'Local', tz_utc: 'UTC',
+    axis_avg_turns: 'Turnos medios / hora', axis_avg_output: 'Tokens de salida medios / hora',
+    axis_cache: 'Caché', axis_io: 'Entrada / Salida',
+    series_input: 'Entrada', series_output: 'Salida', series_cache_read: 'Lectura de caché',
+    series_cache_creation: 'Creación de caché', series_est_cost: 'Costo est.',
+    tt_est_cost: ' Costo est.: {c}', tt_tokens: ' {label}: {v} tokens',
+    tt_total: ' Total: {v} · {turns} turnos', tt_series: ' {label}: {v}',
+    tt_peak_suffix: ' · Pico — horas de EE. UU. de Anthropic',
+    tt_avg_turns: ' Turnos medios: {v}', tt_avg_output: ' Salida media: {v}',
+    hourly_days: '{n} días promediados · {tz}', hourly_day: '{n} día promediado · {tz}',
+    hourly_nodata: 'Sin datos · {tz}',
+    th_model: 'Modelo', th_turns: 'Turnos', th_input: 'Entrada', th_output: 'Salida',
+    th_cache_read: 'Lectura de caché', th_cache_creation: 'Creación de caché', th_est_cost: 'Costo est.',
+    th_type: 'Tipo', th_started: 'Iniciado', th_tool_uses: 'Usos de herramientas', th_duration: 'Duración',
+    th_tokens: 'Tokens', th_session: 'Sesión', th_project: 'Proyecto', th_title: 'Título',
+    th_last_active: 'Última actividad', th_sessions: 'Sesiones', th_branch: 'Rama',
+    sec_costmodel: 'Costo por modelo', sec_dispatches: 'Principales despachos de subagentes',
+    sec_dispatches_info: 'Ordenado por tokens totales. "unknown" significa que no se encontró el registro de despacho padre.',
+    sec_sessions: 'Sesiones recientes', sec_costproject: 'Costo por proyecto',
+    sec_costbranch: 'Costo por proyecto y rama',
+    csv_title_dispatches: 'Exportar todos los despachos de subagentes filtrados a CSV',
+    csv_title_sessions: 'Exportar todas las sesiones filtradas a CSV',
+    csv_title_projects: 'Exportar todos los proyectos a CSV',
+    csv_title_branch: 'Exportar el desglose por proyecto+rama a CSV',
+    stat_sessions: 'Sesiones', stat_turns: 'Turnos', stat_input: 'Tokens de entrada',
+    stat_output: 'Tokens de salida', stat_subagent: 'Tokens de subagentes', stat_cache_read: 'Lectura de caché',
+    stat_cache_creation: 'Creación de caché', stat_est_cost: 'Costo est.',
+    sub_included: 'incluido en los totales', sub_from_cache: 'de la caché de prompts',
+    sub_writes_cache: 'escrituras en la caché de prompts', sub_pricing: 'precios API, junio de 2026',
+    show_less: 'Mostrar menos ▴', show_more: 'Mostrar más ▾',
+    csv_download_all: 'Descargar CSV para ver todo ({n})',
+    no_dispatches: 'No hay despachos de subagentes en el rango seleccionado.',
+    untitled: 'Sin título', duration_suffix: ' min',
+    collapse_title: 'Contraer / expandir sección',
+    footer_pricing: 'Estimaciones de costo basadas en los precios de la API de Anthropic (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) a junio de 2026. Solo se incluyen en los cálculos de costo los modelos cuyo nombre contiene <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em> o <em>haiku</em>. Los costos reales para suscriptores Max/Pro difieren de los precios de la API.',
+    footer_created_by: 'Creado por:', footer_license: 'Licencia: MIT',
+    footer_version: 'Versión', footer_get_ext: 'Obtener la extensión de VS Code',
+    footer_update: 'Actualizar a v{v}',
+  },
+  fr: {
+    app_title: 'Tableau de bord d\'utilisation de Claude Code',
+    header_title: 'Utilisation de Claude Code',
+    meta_loading: 'Chargement...',
+    meta_updated: 'Mis à jour : {t}',
+    meta_autorefresh: 'Actualisation auto dans 30 s',
+    meta_retrying: '{e} — nouvelle tentative…',
+    rescan: '↻ Rescanner',
+    rescan_title: 'Rechercher les nouvelles données depuis la dernière mise à jour. Ajoute de nouveaux tours sans affecter l\'historique existant.',
+    rescan_scanning: '↻ Analyse...',
+    rescan_result: '↻ Rescanner ({new} nouveaux, {updated} mis à jour)',
+    rescan_error: '↻ Rescanner (erreur)',
+    filter_models: 'Modèles',
+    filter_range: 'Période',
+    filter_language: 'Langue',
+    models_all: 'Tous les modèles',
+    models_none_sel: 'Aucun modèle',
+    models_all_anthropic: 'Tout Anthropic',
+    models_all_anthropic_plus: 'Tout Anthropic +{n}',
+    btn_all: 'Tous',
+    btn_none: 'Aucun',
+    range_today: 'Aujourd\'hui', range_week: 'Cette semaine', range_month: 'Ce mois',
+    'range_prev-month': 'Mois précédent', range_7d: '7 derniers jours', range_30d: '30 derniers jours',
+    range_90d: '90 derniers jours', range_all: 'Tout', range_aria: 'Plage de dates',
+    jump_aria: 'Aller à la section', jump_overview: 'Aperçu', jump_graphs: 'Graphiques',
+    jump_daily: 'Quotidien', jump_distribution: 'Distribution', jump_bymodel: 'Par modèle',
+    jump_topprojects: 'Projets', jump_subagents: 'Sous-agents', jump_tables: 'Tableaux',
+    jump_costmodel: 'Coût par modèle', jump_dispatches: 'Répartitions', jump_sessions: 'Sessions',
+    jump_costproject: 'Coût par projet', jump_costbranch: 'Coût par projet et branche',
+    chart_daily: 'Utilisation quotidienne des tokens', chart_hourly: 'Distribution horaire moyenne',
+    chart_subagent: 'Tokens de sous-agents par type', chart_bymodel: 'Par modèle',
+    chart_topprojects: 'Projets avec le plus de tokens',
+    peak_legend: 'Heures de pointe (PT)',
+    peak_title: 'Lun–Ven 05:00–11:00 PT — fenêtre de limitation aux heures de pointe d\'Anthropic',
+    tz_local: 'Local', tz_utc: 'UTC',
+    axis_avg_turns: 'Tours moyens / heure', axis_avg_output: 'Tokens de sortie moyens / heure',
+    axis_cache: 'Cache', axis_io: 'Entrée / Sortie',
+    series_input: 'Entrée', series_output: 'Sortie', series_cache_read: 'Lecture cache',
+    series_cache_creation: 'Création cache', series_est_cost: 'Coût est.',
+    tt_est_cost: ' Coût est. : {c}', tt_tokens: ' {label} : {v} tokens',
+    tt_total: ' Total : {v} · {turns} tours', tt_series: ' {label} : {v}',
+    tt_peak_suffix: ' · Pointe — heures US d\'Anthropic',
+    tt_avg_turns: ' Tours moyens : {v}', tt_avg_output: ' Sortie moyenne : {v}',
+    hourly_days: '{n} jours moyennés · {tz}', hourly_day: '{n} jour moyenné · {tz}',
+    hourly_nodata: 'Aucune donnée · {tz}',
+    th_model: 'Modèle', th_turns: 'Tours', th_input: 'Entrée', th_output: 'Sortie',
+    th_cache_read: 'Lecture cache', th_cache_creation: 'Création cache', th_est_cost: 'Coût est.',
+    th_type: 'Type', th_started: 'Démarré', th_tool_uses: 'Utilisations d\'outils', th_duration: 'Durée',
+    th_tokens: 'Tokens', th_session: 'Session', th_project: 'Projet', th_title: 'Titre',
+    th_last_active: 'Dernière activité', th_sessions: 'Sessions', th_branch: 'Branche',
+    sec_costmodel: 'Coût par modèle', sec_dispatches: 'Principales répartitions de sous-agents',
+    sec_dispatches_info: 'Classé par tokens totaux. « unknown » signifie que l\'enregistrement de répartition parent est introuvable.',
+    sec_sessions: 'Sessions récentes', sec_costproject: 'Coût par projet',
+    sec_costbranch: 'Coût par projet et branche',
+    csv_title_dispatches: 'Exporter toutes les répartitions de sous-agents filtrées en CSV',
+    csv_title_sessions: 'Exporter toutes les sessions filtrées en CSV',
+    csv_title_projects: 'Exporter tous les projets en CSV',
+    csv_title_branch: 'Exporter la répartition projet+branche en CSV',
+    stat_sessions: 'Sessions', stat_turns: 'Tours', stat_input: 'Tokens d\'entrée',
+    stat_output: 'Tokens de sortie', stat_subagent: 'Tokens de sous-agents', stat_cache_read: 'Lecture cache',
+    stat_cache_creation: 'Création cache', stat_est_cost: 'Coût est.',
+    sub_included: 'inclus dans les totaux', sub_from_cache: 'depuis le cache de prompts',
+    sub_writes_cache: 'écritures dans le cache de prompts', sub_pricing: 'tarifs API, juin 2026',
+    show_less: 'Afficher moins ▴', show_more: 'Afficher plus ▾',
+    csv_download_all: 'Télécharger le CSV pour tout voir ({n})',
+    no_dispatches: 'Aucune répartition de sous-agent dans la plage sélectionnée.',
+    untitled: 'Sans titre', duration_suffix: ' min',
+    collapse_title: 'Réduire / développer la section',
+    footer_pricing: 'Estimations de coût basées sur les tarifs de l\'API Anthropic (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) en juin 2026. Seuls les modèles dont le nom contient <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em> ou <em>haiku</em> sont inclus dans les calculs de coût. Les coûts réels pour les abonnés Max/Pro diffèrent des tarifs de l\'API.',
+    footer_created_by: 'Créé par :', footer_license: 'Licence : MIT',
+    footer_version: 'Version', footer_get_ext: 'Obtenir l\'extension VS Code',
+    footer_update: 'Mettre à jour vers v{v}',
+  },
+  de: {
+    app_title: 'Claude Code Nutzungs-Dashboard',
+    header_title: 'Claude Code Nutzung',
+    meta_loading: 'Wird geladen...',
+    meta_updated: 'Aktualisiert: {t}',
+    meta_autorefresh: 'Auto-Aktualisierung in 30 s',
+    meta_retrying: '{e} — erneuter Versuch…',
+    rescan: '↻ Neu scannen',
+    rescan_title: 'Nach neuer Nutzung seit der letzten Aktualisierung suchen. Fügt neue Züge hinzu, ohne den bestehenden Verlauf zu beeinflussen.',
+    rescan_scanning: '↻ Scannen...',
+    rescan_result: '↻ Neu scannen ({new} neu, {updated} aktualisiert)',
+    rescan_error: '↻ Neu scannen (Fehler)',
+    filter_models: 'Modelle',
+    filter_range: 'Zeitraum',
+    filter_language: 'Sprache',
+    models_all: 'Alle Modelle',
+    models_none_sel: 'Keine Modelle',
+    models_all_anthropic: 'Alle Anthropic',
+    models_all_anthropic_plus: 'Alle Anthropic +{n}',
+    btn_all: 'Alle',
+    btn_none: 'Keine',
+    range_today: 'Heute', range_week: 'Diese Woche', range_month: 'Dieser Monat',
+    'range_prev-month': 'Vormonat', range_7d: 'Letzte 7 Tage', range_30d: 'Letzte 30 Tage',
+    range_90d: 'Letzte 90 Tage', range_all: 'Gesamt', range_aria: 'Datumsbereich',
+    jump_aria: 'Zum Abschnitt springen', jump_overview: 'Übersicht', jump_graphs: 'Diagramme',
+    jump_daily: 'Täglich', jump_distribution: 'Verteilung', jump_bymodel: 'Nach Modell',
+    jump_topprojects: 'Projekte', jump_subagents: 'Subagenten', jump_tables: 'Tabellen',
+    jump_costmodel: 'Kosten nach Modell', jump_dispatches: 'Zuweisungen', jump_sessions: 'Sitzungen',
+    jump_costproject: 'Kosten nach Projekt', jump_costbranch: 'Kosten nach Projekt & Branch',
+    chart_daily: 'Tägliche Token-Nutzung', chart_hourly: 'Durchschnittliche stündliche Verteilung',
+    chart_subagent: 'Subagent-Tokens nach Typ', chart_bymodel: 'Nach Modell',
+    chart_topprojects: 'Projekte mit den meisten Tokens',
+    peak_legend: 'Spitzenzeiten (PT)',
+    peak_title: 'Mo–Fr 05:00–11:00 PT — Anthropic-Drosselungsfenster für Spitzenzeiten',
+    tz_local: 'Lokal', tz_utc: 'UTC',
+    axis_avg_turns: 'Ø Züge / Stunde', axis_avg_output: 'Ø Ausgabe-Tokens / Stunde',
+    axis_cache: 'Cache', axis_io: 'Eingabe / Ausgabe',
+    series_input: 'Eingabe', series_output: 'Ausgabe', series_cache_read: 'Cache-Lesen',
+    series_cache_creation: 'Cache-Erstellung', series_est_cost: 'Gesch. Kosten',
+    tt_est_cost: ' Gesch. Kosten: {c}', tt_tokens: ' {label}: {v} Tokens',
+    tt_total: ' Gesamt: {v} · {turns} Züge', tt_series: ' {label}: {v}',
+    tt_peak_suffix: ' · Spitze — Anthropic US-Zeiten',
+    tt_avg_turns: ' Ø Züge: {v}', tt_avg_output: ' Ø Ausgabe: {v}',
+    hourly_days: '{n} Tage gemittelt · {tz}', hourly_day: '{n} Tag gemittelt · {tz}',
+    hourly_nodata: 'Keine Daten · {tz}',
+    th_model: 'Modell', th_turns: 'Züge', th_input: 'Eingabe', th_output: 'Ausgabe',
+    th_cache_read: 'Cache-Lesen', th_cache_creation: 'Cache-Erstellung', th_est_cost: 'Gesch. Kosten',
+    th_type: 'Typ', th_started: 'Gestartet', th_tool_uses: 'Tool-Nutzungen', th_duration: 'Dauer',
+    th_tokens: 'Tokens', th_session: 'Sitzung', th_project: 'Projekt', th_title: 'Titel',
+    th_last_active: 'Zuletzt aktiv', th_sessions: 'Sitzungen', th_branch: 'Branch',
+    sec_costmodel: 'Kosten nach Modell', sec_dispatches: 'Top-Subagent-Zuweisungen',
+    sec_dispatches_info: 'Nach Gesamt-Tokens sortiert. "unknown" bedeutet, dass der übergeordnete Zuweisungsdatensatz nicht gefunden wurde.',
+    sec_sessions: 'Letzte Sitzungen', sec_costproject: 'Kosten nach Projekt',
+    sec_costbranch: 'Kosten nach Projekt & Branch',
+    csv_title_dispatches: 'Alle gefilterten Subagent-Zuweisungen als CSV exportieren',
+    csv_title_sessions: 'Alle gefilterten Sitzungen als CSV exportieren',
+    csv_title_projects: 'Alle Projekte als CSV exportieren',
+    csv_title_branch: 'Projekt+Branch-Aufschlüsselung als CSV exportieren',
+    stat_sessions: 'Sitzungen', stat_turns: 'Züge', stat_input: 'Eingabe-Tokens',
+    stat_output: 'Ausgabe-Tokens', stat_subagent: 'Subagent-Tokens', stat_cache_read: 'Cache-Lesen',
+    stat_cache_creation: 'Cache-Erstellung', stat_est_cost: 'Gesch. Kosten',
+    sub_included: 'in Summen enthalten', sub_from_cache: 'aus dem Prompt-Cache',
+    sub_writes_cache: 'Schreibvorgänge in den Prompt-Cache', sub_pricing: 'API-Preise, Juni 2026',
+    show_less: 'Weniger anzeigen ▴', show_more: 'Mehr anzeigen ▾',
+    csv_download_all: 'CSV herunterladen, um alle anzuzeigen ({n})',
+    no_dispatches: 'Keine Subagent-Zuweisungen im ausgewählten Zeitraum.',
+    untitled: 'Ohne Titel', duration_suffix: ' Min',
+    collapse_title: 'Abschnitt ein-/ausklappen',
+    footer_pricing: 'Kostenschätzungen basieren auf den Anthropic-API-Preisen (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) mit Stand Juni 2026. Nur Modelle, deren Name <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em> oder <em>haiku</em> enthält, werden in die Kostenberechnung einbezogen. Die tatsächlichen Kosten für Max/Pro-Abonnenten weichen von den API-Preisen ab.',
+    footer_created_by: 'Erstellt von:', footer_license: 'Lizenz: MIT',
+    footer_version: 'Version', footer_get_ext: 'VS Code-Erweiterung holen',
+    footer_update: 'Auf v{v} aktualisieren',
+  },
+  ja: {
+    app_title: 'Claude Code 使用状況ダッシュボード',
+    header_title: 'Claude Code 使用状況',
+    meta_loading: '読み込み中...',
+    meta_updated: '更新: {t}',
+    meta_autorefresh: '30秒後に自動更新',
+    meta_retrying: '{e} — 再試行中…',
+    rescan: '↻ 再スキャン',
+    rescan_title: '前回の更新以降の新しい使用状況をスキャンします。既存の履歴に影響を与えずに新しいターンを追加します。',
+    rescan_scanning: '↻ スキャン中...',
+    rescan_result: '↻ 再スキャン (新規 {new}、更新 {updated})',
+    rescan_error: '↻ 再スキャン (エラー)',
+    filter_models: 'モデル',
+    filter_range: '期間',
+    filter_language: '言語',
+    models_all: 'すべてのモデル',
+    models_none_sel: 'モデルなし',
+    models_all_anthropic: 'すべての Anthropic',
+    models_all_anthropic_plus: 'すべての Anthropic +{n}',
+    btn_all: 'すべて',
+    btn_none: 'なし',
+    range_today: '今日', range_week: '今週', range_month: '今月',
+    'range_prev-month': '先月', range_7d: '過去7日間', range_30d: '過去30日間',
+    range_90d: '過去90日間', range_all: '全期間', range_aria: '日付範囲',
+    jump_aria: 'セクションへ移動', jump_overview: '概要', jump_graphs: 'グラフ',
+    jump_daily: '日次', jump_distribution: '分布', jump_bymodel: 'モデル別',
+    jump_topprojects: 'プロジェクト', jump_subagents: 'サブエージェント', jump_tables: 'テーブル',
+    jump_costmodel: 'モデル別コスト', jump_dispatches: 'ディスパッチ', jump_sessions: 'セッション',
+    jump_costproject: 'プロジェクト別コスト', jump_costbranch: 'プロジェクト・ブランチ別コスト',
+    chart_daily: '日次トークン使用量', chart_hourly: '平均時間帯別分布',
+    chart_subagent: 'タイプ別サブエージェントトークン', chart_bymodel: 'モデル別',
+    chart_topprojects: 'トークンの多いプロジェクト',
+    peak_legend: 'ピーク時間 (PT)',
+    peak_title: '月〜金 05:00〜11:00 PT — Anthropic のピーク時間帯スロットリング',
+    tz_local: 'ローカル', tz_utc: 'UTC',
+    axis_avg_turns: '平均ターン / 時間', axis_avg_output: '平均出力トークン / 時間',
+    axis_cache: 'キャッシュ', axis_io: '入力 / 出力',
+    series_input: '入力', series_output: '出力', series_cache_read: 'キャッシュ読取',
+    series_cache_creation: 'キャッシュ作成', series_est_cost: '推定コスト',
+    tt_est_cost: ' 推定コスト: {c}', tt_tokens: ' {label}: {v} トークン',
+    tt_total: ' 合計: {v} · {turns} ターン', tt_series: ' {label}: {v}',
+    tt_peak_suffix: ' · ピーク — Anthropic 米国時間',
+    tt_avg_turns: ' 平均ターン: {v}', tt_avg_output: ' 平均出力: {v}',
+    hourly_days: '{n}日平均 · {tz}', hourly_day: '{n}日平均 · {tz}',
+    hourly_nodata: 'データなし · {tz}',
+    th_model: 'モデル', th_turns: 'ターン', th_input: '入力', th_output: '出力',
+    th_cache_read: 'キャッシュ読取', th_cache_creation: 'キャッシュ作成', th_est_cost: '推定コスト',
+    th_type: 'タイプ', th_started: '開始', th_tool_uses: 'ツール使用', th_duration: '期間',
+    th_tokens: 'トークン', th_session: 'セッション', th_project: 'プロジェクト', th_title: 'タイトル',
+    th_last_active: '最終アクティブ', th_sessions: 'セッション', th_branch: 'ブランチ',
+    sec_costmodel: 'モデル別コスト', sec_dispatches: 'サブエージェントディスパッチ上位',
+    sec_dispatches_info: '合計トークン順。"unknown" は親ディスパッチレコードが見つからないことを意味します。',
+    sec_sessions: '最近のセッション', sec_costproject: 'プロジェクト別コスト',
+    sec_costbranch: 'プロジェクト・ブランチ別コスト',
+    csv_title_dispatches: 'フィルタ済みのすべてのサブエージェントディスパッチを CSV に出力',
+    csv_title_sessions: 'フィルタ済みのすべてのセッションを CSV に出力',
+    csv_title_projects: 'すべてのプロジェクトを CSV に出力',
+    csv_title_branch: 'プロジェクト+ブランチの内訳を CSV に出力',
+    stat_sessions: 'セッション', stat_turns: 'ターン', stat_input: '入力トークン',
+    stat_output: '出力トークン', stat_subagent: 'サブエージェントトークン', stat_cache_read: 'キャッシュ読取',
+    stat_cache_creation: 'キャッシュ作成', stat_est_cost: '推定コスト',
+    sub_included: '合計に含む', sub_from_cache: 'プロンプトキャッシュから',
+    sub_writes_cache: 'プロンプトキャッシュへの書込', sub_pricing: 'API 料金、2026年6月',
+    show_less: '折りたたむ ▴', show_more: 'もっと見る ▾',
+    csv_download_all: 'CSV をダウンロードしてすべて表示 ({n})',
+    no_dispatches: '選択した期間にサブエージェントディスパッチはありません。',
+    untitled: '無題', duration_suffix: '分',
+    collapse_title: 'セクションの折りたたみ / 展開',
+    footer_pricing: 'コスト見積もりは Anthropic API 料金 (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) に基づき、2026年6月時点のものです。名前に <em>fable</em>、<em>mythos</em>、<em>opus</em>、<em>sonnet</em>、<em>haiku</em> を含むモデルのみコスト計算に含まれます。Max/Pro 加入者の実際のコストは API 料金と異なります。',
+    footer_created_by: '作成者:', footer_license: 'ライセンス: MIT',
+    footer_version: 'バージョン', footer_get_ext: 'VS Code 拡張機能を入手',
+    footer_update: 'v{v} に更新',
+  },
+  ko: {
+    app_title: 'Claude Code 사용량 대시보드',
+    header_title: 'Claude Code 사용량',
+    meta_loading: '로딩 중...',
+    meta_updated: '업데이트: {t}',
+    meta_autorefresh: '30초 후 자동 새로고침',
+    meta_retrying: '{e} — 재시도 중…',
+    rescan: '↻ 다시 스캔',
+    rescan_title: '마지막 업데이트 이후의 새 사용량을 스캔합니다. 기존 기록에 영향을 주지 않고 새 턴을 추가합니다.',
+    rescan_scanning: '↻ 스캔 중...',
+    rescan_result: '↻ 다시 스캔 (신규 {new}, 업데이트 {updated})',
+    rescan_error: '↻ 다시 스캔 (오류)',
+    filter_models: '모델',
+    filter_range: '범위',
+    filter_language: '언어',
+    models_all: '모든 모델',
+    models_none_sel: '모델 없음',
+    models_all_anthropic: '모든 Anthropic',
+    models_all_anthropic_plus: '모든 Anthropic +{n}',
+    btn_all: '전체',
+    btn_none: '없음',
+    range_today: '오늘', range_week: '이번 주', range_month: '이번 달',
+    'range_prev-month': '지난 달', range_7d: '지난 7일', range_30d: '지난 30일',
+    range_90d: '지난 90일', range_all: '전체 기간', range_aria: '날짜 범위',
+    jump_aria: '섹션으로 이동', jump_overview: '개요', jump_graphs: '그래프',
+    jump_daily: '일별', jump_distribution: '분포', jump_bymodel: '모델별',
+    jump_topprojects: '프로젝트', jump_subagents: '서브에이전트', jump_tables: '테이블',
+    jump_costmodel: '모델별 비용', jump_dispatches: '디스패치', jump_sessions: '세션',
+    jump_costproject: '프로젝트별 비용', jump_costbranch: '프로젝트·브랜치별 비용',
+    chart_daily: '일별 토큰 사용량', chart_hourly: '평균 시간대별 분포',
+    chart_subagent: '유형별 서브에이전트 토큰', chart_bymodel: '모델별',
+    chart_topprojects: '토큰이 가장 많은 프로젝트',
+    peak_legend: '피크 시간 (PT)',
+    peak_title: '월–금 05:00–11:00 PT — Anthropic 피크 시간대 제한 구간',
+    tz_local: '로컬', tz_utc: 'UTC',
+    axis_avg_turns: '평균 턴 / 시간', axis_avg_output: '평균 출력 토큰 / 시간',
+    axis_cache: '캐시', axis_io: '입력 / 출력',
+    series_input: '입력', series_output: '출력', series_cache_read: '캐시 읽기',
+    series_cache_creation: '캐시 생성', series_est_cost: '예상 비용',
+    tt_est_cost: ' 예상 비용: {c}', tt_tokens: ' {label}: {v} 토큰',
+    tt_total: ' 합계: {v} · {turns} 턴', tt_series: ' {label}: {v}',
+    tt_peak_suffix: ' · 피크 — Anthropic 미국 시간',
+    tt_avg_turns: ' 평균 턴: {v}', tt_avg_output: ' 평균 출력: {v}',
+    hourly_days: '{n}일 평균 · {tz}', hourly_day: '{n}일 평균 · {tz}',
+    hourly_nodata: '데이터 없음 · {tz}',
+    th_model: '모델', th_turns: '턴', th_input: '입력', th_output: '출력',
+    th_cache_read: '캐시 읽기', th_cache_creation: '캐시 생성', th_est_cost: '예상 비용',
+    th_type: '유형', th_started: '시작', th_tool_uses: '도구 사용', th_duration: '기간',
+    th_tokens: '토큰', th_session: '세션', th_project: '프로젝트', th_title: '제목',
+    th_last_active: '마지막 활동', th_sessions: '세션', th_branch: '브랜치',
+    sec_costmodel: '모델별 비용', sec_dispatches: '상위 서브에이전트 디스패치',
+    sec_dispatches_info: '총 토큰 기준 정렬. "unknown"은 상위 디스패치 레코드를 찾을 수 없음을 의미합니다.',
+    sec_sessions: '최근 세션', sec_costproject: '프로젝트별 비용',
+    sec_costbranch: '프로젝트·브랜치별 비용',
+    csv_title_dispatches: '필터링된 모든 서브에이전트 디스패치를 CSV로 내보내기',
+    csv_title_sessions: '필터링된 모든 세션을 CSV로 내보내기',
+    csv_title_projects: '모든 프로젝트를 CSV로 내보내기',
+    csv_title_branch: '프로젝트+브랜치 분석을 CSV로 내보내기',
+    stat_sessions: '세션', stat_turns: '턴', stat_input: '입력 토큰',
+    stat_output: '출력 토큰', stat_subagent: '서브에이전트 토큰', stat_cache_read: '캐시 읽기',
+    stat_cache_creation: '캐시 생성', stat_est_cost: '예상 비용',
+    sub_included: '합계에 포함', sub_from_cache: '프롬프트 캐시에서',
+    sub_writes_cache: '프롬프트 캐시에 쓰기', sub_pricing: 'API 요금, 2026년 6월',
+    show_less: '접기 ▴', show_more: '더 보기 ▾',
+    csv_download_all: '전체 보기 CSV 다운로드 ({n})',
+    no_dispatches: '선택한 범위에 서브에이전트 디스패치가 없습니다.',
+    untitled: '제목 없음', duration_suffix: '분',
+    collapse_title: '섹션 접기 / 펼치기',
+    footer_pricing: '비용 추정치는 2026년 6월 기준 Anthropic API 요금 (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>)을 기반으로 합니다. 이름에 <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em> 또는 <em>haiku</em>가 포함된 모델만 비용 계산에 포함됩니다. Max/Pro 구독자의 실제 비용은 API 요금과 다릅니다.',
+    footer_created_by: '제작:', footer_license: '라이선스: MIT',
+    footer_version: '버전', footer_get_ext: 'VS Code 확장 프로그램 받기',
+    footer_update: 'v{v}로 업데이트',
+  },
+  pt: {
+    app_title: 'Painel de uso do Claude Code',
+    header_title: 'Uso do Claude Code',
+    meta_loading: 'Carregando...',
+    meta_updated: 'Atualizado: {t}',
+    meta_autorefresh: 'Atualização automática em 30 s',
+    meta_retrying: '{e} — tentando novamente…',
+    rescan: '↻ Reescanear',
+    rescan_title: 'Procurar uso novo desde a última atualização. Adiciona novos turnos sem afetar o histórico existente.',
+    rescan_scanning: '↻ Escaneando...',
+    rescan_result: '↻ Reescanear ({new} novos, {updated} atualizados)',
+    rescan_error: '↻ Reescanear (erro)',
+    filter_models: 'Modelos',
+    filter_range: 'Período',
+    filter_language: 'Idioma',
+    models_all: 'Todos os modelos',
+    models_none_sel: 'Nenhum modelo',
+    models_all_anthropic: 'Todos Anthropic',
+    models_all_anthropic_plus: 'Todos Anthropic +{n}',
+    btn_all: 'Todos',
+    btn_none: 'Nenhum',
+    range_today: 'Hoje', range_week: 'Esta semana', range_month: 'Este mês',
+    'range_prev-month': 'Mês anterior', range_7d: 'Últimos 7 dias', range_30d: 'Últimos 30 dias',
+    range_90d: 'Últimos 90 dias', range_all: 'Todo o período', range_aria: 'Intervalo de datas',
+    jump_aria: 'Ir para a seção', jump_overview: 'Visão geral', jump_graphs: 'Gráficos',
+    jump_daily: 'Diário', jump_distribution: 'Distribuição', jump_bymodel: 'Por modelo',
+    jump_topprojects: 'Projetos', jump_subagents: 'Subagentes', jump_tables: 'Tabelas',
+    jump_costmodel: 'Custo por modelo', jump_dispatches: 'Despachos', jump_sessions: 'Sessões',
+    jump_costproject: 'Custo por projeto', jump_costbranch: 'Custo por projeto e ramo',
+    chart_daily: 'Uso diário de tokens', chart_hourly: 'Distribuição horária média',
+    chart_subagent: 'Tokens de subagentes por tipo', chart_bymodel: 'Por modelo',
+    chart_topprojects: 'Projetos com mais tokens',
+    peak_legend: 'Horário de pico (PT)',
+    peak_title: 'Seg–Sex 05:00–11:00 PT — janela de limitação de horário de pico da Anthropic',
+    tz_local: 'Local', tz_utc: 'UTC',
+    axis_avg_turns: 'Turnos médios / hora', axis_avg_output: 'Tokens de saída médios / hora',
+    axis_cache: 'Cache', axis_io: 'Entrada / Saída',
+    series_input: 'Entrada', series_output: 'Saída', series_cache_read: 'Leitura de cache',
+    series_cache_creation: 'Criação de cache', series_est_cost: 'Custo est.',
+    tt_est_cost: ' Custo est.: {c}', tt_tokens: ' {label}: {v} tokens',
+    tt_total: ' Total: {v} · {turns} turnos', tt_series: ' {label}: {v}',
+    tt_peak_suffix: ' · Pico — horário dos EUA da Anthropic',
+    tt_avg_turns: ' Turnos médios: {v}', tt_avg_output: ' Saída média: {v}',
+    hourly_days: '{n} dias calculados · {tz}', hourly_day: '{n} dia calculado · {tz}',
+    hourly_nodata: 'Sem dados · {tz}',
+    th_model: 'Modelo', th_turns: 'Turnos', th_input: 'Entrada', th_output: 'Saída',
+    th_cache_read: 'Leitura de cache', th_cache_creation: 'Criação de cache', th_est_cost: 'Custo est.',
+    th_type: 'Tipo', th_started: 'Iniciado', th_tool_uses: 'Usos de ferramentas', th_duration: 'Duração',
+    th_tokens: 'Tokens', th_session: 'Sessão', th_project: 'Projeto', th_title: 'Título',
+    th_last_active: 'Última atividade', th_sessions: 'Sessões', th_branch: 'Ramo',
+    sec_costmodel: 'Custo por modelo', sec_dispatches: 'Principais despachos de subagentes',
+    sec_dispatches_info: 'Ordenado por tokens totais. "unknown" significa que o registro de despacho pai não foi encontrado.',
+    sec_sessions: 'Sessões recentes', sec_costproject: 'Custo por projeto',
+    sec_costbranch: 'Custo por projeto e ramo',
+    csv_title_dispatches: 'Exportar todos os despachos de subagentes filtrados para CSV',
+    csv_title_sessions: 'Exportar todas as sessões filtradas para CSV',
+    csv_title_projects: 'Exportar todos os projetos para CSV',
+    csv_title_branch: 'Exportar o detalhamento por projeto+ramo para CSV',
+    stat_sessions: 'Sessões', stat_turns: 'Turnos', stat_input: 'Tokens de entrada',
+    stat_output: 'Tokens de saída', stat_subagent: 'Tokens de subagentes', stat_cache_read: 'Leitura de cache',
+    stat_cache_creation: 'Criação de cache', stat_est_cost: 'Custo est.',
+    sub_included: 'incluído nos totais', sub_from_cache: 'do cache de prompts',
+    sub_writes_cache: 'gravações no cache de prompts', sub_pricing: 'preços da API, junho de 2026',
+    show_less: 'Mostrar menos ▴', show_more: 'Mostrar mais ▾',
+    csv_download_all: 'Baixar CSV para ver tudo ({n})',
+    no_dispatches: 'Nenhum despacho de subagente no intervalo selecionado.',
+    untitled: 'Sem título', duration_suffix: ' min',
+    collapse_title: 'Recolher / expandir seção',
+    footer_pricing: 'Estimativas de custo baseadas nos preços da API da Anthropic (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) em junho de 2026. Apenas modelos cujo nome contém <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em> ou <em>haiku</em> são incluídos nos cálculos de custo. Os custos reais para assinantes Max/Pro diferem dos preços da API.',
+    footer_created_by: 'Criado por:', footer_license: 'Licença: MIT',
+    footer_version: 'Versão', footer_get_ext: 'Obter a extensão do VS Code',
+    footer_update: 'Atualizar para v{v}',
+  },
+  ru: {
+    app_title: 'Панель использования Claude Code',
+    header_title: 'Использование Claude Code',
+    meta_loading: 'Загрузка...',
+    meta_updated: 'Обновлено: {t}',
+    meta_autorefresh: 'Автообновление через 30 с',
+    meta_retrying: '{e} — повтор…',
+    rescan: '↻ Пересканировать',
+    rescan_title: 'Поиск нового использования с момента последнего обновления. Добавляет новые обмены, не затрагивая существующую историю.',
+    rescan_scanning: '↻ Сканирование...',
+    rescan_result: '↻ Пересканировать ({new} новых, {updated} обновлено)',
+    rescan_error: '↻ Пересканировать (ошибка)',
+    filter_models: 'Модели',
+    filter_range: 'Период',
+    filter_language: 'Язык',
+    models_all: 'Все модели',
+    models_none_sel: 'Нет моделей',
+    models_all_anthropic: 'Все Anthropic',
+    models_all_anthropic_plus: 'Все Anthropic +{n}',
+    btn_all: 'Все',
+    btn_none: 'Нет',
+    range_today: 'Сегодня', range_week: 'Эта неделя', range_month: 'Этот месяц',
+    'range_prev-month': 'Прошлый месяц', range_7d: 'Последние 7 дней', range_30d: 'Последние 30 дней',
+    range_90d: 'Последние 90 дней', range_all: 'Всё время', range_aria: 'Диапазон дат',
+    jump_aria: 'Перейти к разделу', jump_overview: 'Обзор', jump_graphs: 'Графики',
+    jump_daily: 'По дням', jump_distribution: 'Распределение', jump_bymodel: 'По модели',
+    jump_topprojects: 'Проекты', jump_subagents: 'Субагенты', jump_tables: 'Таблицы',
+    jump_costmodel: 'Стоимость по модели', jump_dispatches: 'Диспетчеризации', jump_sessions: 'Сессии',
+    jump_costproject: 'Стоимость по проекту', jump_costbranch: 'Стоимость по проекту и ветке',
+    chart_daily: 'Ежедневное использование токенов', chart_hourly: 'Среднее почасовое распределение',
+    chart_subagent: 'Токены субагентов по типу', chart_bymodel: 'По модели',
+    chart_topprojects: 'Проекты с наибольшим числом токенов',
+    peak_legend: 'Часы пик (PT)',
+    peak_title: 'Пн–Пт 05:00–11:00 PT — окно ограничения в часы пик Anthropic',
+    tz_local: 'Местное', tz_utc: 'UTC',
+    axis_avg_turns: 'Ср. обмены / час', axis_avg_output: 'Ср. токены вывода / час',
+    axis_cache: 'Кэш', axis_io: 'Ввод / Вывод',
+    series_input: 'Ввод', series_output: 'Вывод', series_cache_read: 'Чтение кэша',
+    series_cache_creation: 'Создание кэша', series_est_cost: 'Оцен. стоимость',
+    tt_est_cost: ' Оцен. стоимость: {c}', tt_tokens: ' {label}: {v} токенов',
+    tt_total: ' Итого: {v} · {turns} обменов', tt_series: ' {label}: {v}',
+    tt_peak_suffix: ' · Пик — время США Anthropic',
+    tt_avg_turns: ' Ср. обмены: {v}', tt_avg_output: ' Ср. вывод: {v}',
+    hourly_days: 'усреднено за {n} дн. · {tz}', hourly_day: 'усреднено за {n} дн. · {tz}',
+    hourly_nodata: 'Нет данных · {tz}',
+    th_model: 'Модель', th_turns: 'Обмены', th_input: 'Ввод', th_output: 'Вывод',
+    th_cache_read: 'Чтение кэша', th_cache_creation: 'Создание кэша', th_est_cost: 'Оцен. стоимость',
+    th_type: 'Тип', th_started: 'Начато', th_tool_uses: 'Вызовы инструментов', th_duration: 'Длительность',
+    th_tokens: 'Токены', th_session: 'Сессия', th_project: 'Проект', th_title: 'Название',
+    th_last_active: 'Последняя активность', th_sessions: 'Сессии', th_branch: 'Ветка',
+    sec_costmodel: 'Стоимость по модели', sec_dispatches: 'Топ диспетчеризаций субагентов',
+    sec_dispatches_info: 'Сортировка по общему числу токенов. "unknown" означает, что родительская запись диспетчеризации не найдена.',
+    sec_sessions: 'Недавние сессии', sec_costproject: 'Стоимость по проекту',
+    sec_costbranch: 'Стоимость по проекту и ветке',
+    csv_title_dispatches: 'Экспортировать все отфильтрованные диспетчеризации субагентов в CSV',
+    csv_title_sessions: 'Экспортировать все отфильтрованные сессии в CSV',
+    csv_title_projects: 'Экспортировать все проекты в CSV',
+    csv_title_branch: 'Экспортировать разбивку по проекту+ветке в CSV',
+    stat_sessions: 'Сессии', stat_turns: 'Обмены', stat_input: 'Токены ввода',
+    stat_output: 'Токены вывода', stat_subagent: 'Токены субагентов', stat_cache_read: 'Чтение кэша',
+    stat_cache_creation: 'Создание кэша', stat_est_cost: 'Оцен. стоимость',
+    sub_included: 'включено в итоги', sub_from_cache: 'из кэша промптов',
+    sub_writes_cache: 'записи в кэш промптов', sub_pricing: 'цены API, июнь 2026',
+    show_less: 'Свернуть ▴', show_more: 'Показать больше ▾',
+    csv_download_all: 'Скачать CSV, чтобы увидеть всё ({n})',
+    no_dispatches: 'Нет диспетчеризаций субагентов в выбранном диапазоне.',
+    untitled: 'Без названия', duration_suffix: ' мин',
+    collapse_title: 'Свернуть / развернуть раздел',
+    footer_pricing: 'Оценки стоимости основаны на ценах API Anthropic (<a href="https://claude.com/pricing#api" target="_blank">claude.com/pricing#api</a>) по состоянию на июнь 2026. В расчёт стоимости включаются только модели, имя которых содержит <em>fable</em>, <em>mythos</em>, <em>opus</em>, <em>sonnet</em> или <em>haiku</em>. Фактические расходы подписчиков Max/Pro отличаются от цен API.',
+    footer_created_by: 'Создано:', footer_license: 'Лицензия: MIT',
+    footer_version: 'Версия', footer_get_ext: 'Получить расширение VS Code',
+    footer_update: 'Обновить до v{v}',
+  },
+};
+
+// Supported UI languages. Order matters only for navigator.language matching
+// (first prefix hit wins); none is a prefix of another, so there's no ambiguity.
+const SUPPORTED_LANGS = ['en', 'zh', 'es', 'fr', 'de', 'ja', 'ko', 'pt', 'ru'];
+// Map each to a BCP-47 tag for <html lang>. Only zh needs a region for correct
+// Han glyph selection; the rest use their bare subtag.
+const LANG_TAGS = { en: 'en', zh: 'zh-CN', es: 'es', fr: 'fr', de: 'de', ja: 'ja', ko: 'ko', pt: 'pt', ru: 'ru' };
+
+function detectLang() {
+  try {
+    const saved = localStorage.getItem('cu_lang');
+    if (SUPPORTED_LANGS.includes(saved)) return saved;
+  } catch (e) {}
+  const nav = (navigator.language || '').toLowerCase();
+  for (const l of SUPPORTED_LANGS) {
+    if (nav === l || nav.startsWith(l + '-')) return l;
+  }
+  return 'en';
+}
+let currentLang = detectLang();
+
+// Translate a key, interpolating {name} placeholders from params. Falls back to
+// the English string, then the raw key, so a missing translation never blanks UI.
+function t(key, params) {
+  const dict = I18N[currentLang] || I18N.en;
+  let s = dict[key];
+  if (s == null) s = I18N.en[key];
+  if (s == null) s = key;
+  if (params) {
+    for (const k in params) s = s.split('{' + k + '}').join(params[k]);
+  }
+  return s;
+}
+
+// Localized display name for a date range (VALID_RANGES stays keyed off the
+// English RANGE_LABELS map, which the tests assert on).
+function rangeName(r) { return t('range_' + r); }
+
+// Walk the static markup and (re)apply translations for the current language.
+function applyStaticI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = t(el.getAttribute('data-i18n-html'));
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    el.title = t(el.getAttribute('data-i18n-title'));
+  });
+  document.querySelectorAll('[data-i18n-aria]').forEach(el => {
+    el.setAttribute('aria-label', t(el.getAttribute('data-i18n-aria')));
+  });
+  // Range dropdown options carry stable values but localized labels.
+  document.querySelectorAll('#range-select option').forEach(opt => {
+    opt.textContent = rangeName(opt.value);
+  });
+  document.title = t('app_title');
+}
+
+// Switch language: persist, restyle the static chrome, and re-render everything
+// dynamic (charts, tables, stat cards, footer, meta) so no English lingers.
+function setLang(lang) {
+  if (!SUPPORTED_LANGS.includes(lang)) lang = 'en';
+  currentLang = lang;
+  try { localStorage.setItem('cu_lang', lang); } catch (e) {}
+  applyLang();
+}
+
+function applyLang() {
+  document.documentElement.lang = LANG_TAGS[currentLang] || 'en';
+  const langSel = document.getElementById('lang-select');
+  if (langSel) langSel.value = currentLang;
+  applyStaticI18n();
+  // Refresh collapse toggle tooltips (set at init time).
+  document.querySelectorAll('[data-card] h2, [data-card] .section-title').forEach(el => {
+    if (el.getAttribute('role') === 'button') el.title = t('collapse_title');
+  });
+  if (allModelsList.length) {
+    updateModelTriggerLabel();
+  } else {
+    const mtl = document.getElementById('model-trigger-label');
+    if (mtl) mtl.textContent = t('models_all');
+  }
+  initFooterMeta();
+  if (rawData) {
+    // Refresh the "Updated:" line without waiting for the next poll.
+    const meta = document.getElementById('meta');
+    if (meta && rawData.generated_at) {
+      const note = rangeIncludesToday(selectedRange) ? '<br>' + esc(t('meta_autorefresh')) : '';
+      meta.innerHTML = t('meta_updated', { t: esc(rawData.generated_at) }) + note;
+    }
+    applyFilter();
+  }
 }
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -874,7 +1648,10 @@ function legendToggle(key) {
     const ci = legend.chart;
     const ds = ci.data.datasets[item.datasetIndex];
     ds.hidden = !ds.hidden;
-    if (ds.hidden) hiddenSeries[key].add(ds.label); else hiddenSeries[key].delete(ds.label);
+    // Track by a stable seriesKey (not the translated label) so toggles survive
+    // both repaints and language switches.
+    const sk = ds.seriesKey || ds.label;
+    if (ds.hidden) hiddenSeries[key].add(sk); else hiddenSeries[key].delete(sk);
     ci.update();
   };
 }
@@ -1050,14 +1827,14 @@ function updateModelTriggerLabel() {
   const labelEl = document.getElementById('model-trigger-label');
   if (!labelEl) return;
   const n = selectedModels.size;
-  if (n === 0)                    { labelEl.textContent = 'No models';  return; }
-  if (n === allModelsList.length) { labelEl.textContent = 'All models'; return; }
+  if (n === 0)                    { labelEl.textContent = t('models_none_sel'); return; }
+  if (n === allModelsList.length) { labelEl.textContent = t('models_all');      return; }
   const anthropic = allModelsList.filter(m => isBillable(m));
   const others    = allModelsList.filter(m => !isBillable(m));
   if (anthropic.length && anthropic.every(m => selectedModels.has(m))) {
     // n < total (handled above), so when others exist at least one is unselected.
     const otherSel = others.filter(m => selectedModels.has(m)).length;
-    labelEl.textContent = otherSel ? 'All Anthropic +' + otherSel : 'All Anthropic';
+    labelEl.textContent = otherSel ? t('models_all_anthropic_plus', { n: otherSel }) : t('models_all_anthropic');
     return;
   }
   const chosen = sortedModels(allModelsList).filter(m => selectedModels.has(m));
@@ -1288,9 +2065,9 @@ function applyFilter() {
   );
 
   // Update daily chart title
-  document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
-  document.getElementById('hourly-chart-title').textContent = 'Average Hourly Distribution \u2014 ' + RANGE_LABELS[selectedRange];
-  document.getElementById('subagent-chart-title').textContent = 'Subagent Tokens by Type \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('daily-chart-title').textContent = t('chart_daily') + ' \u2014 ' + rangeName(selectedRange);
+  document.getElementById('hourly-chart-title').textContent = t('chart_hourly') + ' \u2014 ' + rangeName(selectedRange);
+  document.getElementById('subagent-chart-title').textContent = t('chart_subagent') + ' \u2014 ' + rangeName(selectedRange);
 
   renderStats(totals);
   renderDailyChart(daily);
@@ -1311,17 +2088,17 @@ function applyFilter() {
 }
 
 // ── Renderers ──────────────────────────────────────────────────────────────
-function renderStats(t) {
-  const rangeLabel = RANGE_LABELS[selectedRange].toLowerCase();
+function renderStats(tot) {
+  const rangeLabel = rangeName(selectedRange).toLowerCase();
   const stats = [
-    { label: 'Sessions',       value: t.sessions.toLocaleString(), sub: rangeLabel },
-    { label: 'Turns',          value: fmt(t.turns),                sub: rangeLabel },
-    { label: 'Input Tokens',   value: fmt(t.input),                sub: rangeLabel },
-    { label: 'Output Tokens',  value: fmt(t.output),               sub: rangeLabel },
-    { label: 'Subagent Tokens', value: fmt(t.subagent_tokens || 0), sub: 'included in totals' },
-    { label: 'Cache Read',     value: fmt(t.cache_read),           sub: 'from prompt cache' },
-    { label: 'Cache Creation', value: fmt(t.cache_creation),       sub: 'writes to prompt cache' },
-    { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, June 2026', color: C.green },
+    { label: t('stat_sessions'),       value: tot.sessions.toLocaleString(), sub: rangeLabel },
+    { label: t('stat_turns'),          value: fmt(tot.turns),                sub: rangeLabel },
+    { label: t('stat_input'),          value: fmt(tot.input),                sub: rangeLabel },
+    { label: t('stat_output'),         value: fmt(tot.output),               sub: rangeLabel },
+    { label: t('stat_subagent'),       value: fmt(tot.subagent_tokens || 0), sub: t('sub_included') },
+    { label: t('stat_cache_read'),     value: fmt(tot.cache_read),           sub: t('sub_from_cache') },
+    { label: t('stat_cache_creation'), value: fmt(tot.cache_creation),       sub: t('sub_writes_cache') },
+    { label: t('stat_est_cost'),       value: fmtCostBig(tot.cost),          sub: t('sub_pricing'), color: C.green },
   ];
   document.getElementById('stats-row').innerHTML = stats.map(s => `
     <div class="stat-card">
@@ -1361,8 +2138,8 @@ function aggregateHourly(rows, tzMode) {
 function renderHourlyChart(agg) {
   const dayCountEl = document.getElementById('hourly-day-count');
   dayCountEl.textContent = agg.dayCount
-    ? agg.dayCount + ' day' + (agg.dayCount === 1 ? '' : 's') + ' averaged · ' + tzDisplayName(hourlyTZ)
-    : 'No data · ' + tzDisplayName(hourlyTZ);
+    ? t(agg.dayCount === 1 ? 'hourly_day' : 'hourly_days', { n: agg.dayCount, tz: tzDisplayName(hourlyTZ) })
+    : t('hourly_nodata', { tz: tzDisplayName(hourlyTZ) });
 
   const ctx = document.getElementById('chart-hourly').getContext('2d');
   if (charts.hourly) charts.hourly.destroy();
@@ -1379,8 +2156,9 @@ function renderHourlyChart(agg) {
       datasets: [
         {
           type: 'bar',
-          label: 'Avg turns / hour',
-          hidden: hiddenSeries.hourly.has('Avg turns / hour'),
+          seriesKey: 'avgTurns',
+          label: t('axis_avg_turns'),
+          hidden: hiddenSeries.hourly.has('avgTurns'),
           data: turns,
           backgroundColor: barColors,
           hoverBackgroundColor: barHoverColors,
@@ -1390,8 +2168,9 @@ function renderHourlyChart(agg) {
         },
         {
           type: 'line',
-          label: 'Avg output tokens / hour',
-          hidden: hiddenSeries.hourly.has('Avg output tokens / hour'),
+          seriesKey: 'avgOutput',
+          label: t('axis_avg_output'),
+          hidden: hiddenSeries.hourly.has('avgOutput'),
           data: output,
           borderColor: TOKEN_COLORS.output,
           backgroundColor: 'rgba(217,119,87,0.15)',
@@ -1421,21 +2200,21 @@ function renderHourlyChart(agg) {
               const idx = items[0].dataIndex;
               const h = agg.hours[idx];
               const base = formatHourLabel(h.hour) + ' ' + tzDisplayName(hourlyTZ);
-              return h.peak ? base + ' · Peak — Anthropic US hours' : base;
+              return h.peak ? base + t('tt_peak_suffix') : base;
             },
             label: (item) => {
-              if (item.dataset.label && item.dataset.label.indexOf('turns') !== -1) {
-                return ' Avg turns: ' + item.parsed.y.toFixed(2);
+              if (item.dataset.seriesKey === 'avgTurns') {
+                return t('tt_avg_turns', { v: item.parsed.y.toFixed(2) });
               }
-              return ' Avg output: ' + fmt(item.parsed.y);
+              return t('tt_avg_output', { v: fmt(item.parsed.y) });
             },
           }
         },
       },
       scales: {
         x: { ticks: { color: C.axis, maxRotation: 0, autoSkip: false, font: { size: 10 } }, grid: { color: C.border } },
-        y:  { position: 'left',  beginAtZero: true, ticks: { color: C.axis, callback: v => v.toFixed(1) },     grid: { color: C.border }, title: { display: true, text: 'Avg turns / hour',         color: C.axis, font: { size: 11 } } },
-        y1: { position: 'right', beginAtZero: true, ticks: { color: C.axis, callback: v => fmt(v) }, grid: { drawOnChartArea: false },   title: { display: true, text: 'Avg output tokens / hour', color: C.axis, font: { size: 11 } } },
+        y:  { position: 'left',  beginAtZero: true, ticks: { color: C.axis, callback: v => v.toFixed(1) },     grid: { color: C.border }, title: { display: true, text: t('axis_avg_turns'),  color: C.axis, font: { size: 11 } } },
+        y1: { position: 'right', beginAtZero: true, ticks: { color: C.axis, callback: v => fmt(v) }, grid: { drawOnChartArea: false },   title: { display: true, text: t('axis_avg_output'), color: C.axis, font: { size: 11 } } },
       }
     }
   });
@@ -1449,11 +2228,11 @@ function renderDailyChart(daily) {
     data: {
       labels: daily.map(d => d.day),
       datasets: [
-        { label: 'Input',          hidden: hiddenSeries.daily.has('Input'),          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          hoverBackgroundColor: TOKEN_HOVER.input,          stack: 'io',    yAxisID: 'y1' },
-        { label: 'Output',         hidden: hiddenSeries.daily.has('Output'),         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         hoverBackgroundColor: TOKEN_HOVER.output,         stack: 'io',    yAxisID: 'y1' },
-        { label: 'Cache Read',     hidden: hiddenSeries.daily.has('Cache Read'),     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     hoverBackgroundColor: TOKEN_HOVER.cache_read,     stack: 'cache', yAxisID: 'y' },
-        { label: 'Cache Creation', hidden: hiddenSeries.daily.has('Cache Creation'), data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, hoverBackgroundColor: TOKEN_HOVER.cache_creation, stack: 'cache', yAxisID: 'y' },
-        { type: 'line', label: 'Est. Cost', hidden: hiddenSeries.daily.has('Est. Cost'), data: daily.map(d => d.cost), borderColor: C.accent, backgroundColor: 'transparent', pointBackgroundColor: C.accent, pointRadius: 3, tension: 0.3, yAxisID: 'y2' },
+        { seriesKey: 'input',          label: t('series_input'),          hidden: hiddenSeries.daily.has('input'),          data: daily.map(d => d.input),          backgroundColor: TOKEN_COLORS.input,          hoverBackgroundColor: TOKEN_HOVER.input,          stack: 'io',    yAxisID: 'y1' },
+        { seriesKey: 'output',         label: t('series_output'),         hidden: hiddenSeries.daily.has('output'),         data: daily.map(d => d.output),         backgroundColor: TOKEN_COLORS.output,         hoverBackgroundColor: TOKEN_HOVER.output,         stack: 'io',    yAxisID: 'y1' },
+        { seriesKey: 'cache_read',     label: t('series_cache_read'),     hidden: hiddenSeries.daily.has('cache_read'),     data: daily.map(d => d.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     hoverBackgroundColor: TOKEN_HOVER.cache_read,     stack: 'cache', yAxisID: 'y' },
+        { seriesKey: 'cache_creation', label: t('series_cache_creation'), hidden: hiddenSeries.daily.has('cache_creation'), data: daily.map(d => d.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, hoverBackgroundColor: TOKEN_HOVER.cache_creation, stack: 'cache', yAxisID: 'y' },
+        { type: 'line', seriesKey: 'cost', label: t('series_est_cost'), hidden: hiddenSeries.daily.has('cost'), data: daily.map(d => d.cost), borderColor: C.accent, backgroundColor: 'transparent', pointBackgroundColor: C.accent, pointRadius: 3, tension: 0.3, yAxisID: 'y2' },
       ]
     },
     options: {
@@ -1461,16 +2240,16 @@ function renderDailyChart(daily) {
       plugins: {
         legend: { onClick: legendToggle('daily'), labels: { color: C.axis, boxWidth: 12 } },
         tooltip: { callbacks: {
-          label: item => item.dataset.label === 'Est. Cost'
-            ? ` Est. Cost: ${fmtCost(item.raw)}`
-            : ` ${item.dataset.label}: ${fmt(item.raw)}`
+          label: item => item.dataset.seriesKey === 'cost'
+            ? t('tt_est_cost', { c: fmtCost(item.raw) })
+            : t('tt_series', { label: item.dataset.label, v: fmt(item.raw) })
         }}
       },
       scales: {
         x:  { ticks: { color: C.axis, maxTicksLimit: RANGE_TICKS[selectedRange] }, grid: { color: C.border } },
-        y:  { position: 'left',  ticks: { color: C.green,  callback: v => fmt(v) },         grid: { color: C.border },          title: { display: true, text: 'Cache',         color: C.green } },
-        y1: { position: 'right', ticks: { color: C.blue,   callback: v => fmt(v) },         grid: { drawOnChartArea: false },    title: { display: true, text: 'Input / Output', color: C.blue } },
-        y2: { position: 'right', ticks: { color: C.accent, callback: v => '$' + v.toFixed(2) }, grid: { drawOnChartArea: false }, title: { display: true, text: 'Est. Cost', color: C.accent }, offset: true },
+        y:  { position: 'left',  ticks: { color: C.green,  callback: v => fmt(v) },         grid: { color: C.border },          title: { display: true, text: t('axis_cache'), color: C.green } },
+        y1: { position: 'right', ticks: { color: C.blue,   callback: v => fmt(v) },         grid: { drawOnChartArea: false },    title: { display: true, text: t('axis_io'),    color: C.blue } },
+        y2: { position: 'right', ticks: { color: C.accent, callback: v => '$' + v.toFixed(2) }, grid: { drawOnChartArea: false }, title: { display: true, text: t('series_est_cost'), color: C.accent }, offset: true },
       }
     }
   });
@@ -1500,7 +2279,7 @@ function renderModelChart(byModel) {
             ci.update();
           },
         },
-        tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${fmt(ctx.raw)} tokens` } }
+        tooltip: { callbacks: { label: ctx => t('tt_tokens', { label: ctx.label, v: fmt(ctx.raw) }) } }
       }
     }
   });
@@ -1521,8 +2300,8 @@ function renderProjectChart(byProject) {
     data: {
       labels: top.map(p => p.project.length > 22 ? '\u2026' + p.project.slice(-20) : p.project),
       datasets: [
-        { label: 'Input',  hidden: hiddenSeries.project.has('Input'),  data: top.map(p => p.input),  backgroundColor: TOKEN_COLORS.input,  hoverBackgroundColor: TOKEN_HOVER.input },
-        { label: 'Output', hidden: hiddenSeries.project.has('Output'), data: top.map(p => p.output), backgroundColor: TOKEN_COLORS.output, hoverBackgroundColor: TOKEN_HOVER.output },
+        { seriesKey: 'input',  label: t('series_input'),  hidden: hiddenSeries.project.has('input'),  data: top.map(p => p.input),  backgroundColor: TOKEN_COLORS.input,  hoverBackgroundColor: TOKEN_HOVER.input },
+        { seriesKey: 'output', label: t('series_output'), hidden: hiddenSeries.project.has('output'), data: top.map(p => p.output), backgroundColor: TOKEN_COLORS.output, hoverBackgroundColor: TOKEN_HOVER.output },
       ]
     },
     options: {
@@ -1545,10 +2324,10 @@ function renderSubagentChart(byType) {
     data: {
       labels: byType.map(t => t.agent_type),
       datasets: [
-        { label: 'Input',          hidden: hiddenSeries.subagent.has('Input'),          data: byType.map(t => t.input),          backgroundColor: TOKEN_COLORS.input,          hoverBackgroundColor: TOKEN_HOVER.input,          stack: 'tokens' },
-        { label: 'Output',         hidden: hiddenSeries.subagent.has('Output'),         data: byType.map(t => t.output),         backgroundColor: TOKEN_COLORS.output,         hoverBackgroundColor: TOKEN_HOVER.output,         stack: 'tokens' },
-        { label: 'Cache Read',     hidden: hiddenSeries.subagent.has('Cache Read'),     data: byType.map(t => t.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     hoverBackgroundColor: TOKEN_HOVER.cache_read,     stack: 'tokens' },
-        { label: 'Cache Creation', hidden: hiddenSeries.subagent.has('Cache Creation'), data: byType.map(t => t.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, hoverBackgroundColor: TOKEN_HOVER.cache_creation, stack: 'tokens' },
+        { seriesKey: 'input',          label: t('series_input'),          hidden: hiddenSeries.subagent.has('input'),          data: byType.map(t => t.input),          backgroundColor: TOKEN_COLORS.input,          hoverBackgroundColor: TOKEN_HOVER.input,          stack: 'tokens' },
+        { seriesKey: 'output',         label: t('series_output'),         hidden: hiddenSeries.subagent.has('output'),         data: byType.map(t => t.output),         backgroundColor: TOKEN_COLORS.output,         hoverBackgroundColor: TOKEN_HOVER.output,         stack: 'tokens' },
+        { seriesKey: 'cache_read',     label: t('series_cache_read'),     hidden: hiddenSeries.subagent.has('cache_read'),     data: byType.map(t => t.cache_read),     backgroundColor: TOKEN_COLORS.cache_read,     hoverBackgroundColor: TOKEN_HOVER.cache_read,     stack: 'tokens' },
+        { seriesKey: 'cache_creation', label: t('series_cache_creation'), hidden: hiddenSeries.subagent.has('cache_creation'), data: byType.map(t => t.cache_creation), backgroundColor: TOKEN_COLORS.cache_creation, hoverBackgroundColor: TOKEN_HOVER.cache_creation, stack: 'tokens' },
       ]
     },
     options: {
@@ -1556,11 +2335,11 @@ function renderSubagentChart(byType) {
       plugins: {
         legend: { onClick: legendToggle('subagent'), labels: { color: C.axis, boxWidth: 12 } },
         tooltip: { callbacks: {
-          label: ctx => ` ${ctx.dataset.label}: ${fmt(ctx.raw)}`,
+          label: ctx => t('tt_series', { label: ctx.dataset.label, v: fmt(ctx.raw) }),
           footer: items => {
             const total = items.reduce((s, it) => s + it.raw, 0);
             const row = byType[items[0].dataIndex];
-            return ` Total: ${fmt(total)} · ${row.turns} turns`;
+            return t('tt_total', { v: fmt(total), turns: row.turns });
           }
         } }
       },
@@ -1575,7 +2354,7 @@ function renderSubagentChart(byType) {
 function renderTopDispatches(rows) {
   const body = document.getElementById('dispatches-body');
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="11" class="muted" style="text-align:center;padding:24px">No subagent dispatches in selected range.</td></tr>';
+    body.innerHTML = '<tr><td colspan="11" class="muted" style="text-align:center;padding:24px">' + esc(t('no_dispatches')) + '</td></tr>';
     renderTableToggle('dispatches-foot', 0, dispatchesLimit, 'lessDispatchRows', 'moreDispatchRows', 'exportDispatchesCSV');
     return;
   }
@@ -1616,14 +2395,14 @@ function renderTableToggle(footId, total, limit, lessName, moreName, csvName) {
   const foot = document.getElementById(footId);
   if (!foot) return;
   if (total <= PAGINATE_THRESHOLD) { foot.innerHTML = ''; return; }
-  const less = '<button class="show-more-btn" onclick="' + lessName + '()">Show less ▴</button>';
-  const more = '<button class="show-more-btn" onclick="' + moreName + '()">Show more ▾</button>';
+  const less = '<button class="show-more-btn" onclick="' + lessName + '()">' + esc(t('show_less')) + '</button>';
+  const more = '<button class="show-more-btn" onclick="' + moreName + '()">' + esc(t('show_more')) + '</button>';
   let html;
   if (limit < total && limit < TABLE_MAX) {
     // more rows fit under the cap; Show less only once we're past the first step
     html = (limit > TABLE_STEPS[0] ? less : '') + more;
   } else if (limit < total) {           // cap reached, remaining rows only via CSV
-    html = '<a class="show-more-link" href="#" onclick="' + csvName + '(); return false;">Download CSV to see all (' + total + ')</a>' + less;
+    html = '<a class="show-more-link" href="#" onclick="' + csvName + '(); return false;">' + esc(t('csv_download_all', { n: total })) + '</a>' + less;
   } else {                              // everything already visible
     html = less;
   }
@@ -1659,13 +2438,13 @@ function renderSessionsTable(sessions) {
       : `<td class="cost-na">n/a</td>`;
     const titleCell = s.topic
       ? `<td class="topic-cell" title="${esc(s.topic)}">${esc(s.topic)}</td>`
-      : `<td class="topic-cell"><span class="untitled">Untitled</span></td>`;
+      : `<td class="topic-cell"><span class="untitled">${esc(t('untitled'))}</span></td>`;
     return `<tr>
       <td class="muted" style="font-family:monospace">${esc(s.session_id.slice(0, 8))}&hellip;</td>
       <td>${esc(s.project)}</td>
       ${titleCell}
       <td class="muted">${esc(s.last)}</td>
-      <td class="muted">${esc(s.duration_min)}m</td>
+      <td class="muted">${esc(s.duration_min)}${esc(t('duration_suffix'))}</td>
       <td><span class="model-tag">${esc(s.model)}</span></td>
       <td class="num">${s.turns}</td>
       <td class="num">${fmt(s.input)}</td>
@@ -1903,17 +2682,17 @@ function exportDispatchesCSV() {
 async function triggerRescan() {
   const btn = document.getElementById('rescan-btn');
   btn.disabled = true;
-  btn.textContent = '\u21bb Scanning...';
+  btn.textContent = t('rescan_scanning');
   try {
     const resp = await fetch('/api/rescan', { method: 'POST' });
     const d = await resp.json();
-    btn.textContent = '\u21bb Rescan (' + d.new + ' new, ' + d.updated + ' updated)';
+    btn.textContent = t('rescan_result', { new: d.new, updated: d.updated });
     await loadData();
   } catch(e) {
-    btn.textContent = '\u21bb Rescan (error)';
+    btn.textContent = t('rescan_error');
     console.error(e);
   }
-  setTimeout(() => { btn.textContent = '\u21bb Rescan'; btn.disabled = false; }, 3000);
+  setTimeout(() => { btn.textContent = t('rescan'); btn.disabled = false; }, 3000);
 }
 
 // ── Data loading ───────────────────────────────────────────────────────────
@@ -1927,12 +2706,12 @@ async function loadData() {
       // retry instead of nuking the page — once the background scan creates the
       // DB, the next poll renders normally.
       const meta = document.getElementById('meta');
-      if (meta) meta.innerHTML = esc(d.error) + ' — retrying…';
+      if (meta) meta.innerHTML = t('meta_retrying', { e: esc(d.error) });
       if (rawData === null) setTimeout(loadData, 3000);
       return;
     }
-    const refreshNote = rangeIncludesToday(selectedRange) ? '<br>Auto-refresh in 30s' : '';
-    document.getElementById('meta').innerHTML = 'Updated: ' + esc(d.generated_at) + refreshNote;
+    const refreshNote = rangeIncludesToday(selectedRange) ? '<br>' + esc(t('meta_autorefresh')) : '';
+    document.getElementById('meta').innerHTML = t('meta_updated', { t: esc(d.generated_at) }) + refreshNote;
 
     const isFirstLoad = rawData === null;
     rawData = d;
@@ -1997,7 +2776,7 @@ function appendUpdateLink(latest) {
   a.href = REPO_URL + '/releases/latest';
   a.target = '_blank';
   a.rel = 'noopener';
-  a.textContent = 'Update to v' + latest;
+  a.textContent = t('footer_update', { v: latest });
   el.insertAdjacentHTML('beforeend', '&nbsp;&middot;&nbsp;');
   el.appendChild(a);
 }
@@ -2032,11 +2811,11 @@ function initFooterMeta() {
   const v = APP_CONFIG.version || '';
   const parts = [];
   if (v) {
-    parts.push('Version <a href="' + REPO_URL + '/releases/tag/v' + esc(v) + '" target="_blank" rel="noopener">v' + esc(v) + '</a>');
+    parts.push(esc(t('footer_version')) + ' <a href="' + REPO_URL + '/releases/tag/v' + esc(v) + '" target="_blank" rel="noopener">v' + esc(v) + '</a>');
   }
   // The web build promotes the extension; the embedded build is already in it.
   if (APP_CONFIG.surface !== 'vscode') {
-    parts.push('<a href="' + MARKETPLACE_URL + '" target="_blank" rel="noopener">Get the VS Code extension</a>');
+    parts.push('<a href="' + MARKETPLACE_URL + '" target="_blank" rel="noopener">' + esc(t('footer_get_ext')) + '</a>');
   }
   el.innerHTML = parts.join('&nbsp;&middot;&nbsp;');
   // VS Code auto-updates the extension, so only the web build checks for updates.
@@ -2110,7 +2889,7 @@ function initSectionNav() {
     if (title) {
       title.setAttribute('role', 'button');
       title.setAttribute('tabindex', '0');
-      title.title = 'Collapse / expand section';
+      title.title = t('collapse_title');
     }
     setCardCollapsed(card, collapsed.has(card.dataset.card));
   });
@@ -2180,8 +2959,8 @@ function initSectionNav() {
   updateActive();
 }
 
-initFooterMeta();
 initSectionNav();
+applyLang();  // translate static chrome + footer for the persisted/detected language (also runs initFooterMeta)
 loadData();
 scheduleAutoRefresh();
 </script>

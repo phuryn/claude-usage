@@ -117,9 +117,16 @@ HOST=0.0.0.0 PORT=9000 python cli.py dashboard
 
 # Scan a custom projects directory
 python cli.py scan --projects-dir /path/to/transcripts
+
+# Choose the output language (English, 中文, Español, Français, Deutsch,
+# 日本語, 한국어, Português, Русский). Defaults to English.
+python cli.py stats --lang zh
+CLAUDE_USAGE_LANG=ja python cli.py today
 ```
 
 The scanner is incremental — it tracks each file's path and modification time, so re-running `scan` is fast and only processes new or changed files.
+
+**Language:** both the terminal output and the browser dashboard are localized into 9 languages. For the CLI, pass `--lang <code>` or set `CLAUDE_USAGE_LANG` (accepts locale forms like `pt-BR`); it defaults to English. The dashboard has a **Language** dropdown in the filter bar, auto-detects from your browser language, and remembers your choice.
 
 By default, the scanner checks both `~/.claude/projects/` and the Xcode Claude integration directory (`~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/projects/`), skipping any that don't exist. Use `--projects-dir` to scan a custom location instead.
 

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 # runtime version has to live here as a constant. Keep this in lockstep with the
 # top CHANGELOG heading and vscode-extension/package.json (a parity test guards
 # all three; see tests/test_version.py).
-VERSION = "1.5.5"
+VERSION = "1.6.0"
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
@@ -25,6 +25,144 @@ DEFAULT_PROJECTS_DIRS = [PROJECTS_DIR, XCODE_PROJECTS_DIR]
 # Higher number = higher priority when choosing a session's primary model.
 # Fable / Mythos are Anthropic's most capable class, so they outrank Opus.
 MODEL_PRIORITY = {"fable": 5, "mythos": 5, "opus": 3, "sonnet": 2, "haiku": 1}
+
+
+# ── Localization ───────────────────────────────────────────────────────────────
+# CLI/scanner output language. Resolved live from the CLAUDE_USAGE_LANG env var so
+# the `--lang` flag (which cli.main writes into the env before dispatching) and any
+# ambient setting are both honored without shared mutable module state. English is
+# the default, keeping the test suite deterministic on any locale; Chinese ("zh")
+# is opt-in. This resolver is shared with cli.py (imported from here).
+SUPPORTED_LANGS = ("en", "zh", "es", "fr", "de", "ja", "ko", "pt", "ru")
+
+
+def current_lang():
+    v = os.environ.get("CLAUDE_USAGE_LANG", "").strip().lower()
+    for lang in SUPPORTED_LANGS:
+        # Accept bare tags ("zh") and locale forms ("zh_CN.UTF-8", "pt-BR").
+        if v == lang or v.startswith(lang + "-") or v.startswith(lang + "_"):
+            return lang
+    return "en"
+
+
+_SCANNER_STRINGS = {
+    "en": {
+        "scanning_dir": "Scanning {d} ...",
+        "backfilled": "Backfilled topic for {n} existing session(s).",
+        "warn_read": "  Warning: error reading {path}: {e}",
+        "warn": "  Warning: {e}",
+        "scan_complete": "\nScan complete:",
+        "new_files": "  New files:     {n}",
+        "updated_files": "  Updated files: {n}",
+        "skipped_files": "  Skipped files: {n}",
+        "turns_added": "  Turns added:   {n}",
+        "sessions_seen": "  Sessions seen: {n}",
+    },
+    "zh": {
+        "scanning_dir": "正在扫描 {d} ...",
+        "backfilled": "已为 {n} 个已有会话回填标题。",
+        "warn_read": "  警告：读取 {path} 出错：{e}",
+        "warn": "  警告：{e}",
+        "scan_complete": "\n扫描完成：",
+        "new_files": "  新增文件：  {n}",
+        "updated_files": "  更新文件：  {n}",
+        "skipped_files": "  跳过文件：  {n}",
+        "turns_added": "  新增轮次：  {n}",
+        "sessions_seen": "  涉及会话：  {n}",
+    },
+    "es": {
+        "scanning_dir": "Escaneando {d} ...",
+        "backfilled": "Se rellenó el título de {n} sesión(es) existente(s).",
+        "warn_read": "  Advertencia: error al leer {path}: {e}",
+        "warn": "  Advertencia: {e}",
+        "scan_complete": "\nEscaneo completo:",
+        "new_files": "  Archivos nuevos: {n}",
+        "updated_files": "  Archivos actualizados: {n}",
+        "skipped_files": "  Archivos omitidos: {n}",
+        "turns_added": "  Turnos añadidos: {n}",
+        "sessions_seen": "  Sesiones vistas: {n}",
+    },
+    "fr": {
+        "scanning_dir": "Analyse de {d} ...",
+        "backfilled": "Titre renseigné pour {n} session(s) existante(s).",
+        "warn_read": "  Avertissement : erreur de lecture de {path} : {e}",
+        "warn": "  Avertissement : {e}",
+        "scan_complete": "\nAnalyse terminée :",
+        "new_files": "  Nouveaux fichiers : {n}",
+        "updated_files": "  Fichiers mis à jour : {n}",
+        "skipped_files": "  Fichiers ignorés : {n}",
+        "turns_added": "  Tours ajoutés : {n}",
+        "sessions_seen": "  Sessions vues : {n}",
+    },
+    "de": {
+        "scanning_dir": "Scanne {d} ...",
+        "backfilled": "Titel für {n} vorhandene Sitzung(en) nachgetragen.",
+        "warn_read": "  Warnung: Fehler beim Lesen von {path}: {e}",
+        "warn": "  Warnung: {e}",
+        "scan_complete": "\nScan abgeschlossen:",
+        "new_files": "  Neue Dateien: {n}",
+        "updated_files": "  Aktualisierte Dateien: {n}",
+        "skipped_files": "  Übersprungene Dateien: {n}",
+        "turns_added": "  Hinzugefügte Züge: {n}",
+        "sessions_seen": "  Gesehene Sitzungen: {n}",
+    },
+    "ja": {
+        "scanning_dir": "{d} をスキャン中 ...",
+        "backfilled": "既存の {n} セッションのタイトルを補完しました。",
+        "warn_read": "  警告: {path} の読み取りエラー: {e}",
+        "warn": "  警告: {e}",
+        "scan_complete": "\nスキャン完了:",
+        "new_files": "  新規ファイル: {n}",
+        "updated_files": "  更新ファイル: {n}",
+        "skipped_files": "  スキップファイル: {n}",
+        "turns_added": "  追加ターン: {n}",
+        "sessions_seen": "  対象セッション: {n}",
+    },
+    "ko": {
+        "scanning_dir": "{d} 스캔 중 ...",
+        "backfilled": "기존 {n}개 세션의 제목을 채웠습니다.",
+        "warn_read": "  경고: {path} 읽기 오류: {e}",
+        "warn": "  경고: {e}",
+        "scan_complete": "\n스캔 완료:",
+        "new_files": "  새 파일: {n}",
+        "updated_files": "  업데이트된 파일: {n}",
+        "skipped_files": "  건너뛴 파일: {n}",
+        "turns_added": "  추가된 턴: {n}",
+        "sessions_seen": "  확인된 세션: {n}",
+    },
+    "pt": {
+        "scanning_dir": "Escaneando {d} ...",
+        "backfilled": "Título preenchido para {n} sessão(ões) existente(s).",
+        "warn_read": "  Aviso: erro ao ler {path}: {e}",
+        "warn": "  Aviso: {e}",
+        "scan_complete": "\nEscaneamento concluído:",
+        "new_files": "  Arquivos novos: {n}",
+        "updated_files": "  Arquivos atualizados: {n}",
+        "skipped_files": "  Arquivos ignorados: {n}",
+        "turns_added": "  Turnos adicionados: {n}",
+        "sessions_seen": "  Sessões vistas: {n}",
+    },
+    "ru": {
+        "scanning_dir": "Сканирование {d} ...",
+        "backfilled": "Заголовок заполнен для {n} существующих сессий.",
+        "warn_read": "  Предупреждение: ошибка чтения {path}: {e}",
+        "warn": "  Предупреждение: {e}",
+        "scan_complete": "\nСканирование завершено:",
+        "new_files": "  Новые файлы: {n}",
+        "updated_files": "  Обновлённые файлы: {n}",
+        "skipped_files": "  Пропущенные файлы: {n}",
+        "turns_added": "  Добавлено обменов: {n}",
+        "sessions_seen": "  Замечено сессий: {n}",
+    },
+}
+
+
+def _t(key, **kw):
+    lang = current_lang()
+    s = _SCANNER_STRINGS.get(lang, {}).get(key)
+    if s is None:
+        s = _SCANNER_STRINGS["en"].get(key, key)
+    return s.format(**kw) if kw else s
 
 
 def _model_priority(model):
@@ -211,7 +349,7 @@ def _backfill_topics(conn, jsonl_files):
                     elif sid not in has_custom:
                         titles.setdefault(sid, title)
         except Exception as e:
-            print(f"  Warning: error reading {filepath}: {e}")
+            print(_t("warn_read", path=filepath, e=e))
 
     for sid, title in titles.items():
         conn.execute(
@@ -443,7 +581,7 @@ def parse_jsonl_file(filepath):
                         turns_no_id.append(turn)
 
     except Exception as e:
-        print(f"  Warning: error reading {filepath}: {e}")
+        print(_t("warn_read", path=filepath, e=e))
 
     turns = turns_no_id + list(seen_messages.values())
     return list(session_meta.values()), turns, list(agents.values()), line_count
@@ -589,7 +727,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         if not d.exists():
             continue
         if verbose:
-            print(f"Scanning {d} ...")
+            print(_t("scanning_dir", d=d))
         jsonl_files.extend(glob.glob(str(d / "**" / "*.jsonl"), recursive=True))
     jsonl_files.sort()
 
@@ -604,7 +742,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         _meta_set(conn, "topic_backfill_done", "1")
         conn.commit()
         if verbose and filled:
-            print(f"Backfilled topic for {filled} existing session(s).")
+            print(_t("backfilled", n=filled))
 
     new_files = 0
     updated_files = 0
@@ -765,7 +903,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                             else:
                                 turns_no_id.append(turn)
             except Exception as e:
-                print(f"  Warning: {e}")
+                print(_t("warn", e=e))
 
             if line_count <= old_lines:
                 # File didn't grow (mtime changed but no new content)
@@ -809,12 +947,12 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         conn.commit()
 
     if verbose:
-        print(f"\nScan complete:")
-        print(f"  New files:     {new_files}")
-        print(f"  Updated files: {updated_files}")
-        print(f"  Skipped files: {skipped_files}")
-        print(f"  Turns added:   {total_turns}")
-        print(f"  Sessions seen: {len(total_sessions)}")
+        print(_t("scan_complete"))
+        print(_t("new_files", n=new_files))
+        print(_t("updated_files", n=updated_files))
+        print(_t("skipped_files", n=skipped_files))
+        print(_t("turns_added", n=total_turns))
+        print(_t("sessions_seen", n=len(total_sessions)))
 
     conn.close()
     return {"new": new_files, "updated": updated_files, "skipped": skipped_files,
