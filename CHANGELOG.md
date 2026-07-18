@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.6.0 — TBD
+
+### Dashboard
+
+- Added a **language switch** to the filter bar with **9 languages** — English, 中文, Español, Français, Deutsch, 日本語, 한국어, Português, and Русский. The dashboard UI is now fully localizable: all static chrome plus dynamically-rendered content (stat cards, chart titles/axes/legends/tooltips, table headers, footers, the rescan button, and empty/loading states) route through a client-side `t()` translator. The choice persists in `localStorage` (`cu_lang`) and auto-detects from the browser language (falling back to English). Legend visibility toggles now track a stable per-series key so they survive a language switch, and the date-range values stay English-keyed internally (only their labels are translated).
+
+### Scanner / CLI
+
+- **Localized the terminal output in the same 9 languages.** The `today`, `week`, `stats`, and `scan` commands now translate their headers, labels, notes, and summary lines through a shared resolver; select the language with `--lang <code>` or the `CLAUDE_USAGE_LANG` env var (accepts locale forms like `pt-BR` / `zh_CN.UTF-8`, and defaults to English so test output stays deterministic on any locale). Compact per-row metric codes (`turns=`/`in=`/`out=`/`cost=`) are left untranslated so column alignment holds across languages.
+
 ## v1.5.5 — 2026-07-10
 
 ### Dashboard
