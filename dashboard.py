@@ -5,6 +5,7 @@ dashboard.py - Local web dashboard served on localhost:8080.
 import json
 import os
 import sqlite3
+import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 from pathlib import Path
@@ -23,6 +24,10 @@ DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usag
 # would misfire there because the Marketplace publish lags the GitHub release).
 SURFACE = "web"
 
+# Serializes /api/rescan handlers (see do_POST). Module-level so every
+# ThreadingHTTPServer request thread shares the one lock.
+RESCAN_LOCK = threading.Lock()
+
 
 def get_dashboard_data(db_path=DB_PATH):
     if not db_path.exists():
@@ -30,9 +35,12 @@ def get_dashboard_data(db_path=DB_PATH):
 
     conn = sqlite3.connect(db_path)
     # The dashboard reads while a background scan may be committing (cmd_dashboard
-    # serves first, scans in a background thread; /api/rescan scans in-process too).
-    # Wait briefly for write locks instead of raising "database is locked".
-    conn.execute("PRAGMA busy_timeout = 5000")
+    # serves first, scans in a background thread; /api/rescan scans in-process too,
+    # now every 30s via the client's auto-rescan tick). Match the 30s writer
+    # timeout in scanner.get_db: a read that waits out a long commit still
+    # answers, while a 5s cap could make /api/data error mid-scan and silently
+    # skip that refresh.
+    conn.execute("PRAGMA busy_timeout = 30000")
     conn.row_factory = sqlite3.Row
     # Ensure the schema is current before querying. cmd_dashboard binds and serves
     # *before* its background scan runs init_db, so on the first load after an
@@ -1907,7 +1915,11 @@ async function triggerRescan() {
   try {
     const resp = await fetch('/api/rescan', { method: 'POST' });
     const d = await resp.json();
-    btn.textContent = '\u21bb Rescan (' + d.new + ' new, ' + d.updated + ' updated)';
+    // "busy" = another scan (auto-rescan tick, other tab, startup scan) holds
+    // the server-side lock; its results land in the DB, so just re-read.
+    btn.textContent = d.busy
+      ? '\u21bb Rescan (already scanning)'
+      : '\u21bb Rescan (' + d.new + ' new, ' + d.updated + ' updated)';
     await loadData();
   } catch(e) {
     btn.textContent = '\u21bb Rescan (error)';
@@ -1961,10 +1973,32 @@ async function loadData() {
 }
 
 let autoRefreshTimer = null;
+let autoRescanInFlight = false;
+async function autoRefreshTick() {
+  // Ingest before re-reading: /api/data is a pure DB read, so a bare loadData
+  // poll only re-renders data from the last scan — fresh usage would never
+  // appear until the user pressed Rescan or restarted the server. The scan is
+  // incremental (per-file mtime skip), so a no-change tick is cheap. The
+  // in-flight guard keeps a slow scan from stacking ticks behind it; a
+  // guarded tick still loadData()s so partial commits from a long-running
+  // scan (e.g. the cold startup backlog) keep rendering progressively.
+  if (!autoRescanInFlight) {
+    autoRescanInFlight = true;
+    try {
+      await fetch('/api/rescan', { method: 'POST' });
+    } catch(e) {
+      // Scan failed or server unreachable — loadData below still renders
+      // whatever the DB has and surfaces its own errors.
+    } finally {
+      autoRescanInFlight = false;
+    }
+  }
+  await loadData();
+}
 function scheduleAutoRefresh() {
   if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
   if (rangeIncludesToday(selectedRange)) {
-    autoRefreshTimer = setInterval(loadData, 30000);
+    autoRefreshTimer = setInterval(autoRefreshTick, 30000);
   }
 }
 
@@ -2275,14 +2309,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Pass DB_PATH / DEFAULT_PROJECTS_DIRS explicitly so tests that
             # patch the module globals are honored (scan's defaults are
             # frozen at def time and would otherwise target the real paths).
-            import scanner
-            db_path = DB_PATH
-            result = scanner.scan(
-                db_path=db_path,
-                projects_dirs=scanner.DEFAULT_PROJECTS_DIRS,
-                verbose=False,
-            )
-            body = json.dumps(result).encode("utf-8")
+            #
+            # RESCAN_LOCK serializes scans within this process: the client
+            # auto-rescans every 30s (plus the manual button, times however
+            # many tabs are open), and ThreadingHTTPServer would happily run
+            # them all concurrently. Overlapping scans are safe for data
+            # (message_id dedupe + the sessions recompute) but contend on the
+            # SQLite write lock; skipping with {"busy": true} is cheaper and
+            # the next 30s tick picks up anything missed.
+            if not RESCAN_LOCK.acquire(blocking=False):
+                body = json.dumps({"busy": True}).encode("utf-8")
+            else:
+                try:
+                    import scanner
+                    db_path = DB_PATH
+                    result = scanner.scan(
+                        db_path=db_path,
+                        projects_dirs=scanner.DEFAULT_PROJECTS_DIRS,
+                        verbose=False,
+                    )
+                finally:
+                    RESCAN_LOCK.release()
+                body = json.dumps(result).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))

@@ -377,6 +377,31 @@ class TestDashboardHTTP(unittest.TestCase):
         self.assertEqual(turn_count, 1, "rescan must not delete existing turns")
         self.assertEqual(sess_count, 1, "rescan must not delete existing sessions")
 
+    def test_api_rescan_busy_when_scan_in_flight(self):
+        # The client auto-rescans every 30s (autoRefreshTick), so overlapping
+        # scans are now routine — a tick landing while the startup scan or
+        # another tab's rescan holds RESCAN_LOCK must get an immediate
+        # {"busy": true} instead of a second concurrent scan.
+        import dashboard as _d
+        url = f"http://127.0.0.1:{self.port}/api/rescan"
+        req = urllib.request.Request(url, method="POST")
+
+        acquired = _d.RESCAN_LOCK.acquire(blocking=False)
+        self.assertTrue(acquired, "test requires the lock to be free")
+        try:
+            with urllib.request.urlopen(req) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read())
+            self.assertEqual(data, {"busy": True})
+        finally:
+            _d.RESCAN_LOCK.release()
+
+        # Lock released → the next rescan runs normally.
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+        self.assertIn("new", data)
+        self.assertNotIn("busy", data)
+
     def test_404_for_unknown_path(self):
         url = f"http://127.0.0.1:{self.port}/nonexistent"
         try:
@@ -441,6 +466,21 @@ class TestHTMLTemplate(unittest.TestCase):
         self.assertIn("'today': 1", HTML_TEMPLATE)
         # Bounds case: today returns start === end === today's ISO date
         self.assertIn("range === 'today'", HTML_TEMPLATE)
+
+    def test_auto_refresh_rescans_before_reading(self):
+        """The 30s auto-refresh must ingest new usage, not just re-read the DB:
+        the timer fires autoRefreshTick (never bare loadData), and the tick
+        POSTs /api/rescan before loadData. Without this, fresh usage only
+        appears after a manual Rescan click or a server restart."""
+        self.assertIn("setInterval(autoRefreshTick, 30000)", HTML_TEMPLATE)
+        self.assertNotIn("setInterval(loadData", HTML_TEMPLATE)
+        tick = HTML_TEMPLATE.split("async function autoRefreshTick()")[1]
+        tick = tick.split("function scheduleAutoRefresh(")[0]
+        self.assertIn("'/api/rescan'", tick)
+        self.assertIn("await loadData()", tick)
+        # Order matters: scan first, then read — reversed, the UI would always
+        # render one scan (30s) behind.
+        self.assertLess(tick.index("'/api/rescan'"), tick.index("await loadData()"))
 
     def test_app_config_placeholder_present(self):
         """The head carries the server-substituted config placeholder and the

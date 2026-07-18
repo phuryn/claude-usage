@@ -417,7 +417,13 @@ def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, sur
 
     def background_scan():
         print("Scanning in the background...")
-        scan(projects_dir=projects_dir)
+        # Hold the dashboard's rescan lock so the client's 30s auto-rescan
+        # (and the manual button) gets an instant {"busy": true} during the
+        # cold startup scan instead of scanning the same backlog concurrently.
+        import dashboard
+
+        with dashboard.RESCAN_LOCK:
+            scan(projects_dir=projects_dir)
         print("Background scan complete.")
 
     threading.Thread(target=background_scan, daemon=True).start()

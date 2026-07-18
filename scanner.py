@@ -42,7 +42,11 @@ def get_db(db_path=DB_PATH):
     # Ensure the parent directory exists — on a fresh install or CI runner
     # ~/.claude may not yet exist, and sqlite3.connect needs the parent dir.
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    # timeout raised from the 5s default: scans can now run concurrently with
+    # each other (dashboard auto-rescan vs an external `cli.py scan`) and the
+    # end-of-scan sessions recompute can hold the write lock longer than 5s on
+    # a big DB — wait it out rather than raise "database is locked".
+    conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
