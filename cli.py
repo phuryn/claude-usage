@@ -18,6 +18,10 @@ from scanner import VERSION
 
 DB_PATH = Path(os.environ.get("CLAUDE_USAGE_DB", Path.home() / ".claude" / "usage.db"))
 
+# Seconds between the dashboard's background rescans. Matches the browser's own
+# 30s /api/data poll, so a refresh lands on data at most one tick old.
+DEFAULT_AUTO_REFRESH = 30
+
 PRICING = {
     # Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
     # (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
@@ -98,9 +102,9 @@ def require_db():
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
-def cmd_scan(projects_dir=None):
+def cmd_scan(projects_dir=None, verbose=True):
     from scanner import scan
-    scan(projects_dir=Path(projects_dir) if projects_dir else None)
+    scan(projects_dir=Path(projects_dir) if projects_dir else None, verbose=verbose)
 
 
 def cmd_today():
@@ -394,7 +398,8 @@ def cmd_stats():
     conn.close()
 
 
-def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, surface=None):
+def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, surface=None,
+                  auto_refresh=None):
     import threading
     import time
 
@@ -402,6 +407,8 @@ def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, sur
 
     host = host or os.environ.get("HOST", "localhost")
     port = int(port or os.environ.get("PORT", "8080"))
+    if auto_refresh is None:
+        auto_refresh = int(os.environ.get("AUTO_REFRESH", DEFAULT_AUTO_REFRESH))
 
     # Bind and serve the port *first*, then scan in the background. A cold scan
     # over a large ~/.claude/projects backlog can take well over a minute, and
@@ -419,6 +426,27 @@ def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, sur
         print("Scanning in the background...")
         scan(projects_dir=projects_dir)
         print("Background scan complete.")
+
+        # Then keep rescanning, so a dashboard left open overnight doesn't serve a
+        # frozen snapshot. /api/data only *reads* the DB, and the browser polls it
+        # every 30s advertising "Auto-refresh in 30s" in the footer — without this
+        # loop nothing ever writes new turns, so that promise silently went stale
+        # the moment the startup scan finished.
+        #
+        # Rescans are incremental and cheap: processed_files skips any transcript
+        # whose mtime is unchanged, so a steady-state pass over a ~700-file backlog
+        # touches only the handful of live sessions (~0.1s). verbose=False keeps the
+        # terminal quiet — the startup scan already reported the backlog.
+        if not auto_refresh:
+            return
+        while True:
+            time.sleep(auto_refresh)
+            try:
+                scan(projects_dir=projects_dir, verbose=False)
+            except Exception as exc:
+                # Never let a transient failure (locked DB, transcript mid-write)
+                # kill the loop — the next tick usually succeeds.
+                print(f"Auto-refresh scan failed: {exc}")
 
     threading.Thread(target=background_scan, daemon=True).start()
 
@@ -447,7 +475,9 @@ Usage:
   python cli.py week                         Show last 7 days (per-day + by-model)
   python cli.py stats                        Show all-time statistics
   python cli.py dashboard [--projects-dir PATH] [--host HOST] [--port PORT] [--no-browser] [--surface SURFACE]
+                          [--auto-refresh SECONDS | --no-auto-refresh]
                                                  Scan + start dashboard (opens a browser unless --no-browser)
+                                                 Rescans every 30s by default; --no-auto-refresh scans only at startup
   python cli.py --version                    Print the version and exit
 """
 
@@ -465,6 +495,30 @@ def parse_named_arg(args, flag):
         if arg == flag and i + 1 < len(args):
             return args[i + 1]
     return None
+
+
+def parse_auto_refresh(args):
+    """Resolve --auto-refresh [SECONDS] / --no-auto-refresh into a seconds value.
+
+    Returns None when neither flag is given, so the caller can fall back to the
+    AUTO_REFRESH env var and then DEFAULT_AUTO_REFRESH. 0 disables the rescan loop.
+    """
+    if "--no-auto-refresh" in args:
+        return 0
+    if "--auto-refresh" not in args:
+        return None
+
+    value = parse_named_arg(args, "--auto-refresh")
+    # Bare flag, or immediately followed by another flag ("--auto-refresh --port 7070"):
+    # parse_named_arg would hand back "--port", so treat both as "use the default".
+    if value is None or value.startswith("--"):
+        return DEFAULT_AUTO_REFRESH
+    try:
+        return max(0, int(value))
+    except ValueError:
+        print(f"Invalid --auto-refresh value: {value!r} (expected seconds, or 0 to disable)")
+        sys.exit(2)
+
 
 def main():
     """Console entry point (``claude-usage``) and ``python cli.py`` dispatch."""
@@ -487,6 +541,7 @@ def main():
             port=parse_named_arg(rest, "--port"),
             no_browser="--no-browser" in rest,
             surface=parse_named_arg(rest, "--surface"),
+            auto_refresh=parse_auto_refresh(rest),
         )
     elif command == "scan" and projects_dir:
         cmd_scan(projects_dir=projects_dir)
