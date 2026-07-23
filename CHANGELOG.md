@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.6 — TBD
+
+### Dashboard
+
+- Fixed the dashboard serving a **frozen snapshot** when left open: the browser polls `/api/data` every 30s and the footer advertises "Auto-refresh in 30s", but nothing ever rescanned the transcripts after the startup scan, so the numbers stopped moving the moment that scan finished. `cli.py dashboard` now runs an incremental rescan on the same 30s cadence, so today's usage keeps filling in without a restart.
+- Added `--auto-refresh SECONDS` (and the `AUTO_REFRESH` environment variable) to tune the rescan interval, plus `--no-auto-refresh` / `--auto-refresh 0` to restore the scan-once-at-startup behaviour. Rescans are incremental — `processed_files` skips any transcript whose mtime is unchanged — so a steady-state pass over a ~700-file backlog touches only the live sessions.
+
 ## v1.5.5 — 2026-07-10
 
 ### Dashboard
