@@ -55,15 +55,31 @@ def get_pricing(model):
         return PRICING["claude-haiku-4-5"]
     return None
 
-def calc_cost(model, inp, out, cache_read, cache_creation):
+# Anthropic bills cache writes at 1.25x base input for the 5-minute TTL and 2x
+# for the 1-hour TTL. "cache_write" in PRICING is the 5-minute rate.
+CACHE_WRITE_1H_MULTIPLIER = 2.0
+
+
+def calc_cost(model, inp, out, cache_read, cache_creation, cache_creation_1h=0):
+    """Cost in USD.
+
+    ``cache_creation`` is the total cache-creation tokens and
+    ``cache_creation_1h`` the portion written with a 1-hour TTL, so the
+    5-minute portion is the difference. Callers that omit
+    ``cache_creation_1h`` bill the whole bucket at the 5-minute rate, which
+    preserves the previous behaviour for rows recorded before the split.
+    """
     p = get_pricing(model)
     if not p:
         return 0.0
+    cache_creation_1h = max(0, min(cache_creation_1h, cache_creation))
+    cache_creation_5m = cache_creation - cache_creation_1h
     return (
-        inp            * p["input"]       / 1_000_000 +
-        out            * p["output"]      / 1_000_000 +
-        cache_read     * p["cache_read"]  / 1_000_000 +
-        cache_creation * p["cache_write"] / 1_000_000
+        inp               * p["input"]       / 1_000_000 +
+        out               * p["output"]      / 1_000_000 +
+        cache_read        * p["cache_read"]  / 1_000_000 +
+        cache_creation_5m * p["cache_write"] / 1_000_000 +
+        cache_creation_1h * p["input"] * CACHE_WRITE_1H_MULTIPLIER / 1_000_000
     )
 
 def fmt(n):
@@ -114,6 +130,7 @@ def cmd_today():
             SUM(output_tokens)         as out,
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
+            SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                   as turns
         FROM turns
         WHERE substr(timestamp, 1, 10) = ?
@@ -150,7 +167,7 @@ def cmd_today():
     total_cost = 0.0
 
     for r in rows:
-        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0, r["cc1h"] or 0)
         total_cost += cost
         total_inp += r["inp"] or 0
         total_out += r["out"] or 0
@@ -187,6 +204,7 @@ def cmd_week():
             SUM(output_tokens)         as out,
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
+            SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                   as turns
         FROM turns
         WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
@@ -200,6 +218,7 @@ def cmd_week():
             SUM(output_tokens)         as out,
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
+            SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                   as turns
         FROM turns
         WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
@@ -232,7 +251,7 @@ def cmd_week():
         bucket["turns"] += r["turns"]
         bucket["inp"]   += r["inp"] or 0
         bucket["out"]   += r["out"] or 0
-        bucket["cost"]  += calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        bucket["cost"]  += calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0, r["cc1h"] or 0)
 
     print("  By Day:")
     for i in range(7):
@@ -246,7 +265,7 @@ def cmd_week():
     total_inp = total_out = total_cr = total_cc = total_turns = 0
     total_cost = 0.0
     for r in by_model:
-        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0, r["cc1h"] or 0)
         total_cost  += cost
         total_inp   += r["inp"] or 0
         total_out   += r["out"] or 0
@@ -285,6 +304,7 @@ def cmd_stats():
             SUM(output_tokens)            as out,
             SUM(cache_read_tokens)        as cr,
             SUM(cache_creation_tokens)    as cc,
+            SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                      as turns
         FROM turns
     """).fetchone()
@@ -297,6 +317,7 @@ def cmd_stats():
             SUM(output_tokens)         as out,
             SUM(cache_read_tokens)     as cr,
             SUM(cache_creation_tokens) as cc,
+            SUM(cache_creation_1h_tokens) as cc1h,
             COUNT(*)                   as turns,
             COUNT(DISTINCT session_id) as sessions
         FROM turns
@@ -346,7 +367,7 @@ def cmd_stats():
 
     # Build total cost across all models
     total_cost = sum(
-        calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0, r["cc1h"] or 0)
         for r in by_model
     )
 
@@ -373,7 +394,7 @@ def cmd_stats():
 
     print("  By Model:")
     for r in by_model:
-        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0, r["cc1h"] or 0)
         print(f"    {r['model']:<30}  sessions={r['sessions']:<4}  turns={fmt(r['turns'] or 0):<6}  "
               f"in={fmt(r['inp'] or 0):<8}  out={fmt(r['out'] or 0):<8}  cost={fmt_cost(cost)}")
 
