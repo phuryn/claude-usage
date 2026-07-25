@@ -63,6 +63,7 @@ def get_dashboard_data(db_path=DB_PATH):
             SUM(output_tokens)         as output,
             SUM(cache_read_tokens)     as cache_read,
             SUM(cache_creation_tokens) as cache_creation,
+            SUM(cache_creation_1h_tokens) as cache_creation_1h,
             COUNT(*)                   as turns
         FROM turns
         GROUP BY day, COALESCE(NULLIF(model, ''), 'unknown')
@@ -76,6 +77,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "output":         r["output"] or 0,
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
+        "cache_creation_1h": r["cache_creation_1h"] or 0,
         "turns":          r["turns"] or 0,
     } for r in daily_rows]
 
@@ -158,6 +160,7 @@ def get_dashboard_data(db_path=DB_PATH):
             SUM(t.output_tokens)                     as output,
             SUM(t.cache_read_tokens)                 as cache_read,
             SUM(t.cache_creation_tokens)             as cache_creation,
+            SUM(t.cache_creation_1h_tokens)          as cache_creation_1h,
             COUNT(DISTINCT t.agent_id)               as dispatches,
             COUNT(*)                                 as turns
         FROM turns t
@@ -175,6 +178,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "output":         r["output"] or 0,
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
+        "cache_creation_1h": r["cache_creation_1h"] or 0,
         "dispatches":     r["dispatches"] or 0,
         "turns":          r["turns"] or 0,
     } for r in subagent_daily_rows]
@@ -190,6 +194,7 @@ def get_dashboard_data(db_path=DB_PATH):
             SUM(t.output_tokens)                     as output,
             SUM(t.cache_read_tokens)                 as cache_read,
             SUM(t.cache_creation_tokens)             as cache_creation,
+            SUM(t.cache_creation_1h_tokens)          as cache_creation_1h,
             COUNT(*)                                 as turns,
             a.dispatched_in_session                  as parent_session,
             a.total_duration_ms                      as duration_ms,
@@ -213,6 +218,7 @@ def get_dashboard_data(db_path=DB_PATH):
         "output":         r["output"] or 0,
         "cache_read":     r["cache_read"] or 0,
         "cache_creation": r["cache_creation"] or 0,
+        "cache_creation_1h": r["cache_creation_1h"] or 0,
         "turns":          r["turns"] or 0,
         "duration_ms":    r["duration_ms"],
         "tool_uses":      r["tool_uses"],
@@ -770,15 +776,24 @@ function getPricing(model) {
   return null;
 }
 
-function calcCost(model, inp, out, cacheRead, cacheCreation) {
+// Cache writes bill at 1.25x base input for the 5-minute TTL (p.cache_write)
+// and 2x for the 1-hour TTL. cacheCreation is the total and cacheCreation1h
+// the 1-hour portion, so the remainder is the 5-minute portion. Omitting the
+// last argument bills everything at the 5-minute rate, as before.
+const CACHE_WRITE_1H_MULTIPLIER = 2.0;
+
+function calcCost(model, inp, out, cacheRead, cacheCreation, cacheCreation1h = 0) {
   if (!isBillable(model)) return 0;
   const p = getPricing(model);
   if (!p) return 0;
+  const cc1h = Math.max(0, Math.min(cacheCreation1h, cacheCreation));
+  const cc5m = cacheCreation - cc1h;
   return (
-    inp           * p.input       / 1e6 +
-    out           * p.output      / 1e6 +
-    cacheRead     * p.cache_read  / 1e6 +
-    cacheCreation * p.cache_write / 1e6
+    inp       * p.input       / 1e6 +
+    out       * p.output      / 1e6 +
+    cacheRead * p.cache_read  / 1e6 +
+    cc5m      * p.cache_write / 1e6 +
+    cc1h      * p.input * CACHE_WRITE_1H_MULTIPLIER / 1e6
   );
 }
 
@@ -1149,8 +1164,8 @@ function sortSessions(sessions) {
   return [...sessions].sort((a, b) => {
     let av, bv;
     if (sessionSortCol === 'cost') {
-      av = calcCost(a.model, a.input, a.output, a.cache_read, a.cache_creation);
-      bv = calcCost(b.model, b.input, b.output, b.cache_read, b.cache_creation);
+      av = calcCost(a.model, a.input, a.output, a.cache_read, a.cache_creation, a.cache_creation_1h);
+      bv = calcCost(b.model, b.input, b.output, b.cache_read, b.cache_creation, b.cache_creation_1h);
     } else if (sessionSortCol === 'duration_min') {
       av = parseFloat(a.duration_min) || 0;
       bv = parseFloat(b.duration_min) || 0;
@@ -1697,8 +1712,8 @@ function sortModels(byModel) {
   return [...byModel].sort((a, b) => {
     let av, bv;
     if (modelSortCol === 'cost') {
-      av = calcCost(a.model, a.input, a.output, a.cache_read, a.cache_creation);
-      bv = calcCost(b.model, b.input, b.output, b.cache_read, b.cache_creation);
+      av = calcCost(a.model, a.input, a.output, a.cache_read, a.cache_creation, a.cache_creation_1h);
+      bv = calcCost(b.model, b.input, b.output, b.cache_read, b.cache_creation, b.cache_creation_1h);
     } else {
       av = a[modelSortCol] ?? 0;
       bv = b[modelSortCol] ?? 0;

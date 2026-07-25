@@ -150,6 +150,41 @@ class TestCalcCost(unittest.TestCase):
         cost = calc_cost("claude-opus-4-6", 0, 0, 0, 0)
         self.assertEqual(cost, 0.0)
 
+    def test_1h_cache_writes_bill_at_double_input(self):
+        """1-hour TTL cache writes bill at 2x input, not the 5-minute rate."""
+        # 1M tokens, all 1-hour TTL. Opus input is $5/MTok, so 2x = $10.
+        cost = calc_cost("claude-opus-4-6", 0, 0, 0, 1_000_000, 1_000_000)
+        self.assertAlmostEqual(cost, 10.00, places=6)
+
+    def test_5m_cache_writes_unchanged(self):
+        """With no 1-hour portion, pricing matches the old behaviour exactly."""
+        cost = calc_cost("claude-opus-4-6", 0, 0, 0, 1_000_000, 0)
+        self.assertAlmostEqual(cost, 6.25, places=6)
+
+    def test_omitting_1h_argument_is_backwards_compatible(self):
+        """Callers that predate the split bill the whole bucket at 5 minutes."""
+        self.assertAlmostEqual(
+            calc_cost("claude-opus-4-6", 0, 0, 0, 1_000_000),
+            calc_cost("claude-opus-4-6", 0, 0, 0, 1_000_000, 0),
+            places=6,
+        )
+
+    def test_mixed_ttl_cache_writes(self):
+        """The 5-minute portion is the remainder after the 1-hour portion."""
+        # 600k at 1h (2x) + 400k at 5m (1.25x) on Opus input $5:
+        #   0.6 * 10.00 + 0.4 * 6.25 = 6.00 + 2.50 = 8.50
+        cost = calc_cost("claude-opus-4-6", 0, 0, 0, 1_000_000, 600_000)
+        self.assertAlmostEqual(cost, 8.50, places=6)
+
+    def test_1h_portion_cannot_exceed_total(self):
+        """A malformed breakdown must not inflate cost beyond the total."""
+        cost = calc_cost("claude-opus-4-6", 0, 0, 0, 1_000_000, 5_000_000)
+        self.assertAlmostEqual(cost, 10.00, places=6)
+
+    def test_negative_1h_portion_is_ignored(self):
+        cost = calc_cost("claude-opus-4-6", 0, 0, 0, 1_000_000, -5)
+        self.assertAlmostEqual(cost, 6.25, places=6)
+
     def test_unknown_model_costs_zero(self):
         cost = calc_cost("glm-5.1", 1_000_000, 500_000, 100_000, 50_000)
         self.assertEqual(cost, 0.0)

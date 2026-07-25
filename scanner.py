@@ -73,6 +73,7 @@ def init_db(conn):
             output_tokens           INTEGER DEFAULT 0,
             cache_read_tokens       INTEGER DEFAULT 0,
             cache_creation_tokens   INTEGER DEFAULT 0,
+            cache_creation_1h_tokens INTEGER DEFAULT 0,
             tool_name               TEXT,
             cwd                     TEXT,
             message_id              TEXT,
@@ -115,6 +116,7 @@ def init_db(conn):
     # Subagent attribution columns (added in a later schema version)
     _ensure_column(conn, "turns", "is_subagent", "INTEGER DEFAULT 0")
     _ensure_column(conn, "turns", "agent_id", "TEXT")
+    _ensure_column(conn, "turns", "cache_creation_1h_tokens", "INTEGER DEFAULT 0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_subagent ON turns(is_subagent)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_agent_id ON turns(agent_id)")
     # Session topic (from custom-title / ai-title records; added in a later
@@ -406,6 +408,13 @@ def parse_jsonl_file(filepath):
                     output_tokens = usage.get("output_tokens", 0) or 0
                     cache_read = usage.get("cache_read_input_tokens", 0) or 0
                     cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+                    # Cache writes bill at 1.25x input for the 5-minute TTL and 2x
+                    # for the 1-hour TTL. Older logs carry no breakdown, in which
+                    # case the whole bucket stays on the 5-minute rate as before.
+                    _cc_breakdown = usage.get("cache_creation") or {}
+                    cache_creation_1h = _cc_breakdown.get("ephemeral_1h_input_tokens", 0) or 0
+                    if cache_creation_1h > cache_creation:
+                        cache_creation_1h = cache_creation
 
                     # Only record turns that have actual token usage
                     if input_tokens + output_tokens + cache_read + cache_creation == 0:
@@ -429,6 +438,7 @@ def parse_jsonl_file(filepath):
                         "output_tokens": output_tokens,
                         "cache_read_tokens": cache_read,
                         "cache_creation_tokens": cache_creation,
+                        "cache_creation_1h_tokens": cache_creation_1h,
                         "tool_name": tool_name,
                         "cwd": cwd,
                         "message_id": message_id,
@@ -560,13 +570,14 @@ def insert_turns(conn, turns):
     conn.executemany("""
         INSERT OR IGNORE INTO turns
             (session_id, timestamp, model, input_tokens, output_tokens,
-             cache_read_tokens, cache_creation_tokens, tool_name, cwd, message_id,
-             is_subagent, agent_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens,
+             tool_name, cwd, message_id, is_subagent, agent_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
         (t["session_id"], t["timestamp"], t["model"],
          t["input_tokens"], t["output_tokens"],
          t["cache_read_tokens"], t["cache_creation_tokens"],
+         t.get("cache_creation_1h_tokens", 0),
          t["tool_name"], t["cwd"], t.get("message_id", ""),
          t.get("is_subagent", 0), t.get("agent_id"))
         for t in turns
@@ -732,6 +743,13 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                             output_tokens = usage.get("output_tokens", 0) or 0
                             cache_read = usage.get("cache_read_input_tokens", 0) or 0
                             cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+                            # Cache writes bill at 1.25x input for the 5-minute TTL and 2x
+                            # for the 1-hour TTL. Older logs carry no breakdown, in which
+                            # case the whole bucket stays on the 5-minute rate as before.
+                            _cc_breakdown = usage.get("cache_creation") or {}
+                            cache_creation_1h = _cc_breakdown.get("ephemeral_1h_input_tokens", 0) or 0
+                            if cache_creation_1h > cache_creation:
+                                cache_creation_1h = cache_creation
 
                             if input_tokens + output_tokens + cache_read + cache_creation == 0:
                                 continue
@@ -753,6 +771,7 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                                 "output_tokens": output_tokens,
                                 "cache_read_tokens": cache_read,
                                 "cache_creation_tokens": cache_creation,
+                                "cache_creation_1h_tokens": cache_creation_1h,
                                 "tool_name": tool_name,
                                 "cwd": cwd,
                                 "message_id": message_id,
