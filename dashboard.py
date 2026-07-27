@@ -819,6 +819,16 @@ function sessionCost(s) {
   return calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
 }
 
+// A session can be billable even when its primary model isn't (e.g. a
+// non-billable main model that dispatched a billable sub-agent), so this
+// checks the whole breakdown rather than just s.model.
+function sessionIsBillable(s) {
+  if (s.by_model && s.by_model.length) {
+    return s.by_model.some(m => isBillable(m.model));
+  }
+  return isBillable(s.model);
+}
+
 // ── Formatting ─────────────────────────────────────────────────────────────
 function fmt(n) {
   if (n >= 1e9) return (n/1e9).toFixed(2)+'B';
@@ -1691,7 +1701,7 @@ function renderSessionsTable(sessions) {
   const shown = sessions.slice(0, shownCount(sessionsLimit, sessions.length));
   document.getElementById('sessions-body').innerHTML = shown.map(s => {
     const cost = sessionCost(s);
-    const costCell = isBillable(s.model)
+    const costCell = sessionIsBillable(s)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
     const titleCell = s.topic
