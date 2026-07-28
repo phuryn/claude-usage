@@ -6,7 +6,7 @@
 
 - Added **`claudeUsage.openLocation`** (`sidebar` | `editor`, default `sidebar`) to host the dashboard in an editor tab instead of the narrow activity-bar panel, giving the charts and tables the full window width they were designed for.
 - Added the **`Claude Usage: Open Dashboard in Editor Tab`** command and a matching button in the sidebar's title bar, so the dashboard can be popped out on demand without changing the setting.
-- Added **`claudeUsage.collapseSidebarOnOpenInEditor`** (default `false`) to collapse the sidebar once the tab is up. Only fires on explicit pop-outs (the new command, its title-bar button, `Claude Usage: Open Dashboard` when it routes to the tab, and `Claude Usage: Restart Server`) and only when the Claude Usage view is the one showing, so it never closes the Explorer. Clicking the activity-bar icon to hand off from an already-open tab only collapses when `openLocation` is `editor`, so the sidebar's "Show tab" placeholder stays reachable when `openLocation` is `sidebar`.
+- Added **`claudeUsage.collapseSidebarOnOpenInEditor`** (default `false`) to collapse the sidebar whenever the dashboard opens in an editor tab — via `Claude Usage: Open Dashboard in Editor Tab`, its title-bar button, `Claude Usage: Open Dashboard`, `Claude Usage: Restart Server`, or the activity-bar icon when `openLocation` is `editor` — as long as the Claude Usage view is the one currently showing, so it never closes the Explorer.
 - Exactly one dashboard instance is live at a time: the sidebar shows a short placeholder pointing at the tab whenever the tab owns the dashboard. The editor tab keeps its state across tab switches and closes on window reload.
 
 ## v1.5.5 — 2026-07-10
