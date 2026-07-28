@@ -95,9 +95,28 @@ Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 | Setting | Default | Description |
 |---|---|---|
+| `claudeUsage.openLocation` | `sidebar` | Where the dashboard opens: `sidebar` (activity-bar panel) or `editor` (a tab in the editor area, full window width). |
+| `claudeUsage.collapseSidebarOnOpenInEditor` | `false` | Collapse the sidebar once the dashboard opens in an editor tab. Only fires on explicit pop-outs (the **Open Dashboard in Editor Tab** command/button, **Open Dashboard** when it routes to the tab, and **Restart Server**) and only when the Claude Usage view is the one showing — it never closes the Explorer, and it doesn't fire when clicking the activity-bar icon merely hands off to an already-open tab under `openLocation: "sidebar"` (that would make the "Show tab" placeholder unreachable). |
 | `claudeUsage.pythonPath` | _(auto-discover)_ | Path to a Python 3.8+ interpreter. Leave empty to auto-detect (`claude-usage` on PATH first, then `python3`, then `python`). |
 | `claudeUsage.cliPath` | _(bundled)_ | Path to a custom `cli.py` (or its parent directory). Empty = use the bundled copy that ships with the extension. |
 | `claudeUsage.port` | `0` | Port for the local dashboard server. `0` = OS picks a free one. |
+
+### Open the dashboard in an editor tab
+
+The sidebar is narrow, and the dashboard was designed for a full browser
+window. To give it more room:
+
+- **Once:** run `Claude Usage: Open Dashboard in Editor Tab` from the command
+  palette, or click the pop-out button in the sidebar's title bar.
+- **Always:** set `"claudeUsage.openLocation": "editor"`. The activity-bar icon
+  and `Claude Usage: Open Dashboard` then both open the tab.
+
+Only one dashboard runs at a time. While the tab is open, the sidebar shows a
+short note with a **Show tab** button instead of a second copy. Close the tab
+and the sidebar takes over again.
+
+The tab keeps its state when you switch to another editor tab, and closes when
+you reload the window.
 
 ---
 
