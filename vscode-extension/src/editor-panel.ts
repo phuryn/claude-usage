@@ -29,6 +29,12 @@ export class DashboardPanel {
   private action: WebviewAction | undefined;
   private iconUri = "";
   private cspSource = "";
+  // Set once the panel is disposed (host-initiated or user closed the tab).
+  // Guards the public surface so a stale reference held across an await
+  // (e.g. `const panel = createOrShow(...); await server.start(); panel.setUrl(...)`)
+  // no-ops instead of throwing — VS Code's real WebviewPanel throws on
+  // .reveal() / .webview.html once disposed.
+  private disposed = false;
 
   /** The live panel, if one is open. Drives the derived active-surface rule. */
   static get(): DashboardPanel | undefined {
@@ -77,6 +83,7 @@ export class DashboardPanel {
     }
 
     this.panel.onDidDispose(() => {
+      this.disposed = true;
       if (DashboardPanel.current === this) DashboardPanel.current = undefined;
       onDispose();
     });
@@ -84,8 +91,9 @@ export class DashboardPanel {
     this.render();
   }
 
-  /** Bring the tab to the front. */
+  /** Bring the tab to the front. No-op once the panel is disposed. */
   reveal(): void {
+    if (this.disposed) return;
     this.panel.reveal();
   }
 
@@ -110,16 +118,19 @@ export class DashboardPanel {
     this.render();
   }
 
-  /** Force the iframe to reload (e.g. after a rescan). */
+  /** Force the iframe to reload (e.g. after a rescan). No-op once disposed. */
   refresh(): void {
     this.render();
   }
 
+  /** Idempotent: disposing an already-disposed panel is a safe no-op. */
   dispose(): void {
+    if (this.disposed) return;
     this.panel.dispose();
   }
 
   private render(): void {
+    if (this.disposed) return;
     this.panel.webview.html = renderHtml(
       this.currentUrl, this.statusText, makeNonce(), this.iconUri, this.cspSource, this.action,
     );

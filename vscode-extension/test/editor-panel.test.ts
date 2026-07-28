@@ -139,3 +139,54 @@ describe("DashboardPanel rendering", () => {
     expect(html).not.toContain('class="retry"');
   });
 });
+
+describe("DashboardPanel after disposal", () => {
+  // A stale reference can outlive the tab: e.g. `const panel = createOrShow(...);
+  // await server.start(); panel.setUrl(url)` — if the user closes the tab while
+  // the await is pending, the later calls must no-op rather than throw (real
+  // VS Code's WebviewPanel throws on .reveal() / .webview.html once disposed).
+  it("setUrl, setStatus, setError, refresh and reveal do not throw once disposed", () => {
+    const panel = DashboardPanel.createOrShow(EXT_URI, () => {});
+    panel.dispose();
+
+    expect(() => panel.setUrl("http://127.0.0.1:9000/")).not.toThrow();
+    expect(() => panel.setStatus("Starting…")).not.toThrow();
+    expect(() => panel.setError("Failed to start dashboard")).not.toThrow();
+    expect(() => panel.refresh()).not.toThrow();
+    expect(() => panel.reveal()).not.toThrow();
+  });
+
+  it("does not re-render the webview html after disposal", () => {
+    const panel = DashboardPanel.createOrShow(EXT_URI, () => {});
+    const fakePanel = h.created[0].panel;
+    const htmlBeforeDispose = fakePanel._html();
+    panel.dispose();
+
+    panel.setUrl("http://127.0.0.1:9000/");
+    panel.setStatus("Starting…");
+    panel.setError("Failed to start dashboard");
+    panel.refresh();
+
+    expect(fakePanel._html()).toBe(htmlBeforeDispose);
+  });
+
+  it("does not call the underlying panel's reveal() again after disposal", () => {
+    const panel = DashboardPanel.createOrShow(EXT_URI, () => {});
+    const fakePanel = h.created[0].panel;
+    panel.dispose();
+
+    panel.reveal();
+
+    expect(fakePanel.reveal).not.toHaveBeenCalled();
+  });
+
+  it("dispose() is idempotent — calling it again does not re-invoke the underlying panel's dispose", () => {
+    const onDispose = vi.fn();
+    const panel = DashboardPanel.createOrShow(EXT_URI, onDispose);
+    panel.dispose();
+    expect(onDispose).toHaveBeenCalledTimes(1);
+
+    expect(() => panel.dispose()).not.toThrow();
+    expect(onDispose).toHaveBeenCalledTimes(1);
+  });
+});
