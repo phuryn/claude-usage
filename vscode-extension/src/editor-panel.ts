@@ -36,7 +36,7 @@ export class DashboardPanel {
   // .reveal() / .webview.html once disposed.
   private disposed = false;
 
-  /** The live panel, if one is open. Drives the derived active-surface rule. */
+  /** Accessor for the current panel, if one is open. Used only by tests. */
   static get(): DashboardPanel | undefined {
     return DashboardPanel.current;
   }

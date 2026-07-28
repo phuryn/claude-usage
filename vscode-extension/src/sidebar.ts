@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
 import { renderHtml, makeNonce, WebviewAction } from "./webview-html";
-import { ServerManager } from "./server-manager";
 
 /**
  * Retry button for the sidebar's error pane. Routes through claudeUsage.open
@@ -95,8 +94,8 @@ export class DashboardSidebar implements vscode.WebviewViewProvider {
 
   /** Force the iframe to reload (e.g. after a rescan). */
   refresh(): void {
-    if (!this.view) return;
     // Re-render same URL — the iframe will reload because the HTML is regenerated.
+    // render() itself no-ops when there is no view.
     this.render();
   }
 
@@ -107,9 +106,3 @@ export class DashboardSidebar implements vscode.WebviewViewProvider {
     );
   }
 }
-
-// Note: in extension.ts we connect ServerManager to DashboardSidebar via:
-//   server.start().then(() => sidebar.setUrl(`http://${host}:${port}/`))
-// Importing ServerManager here only so the type stays in the module graph; not
-// used at runtime. Stripped on build.
-export type { ServerManager };
