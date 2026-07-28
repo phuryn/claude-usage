@@ -73,6 +73,26 @@ export class DashboardSidebar implements vscode.WebviewViewProvider {
     this.render();
   }
 
+  /**
+   * Render a non-error informational pane with a call-to-action — used when the
+   * dashboard lives in an editor tab, so the sidebar explains where it went.
+   * Clears currentUrl: the iframe branch of renderHtml would otherwise win.
+   */
+  setPlaceholder(message: string, action: WebviewAction): void {
+    this.currentUrl = null;
+    this.statusText = message;
+    this.action = action;
+    this.render();
+  }
+
+  /**
+   * True only when our view is the visible sidebar container. Gates the
+   * collapse-on-open-in-editor behavior so we never close someone else's panel.
+   */
+  isVisible(): boolean {
+    return this.view?.visible ?? false;
+  }
+
   /** Force the iframe to reload (e.g. after a rescan). */
   refresh(): void {
     if (!this.view) return;
