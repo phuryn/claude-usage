@@ -100,15 +100,17 @@ class Extension {
   }
 
   /**
-   * The user revealed the sidebar. If the editor tab owns the dashboard, hand
-   * off to it; otherwise render live here and make sure the server is up.
+   * The user revealed the sidebar. Only hand off to the editor tab when the
+   * *setting* says editor — checking activeSurface() here would also hand off
+   * whenever a panel merely happens to exist (e.g. openLocation: "sidebar"
+   * with the dashboard popped out), which would steal focus from whatever
+   * file the user was on via DashboardPanel.reveal(). With openLocation:
+   * "sidebar", falling through to renderSidebar() resolves to the "Show tab"
+   * placeholder instead — see the spec's state table.
    */
   private async onSidebarShown(): Promise<void> {
-    if (this.activeSurface() === "editor") {
-      // This is the handoff, not an explicit "open in editor" request — pass
-      // true so maybeCollapseSidebar() only collapses when openLocation is
-      // "editor" (see shouldCollapseSidebar's doc comment for why).
-      await this.showEditorTab(true);
+    if (this.openLocation() === "editor") {
+      await this.showEditorTab();
       return;
     }
     this.renderSidebar();
@@ -116,15 +118,8 @@ class Extension {
     if (url && !this.panel) this.sidebar.setUrl(url);
   }
 
-  /**
-   * Create or focus the editor tab and point it at the server.
-   *
-   * `fromSidebarReveal` is true only when this is called as the handoff from
-   * onSidebarShown(); every other caller (the openInEditor command, its
-   * title-bar button, claudeUsage.open routing to the tab, and restart())
-   * is an explicit user action and leaves it at the default false.
-   */
-  private async showEditorTab(fromSidebarReveal = false): Promise<void> {
+  /** Create or focus the editor tab and point it at the server. */
+  private async showEditorTab(): Promise<void> {
     this.panel = DashboardPanel.createOrShow(this.context.extensionUri, () => {
       this.panel = undefined;
       this.renderSidebar();
@@ -132,7 +127,7 @@ class Extension {
     // The sidebar is no longer the active surface — swap it to a placeholder
     // before we start waiting on the server.
     this.renderSidebar();
-    this.maybeCollapseSidebar(fromSidebarReveal);
+    this.maybeCollapseSidebar();
     const url = await this.ensureServer();
     // The user can close the tab during a slow cold start, so re-derive which
     // surface should receive the result instead of assuming the panel survived.
@@ -161,14 +156,14 @@ class Extension {
   }
 
   /** Collapse the sidebar after opening a tab, if the user asked for that. */
-  private maybeCollapseSidebar(fromSidebarReveal: boolean): void {
+  private maybeCollapseSidebar(): void {
     const enabled = vscode.workspace
       .getConfiguration("claudeUsage")
       .get<boolean>("collapseSidebarOnOpenInEditor", false);
     // The visibility guard matters: workbench.action.closeSidebar closes
     // whichever container is showing, so without it, popping out while the
     // Explorer is open would close the Explorer.
-    if (!shouldCollapseSidebar(enabled, this.sidebar.isVisible(), fromSidebarReveal, this.openLocation())) return;
+    if (!shouldCollapseSidebar(enabled, this.sidebar.isVisible())) return;
     void vscode.commands.executeCommand("workbench.action.closeSidebar");
   }
 
