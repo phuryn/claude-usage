@@ -75,9 +75,9 @@ class Extension {
     return deriveActiveSurface(this.panel !== undefined, this.openLocation());
   }
 
-  /** The `claudeUsage.open` command: route by setting. */
+  /** The `claudeUsage.open` command: route by the derived active surface. */
   async openDashboard(): Promise<void> {
-    if (this.openLocation() === "editor") {
+    if (this.activeSurface() === "editor") {
       await this.showEditorTab();
       return;
     }
@@ -118,8 +118,12 @@ class Extension {
     this.renderSidebar();
     this.maybeCollapseSidebar();
     const url = await this.ensureServer();
-    // The user can close the tab during a slow cold start, so re-check.
-    if (url) this.panel?.setUrl(url);
+    // The user can close the tab during a slow cold start, so re-derive which
+    // surface should receive the result instead of assuming the panel survived.
+    if (url) {
+      if (this.panel) this.panel.setUrl(url);
+      else this.renderSidebar();
+    }
   }
 
   /** Apply the derived render table to the sidebar. */
@@ -171,16 +175,29 @@ class Extension {
     return this.startupInFlight;
   }
 
-  /** Push a non-error status to whichever surface the user is looking at. */
+  /**
+   * Push a non-error status to whichever surface actually exists. Checking
+   * `this.panel` directly (rather than activeSurface()) matters when the
+   * setting says "editor" but no tab has been created yet — activeSurface()
+   * would still say "editor" and a `this.panel?.` call would silently no-op,
+   * leaving the sidebar (the only surface that exists) without the update.
+   */
   private broadcastStatus(text: string): void {
-    if (this.activeSurface() === "editor") this.panel?.setStatus(text);
+    if (this.panel) this.panel.setStatus(text);
     else this.sidebar.setStatus(text);
   }
 
-  /** Record and show a startup failure on whichever surface is active. */
+  /**
+   * Record and show a startup failure on whichever surface actually exists
+   * (see broadcastStatus() for why that's `this.panel`, not activeSurface()).
+   * Also clears serverUrl: every doStartup() exit that calls this means the
+   * server is not usable, and renderSidebar() trusts serverUrl over lastError,
+   * so a stale URL here would hide the error behind a dead iframe.
+   */
   private broadcastError(msg: string): void {
     this.lastError = msg;
-    if (this.activeSurface() === "editor") this.panel?.setError(msg);
+    this.serverUrl = undefined;
+    if (this.panel) this.panel.setError(msg);
     else this.sidebar.setError(msg);
   }
 
@@ -225,45 +242,52 @@ class Extension {
       return undefined;
     }
 
-    // Reuse the last port when it's still free so the embedded dashboard's
-    // localStorage (which is keyed by the iframe's http://host:port origin)
-    // persists across window reloads instead of resetting every launch.
-    const savedPort = this.context.workspaceState.get<number>(LAST_PORT_KEY);
-    const port = await resolveStablePort(configuredPort, savedPort, host);
-    void this.context.workspaceState.update(LAST_PORT_KEY, port);
-    const url = `http://${host}:${port}/`;
-    // Probe a dashboard-specific endpoint so we don't get fooled by some
-    // other localhost service listening on the same port.
-    const probeUrl = `http://${host}:${port}/api/data`;
-    // --no-browser: the dashboard is embedded in the webview, so the bundled
-    // cli.py must not also pop a system browser (it does by default for CLI users).
-    // --surface vscode: tells the dashboard it's embedded so its footer shows the
-    // version only — no "get the extension" promo (we're already in it) and no
-    // GitHub update check (VS Code updates the extension itself).
-    const spawnArgs = dashboardSpawnArgs(mode, python, ["--no-browser", "--host", host, "--port", String(port), "--surface", "vscode"]);
-    if (!spawnArgs) {
-      const msg = "Could not assemble a valid command to spawn the dashboard.";
-      this.output.appendLine(msg);
-      this.broadcastError(msg);
-      return undefined;
-    }
-
-    this.broadcastStatus(`Starting dashboard at ${url}…`);
-    this.output.appendLine(`[ext] install mode: ${describeMode(mode)}`);
-    // Capture the manager into a local so the catch block can't dispose
-    // a *different* manager that was created by a concurrent call.
-    const manager = new ServerManager({
-      command: spawnArgs.command,
-      args: spawnArgs.args,
-      url: probeUrl,
-      output: this.toSink(),
-      // Cold start can be slow the first time: spawning Python, opening the DB,
-      // and (once, after upgrade) backfilling session topics across the whole
-      // history before /api/data answers. Give it 20s before giving up.
-      readinessTimeoutMs: 20_000,
-    });
-    this.server = manager;
+    // Everything from here on can fail asynchronously (resolveStablePort probes
+    // a socket and can reject; manager.start() can reject) — one try/catch
+    // covers both so a rejection always routes through broadcastError() and
+    // resolves to undefined, matching this method's declared return type,
+    // instead of escaping as an unhandled rejection out of ensureServer().
+    let manager: ServerManager | undefined;
     try {
+      // Reuse the last port when it's still free so the embedded dashboard's
+      // localStorage (which is keyed by the iframe's http://host:port origin)
+      // persists across window reloads instead of resetting every launch.
+      const savedPort = this.context.workspaceState.get<number>(LAST_PORT_KEY);
+      const port = await resolveStablePort(configuredPort, savedPort, host);
+      void this.context.workspaceState.update(LAST_PORT_KEY, port);
+      const url = `http://${host}:${port}/`;
+      // Probe a dashboard-specific endpoint so we don't get fooled by some
+      // other localhost service listening on the same port.
+      const probeUrl = `http://${host}:${port}/api/data`;
+      // --no-browser: the dashboard is embedded in the webview, so the bundled
+      // cli.py must not also pop a system browser (it does by default for CLI users).
+      // --surface vscode: tells the dashboard it's embedded so its footer shows the
+      // version only — no "get the extension" promo (we're already in it) and no
+      // GitHub update check (VS Code updates the extension itself).
+      const spawnArgs = dashboardSpawnArgs(mode, python, ["--no-browser", "--host", host, "--port", String(port), "--surface", "vscode"]);
+      if (!spawnArgs) {
+        const msg = "Could not assemble a valid command to spawn the dashboard.";
+        this.output.appendLine(msg);
+        this.broadcastError(msg);
+        vscode.window.showErrorMessage(msg);
+        return undefined;
+      }
+
+      this.broadcastStatus(`Starting dashboard at ${url}…`);
+      this.output.appendLine(`[ext] install mode: ${describeMode(mode)}`);
+      // Capture the manager into a local so the catch block can't dispose
+      // a *different* manager that was created by a concurrent call.
+      manager = new ServerManager({
+        command: spawnArgs.command,
+        args: spawnArgs.args,
+        url: probeUrl,
+        output: this.toSink(),
+        // Cold start can be slow the first time: spawning Python, opening the DB,
+        // and (once, after upgrade) backfilling session topics across the whole
+        // history before /api/data answers. Give it 20s before giving up.
+        readinessTimeoutMs: 20_000,
+      });
+      this.server = manager;
       await manager.start();
       this.serverUrl = url;
       this.lastError = undefined;
@@ -272,9 +296,10 @@ class Extension {
       const msg = `Failed to start dashboard: ${(err as Error).message}`;
       this.output.appendLine(msg);
       this.broadcastError(msg);
-      manager.dispose();
-      if (this.server === manager) this.server = undefined;
-      this.serverUrl = undefined;
+      if (manager) {
+        manager.dispose();
+        if (this.server === manager) this.server = undefined;
+      }
       // Offer a one-click retry (and log access) rather than making the user
       // hunt for the command palette. Both surfaces also show a Retry button.
       void vscode.window.showErrorMessage(msg, "Retry", "Show Logs").then((choice) => {
