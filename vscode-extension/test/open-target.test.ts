@@ -89,16 +89,27 @@ describe("sidebarRenderFor", () => {
 });
 
 describe("shouldCollapseSidebar", () => {
-  it("collapses only when enabled AND our view is the visible container", () => {
-    expect(shouldCollapseSidebar(true, true)).toBe(true);
+  it("collapses on an explicit invocation when enabled AND our view is the visible container", () => {
+    expect(shouldCollapseSidebar(true, true, false, "sidebar")).toBe(true);
+    expect(shouldCollapseSidebar(true, true, false, "editor")).toBe(true);
   });
 
   it("does not collapse when the setting is off", () => {
-    expect(shouldCollapseSidebar(false, true)).toBe(false);
-    expect(shouldCollapseSidebar(false, false)).toBe(false);
+    expect(shouldCollapseSidebar(false, true, false, "sidebar")).toBe(false);
+    expect(shouldCollapseSidebar(false, false, false, "sidebar")).toBe(false);
   });
 
   it("does not collapse when our view is hidden — closing would hit the Explorer instead", () => {
-    expect(shouldCollapseSidebar(true, false)).toBe(false);
+    expect(shouldCollapseSidebar(true, false, false, "sidebar")).toBe(false);
+  });
+
+  it("on the sidebar-reveal handoff, collapses only when openLocation is editor", () => {
+    expect(shouldCollapseSidebar(true, true, true, "editor")).toBe(true);
+    expect(shouldCollapseSidebar(true, true, true, "sidebar")).toBe(false);
+  });
+
+  it("the handoff gate does not override the enabled/visible checks", () => {
+    expect(shouldCollapseSidebar(false, true, true, "editor")).toBe(false);
+    expect(shouldCollapseSidebar(true, false, true, "editor")).toBe(false);
   });
 });

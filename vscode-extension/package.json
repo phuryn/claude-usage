@@ -97,6 +97,11 @@
           "default": "sidebar",
           "description": "Where to show the dashboard. 'editor' opens it as a tab in the editor area instead of the narrow sidebar."
         },
+        "claudeUsage.collapseSidebarOnOpenInEditor": {
+          "type": "boolean",
+          "default": false,
+          "description": "After the dashboard opens in an editor tab, collapse the sidebar so the tab gets the full window width. Only collapses when the Claude Usage view is the one currently showing."
+        },
         "claudeUsage.pythonPath": {
           "type": "string",
           "default": "",

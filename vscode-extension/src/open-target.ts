@@ -65,7 +65,23 @@ export function sidebarRenderFor(panelExists: boolean, openLocation: OpenTarget)
  * `workbench.action.closeSidebar` closes whichever container is showing, so we
  * only fire it when OUR view is the visible one — otherwise popping out while
  * the Explorer is open would close the Explorer.
+ *
+ * `fromSidebarReveal` distinguishes the two ways a tab can open. Explicit user
+ * invocations (the openInEditor command, its title-bar button, and
+ * claudeUsage.open routing straight to the tab) always collapse when enabled
+ * and visible. The onSidebarShown() handoff is different: with
+ * openLocation "sidebar", a tab already open, and this setting on, revealing
+ * the sidebar would hand off to the tab and then immediately collapse the
+ * sidebar again — making the "Show tab" placeholder permanently unreachable.
+ * So the handoff only collapses when openLocation is "editor", which is the
+ * one-click icon-to-full-width-tab flow this setting exists for.
  */
-export function shouldCollapseSidebar(enabled: boolean, sidebarVisible: boolean): boolean {
+export function shouldCollapseSidebar(
+  enabled: boolean,
+  sidebarVisible: boolean,
+  fromSidebarReveal: boolean,
+  openLocation: OpenTarget,
+): boolean {
+  if (fromSidebarReveal && openLocation !== "editor") return false;
   return enabled && sidebarVisible;
 }
