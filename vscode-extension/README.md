@@ -75,7 +75,7 @@ That's the only dependency. The Python sources (`cli.py`, `scanner.py`, `dashboa
 ## Usage
 
 1. Click the **gauge icon** in the activity bar (left sidebar of VS Code).
-2. The extension starts the dashboard server on a free local port and embeds it in a sidebar webview.
+2. The extension starts the dashboard server on a free local port and embeds it in a sidebar webview, or in an editor tab if you set `claudeUsage.openLocation` to `editor`.
 3. Filter by model, range, or project — same UI as the standalone web dashboard.
 
 ![Hourly + project breakdown](https://raw.githubusercontent.com/phuryn/claude-usage/main/docs/usage2.png)
@@ -86,7 +86,7 @@ Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 | Command | What it does |
 |---|---|
-| **Claude Usage: Open Dashboard** | Reveal the sidebar and start the server (also fires automatically when you click the activity-bar icon) |
+| **Claude Usage: Open Dashboard** | Open the dashboard on whichever surface owns it and start the server. The sidebar by default, or the editor tab if one is already open or `openLocation` is `editor` |
 | **Claude Usage: Open Dashboard in Editor Tab** | Open (or focus) the dashboard in an editor tab, regardless of the `openLocation` setting |
 | **Claude Usage: Rescan Transcripts** | Refresh the iframe; the dashboard's own Rescan button runs an incremental scan that adds new usage without touching existing history |
 | **Claude Usage: Restart Server** | Kill and respawn the Python process (use after changing settings) |
@@ -97,7 +97,7 @@ Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 | Setting | Default | Description |
 |---|---|---|
 | `claudeUsage.openLocation` | `sidebar` | Where the dashboard opens: `sidebar` (activity-bar panel) or `editor` (a tab in the editor area, full window width). |
-| `claudeUsage.collapseSidebarOnOpenInEditor` | `false` | Collapse the sidebar whenever the dashboard opens in an editor tab — via **Claude Usage: Open Dashboard in Editor Tab** (and its title-bar button), **Claude Usage: Open Dashboard**, **Claude Usage: Restart Server**, or the activity-bar icon when `openLocation` is `editor` — as long as the Claude Usage view is the one currently showing in the sidebar, so it never closes the Explorer. |
+| `claudeUsage.collapseSidebarOnOpenInEditor` | `false` | Collapse the sidebar whenever the dashboard opens in an editor tab, via **Claude Usage: Open Dashboard in Editor Tab** (and its title-bar button), **Claude Usage: Open Dashboard**, **Claude Usage: Restart Server**, or the activity-bar icon when `openLocation` is `editor`. Only collapses while the Claude Usage view is the one currently showing in the sidebar, so it never closes the Explorer. |
 | `claudeUsage.pythonPath` | _(auto-discover)_ | Path to a Python 3.8+ interpreter. Leave empty to auto-detect (`claude-usage` on PATH first, then `python3`, then `python`). |
 | `claudeUsage.cliPath` | _(bundled)_ | Path to a custom `cli.py` (or its parent directory). Empty = use the bundled copy that ships with the extension. |
 | `claudeUsage.port` | `0` | Port for the local dashboard server. `0` = OS picks a free one. |

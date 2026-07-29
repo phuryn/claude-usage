@@ -115,7 +115,15 @@ class Extension {
     }
     this.renderSidebar();
     const url = await this.ensureServer();
-    if (url && !this.panel) this.sidebar.setUrl(url);
+    // Re-derive rather than only guarding the sidebar: a panel may exist here
+    // (openLocation: "sidebar" with the dashboard popped out), and if its own
+    // startup had failed, this attempt is the one that succeeds. Handing the
+    // URL to whichever surface is live keeps the tab from sitting on a stale
+    // error pane over a running server.
+    if (url) {
+      if (this.panel) this.panel.setUrl(url);
+      else this.sidebar.setUrl(url);
+    }
   }
 
   /** Create or focus the editor tab and point it at the server. */
