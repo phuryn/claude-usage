@@ -2,7 +2,7 @@
   "name": "claude-usage-phuryn",
   "displayName": "Claude Code Usage by Paweł Huryn",
   "description": "Embed your Claude Code usage dashboard (token counts, costs, sessions, projects) directly inside VS Code. Reads local JSONL transcripts, no API calls.",
-  "version": "1.5.5",
+  "version": "1.6.0",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -34,6 +34,15 @@
   "main": "./out/extension.js",
   "activationEvents": [],
   "contributes": {
+    "icons": {
+      "claude-usage": {
+        "description": "Claude Usage gauge mark",
+        "default": {
+          "fontPath": "./resources/claude-usage-icons.woff",
+          "fontCharacter": "\\E001"
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -58,6 +67,11 @@
         "title": "Claude Usage: Open Dashboard"
       },
       {
+        "command": "claudeUsage.openInEditor",
+        "title": "Claude Usage: Open Dashboard in Editor Tab",
+        "icon": "$(link-external)"
+      },
+      {
         "command": "claudeUsage.rescan",
         "title": "Claude Usage: Rescan Transcripts"
       },
@@ -70,9 +84,33 @@
         "title": "Claude Usage: Show Logs"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "claudeUsage.openInEditor",
+          "when": "view == claudeUsage.dashboard",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "Claude Code Usage",
       "properties": {
+        "claudeUsage.openLocation": {
+          "type": "string",
+          "enum": ["sidebar", "editor"],
+          "enumDescriptions": [
+            "Show the dashboard in the activity-bar sidebar panel.",
+            "Show the dashboard in an editor tab, which gives it the full window width."
+          ],
+          "default": "sidebar",
+          "description": "Where to show the dashboard. 'editor' opens it as a tab in the editor area instead of the narrow sidebar."
+        },
+        "claudeUsage.collapseSidebarOnOpenInEditor": {
+          "type": "boolean",
+          "default": false,
+          "description": "After the dashboard opens in an editor tab, collapse the sidebar so the tab gets the full window width. Only collapses when the Claude Usage view is the one currently showing."
+        },
         "claudeUsage.pythonPath": {
           "type": "string",
           "default": "",

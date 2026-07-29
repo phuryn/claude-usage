@@ -67,6 +67,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ## Requirements
 
 - **Python 3.8 or newer on your `PATH`.** Almost everyone running Claude Code already has Python installed; if not, see [python.org/downloads](https://www.python.org/downloads/). On Windows make sure to check **"Add Python to PATH"** during the installer.
+Optional, not required: on **VS Code 1.110 or newer** the editor tab gets a theme-colored icon, which needs `ThemeIcon` support on webview panels ([microsoft/vscode#90616](https://github.com/microsoft/vscode/issues/90616)). On older builds the tab simply appears without an icon.
 
 That's the only dependency. The Python sources (`cli.py`, `scanner.py`, `dashboard.py`) are bundled inside the extension — no separate clone or Homebrew install needed.
 
@@ -75,7 +76,7 @@ That's the only dependency. The Python sources (`cli.py`, `scanner.py`, `dashboa
 ## Usage
 
 1. Click the **gauge icon** in the activity bar (left sidebar of VS Code).
-2. The extension starts the dashboard server on a free local port and embeds it in a sidebar webview.
+2. The extension starts the dashboard server on a free local port and embeds it in a sidebar webview, or in an editor tab if you set `claudeUsage.openLocation` to `editor`.
 3. Filter by model, range, or project — same UI as the standalone web dashboard.
 
 ![Hourly + project breakdown](https://raw.githubusercontent.com/phuryn/claude-usage/main/docs/usage2.png)
@@ -86,7 +87,8 @@ Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 | Command | What it does |
 |---|---|
-| **Claude Usage: Open Dashboard** | Reveal the sidebar and start the server (also fires automatically when you click the activity-bar icon) |
+| **Claude Usage: Open Dashboard** | Open the dashboard on whichever surface owns it and start the server. The sidebar by default, or the editor tab if one is already open or `openLocation` is `editor` |
+| **Claude Usage: Open Dashboard in Editor Tab** | Open (or focus) the dashboard in an editor tab, regardless of the `openLocation` setting |
 | **Claude Usage: Rescan Transcripts** | Refresh the iframe; the dashboard's own Rescan button runs an incremental scan that adds new usage without touching existing history |
 | **Claude Usage: Restart Server** | Kill and respawn the Python process (use after changing settings) |
 | **Claude Usage: Show Logs** | Open the extension's output channel — useful when something doesn't work |
@@ -95,9 +97,28 @@ Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 | Setting | Default | Description |
 |---|---|---|
+| `claudeUsage.openLocation` | `sidebar` | Where the dashboard opens: `sidebar` (activity-bar panel) or `editor` (a tab in the editor area, full window width). |
+| `claudeUsage.collapseSidebarOnOpenInEditor` | `false` | Collapse the sidebar whenever the dashboard opens in an editor tab, via **Claude Usage: Open Dashboard in Editor Tab** (and its title-bar button), **Claude Usage: Open Dashboard**, **Claude Usage: Restart Server**, or the activity-bar icon when `openLocation` is `editor`. Only collapses while the Claude Usage view is the one currently showing in the sidebar, so it never closes the Explorer. |
 | `claudeUsage.pythonPath` | _(auto-discover)_ | Path to a Python 3.8+ interpreter. Leave empty to auto-detect (`claude-usage` on PATH first, then `python3`, then `python`). |
 | `claudeUsage.cliPath` | _(bundled)_ | Path to a custom `cli.py` (or its parent directory). Empty = use the bundled copy that ships with the extension. |
 | `claudeUsage.port` | `0` | Port for the local dashboard server. `0` = OS picks a free one. |
+
+### Open the dashboard in an editor tab
+
+The sidebar is narrow, and the dashboard was designed for a full browser
+window. To give it more room:
+
+- **Once:** run `Claude Usage: Open Dashboard in Editor Tab` from the command
+  palette, or click the pop-out button in the sidebar's title bar.
+- **Always:** set `"claudeUsage.openLocation": "editor"`. The activity-bar icon
+  and `Claude Usage: Open Dashboard` then both open the tab.
+
+Only one dashboard runs at a time. While the tab is open, the sidebar shows a
+short note with a **Show tab** button instead of a second copy. Close the tab
+and the sidebar takes over again.
+
+The tab keeps its state when you switch to another editor tab, and closes when
+you reload the window.
 
 ---
 
