@@ -67,7 +67,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ## Requirements
 
 - **Python 3.8 or newer on your `PATH`.** Almost everyone running Claude Code already has Python installed; if not, see [python.org/downloads](https://www.python.org/downloads/). On Windows make sure to check **"Add Python to PATH"** during the installer.
-- **VS Code 1.110 or newer.** The editor-tab icon is a theme-colored glyph, which needs `ThemeIcon` support on webview panels ([microsoft/vscode#90616](https://github.com/microsoft/vscode/issues/90616)).
+Optional, not required: on **VS Code 1.110 or newer** the editor tab gets a theme-colored icon, which needs `ThemeIcon` support on webview panels ([microsoft/vscode#90616](https://github.com/microsoft/vscode/issues/90616)). On older builds the tab simply appears without an icon.
 
 That's the only dependency. The Python sources (`cli.py`, `scanner.py`, `dashboard.py`) are bundled inside the extension — no separate clone or Homebrew install needed.
 

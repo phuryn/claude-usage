@@ -60,11 +60,14 @@ describe("package.json manifest", () => {
     expect(fs.readFileSync(resolved).subarray(0, 4).toString("latin1")).toBe("wOFF");
   });
 
-  it("declares an engines floor new enough for ThemeIcon on WebviewPanel.iconPath", () => {
-    // ThemeIcon support for WebviewPanel.iconPath landed in VS Code 1.110
-    // (microsoft/vscode#90616). Below that the tab icon silently disappears.
+  it("keeps the engines floor low enough to stay installable on older VS Code", () => {
+    // ThemeIcon on WebviewPanel.iconPath needs 1.110 (microsoft/vscode#90616),
+    // but older builds pass the ThemeIcon through without throwing and simply
+    // render no tab icon. That degradation is worth far more than the icon, so
+    // the floor must NOT be raised to 1.110 — doing so makes the whole
+    // extension uninstallable to protect a 16px decoration.
     const floor = manifest.engines.vscode.replace(/^[^\d]*/, "");
     const [major, minor] = floor.split(".").map(Number);
-    expect(major * 1000 + minor).toBeGreaterThanOrEqual(1 * 1000 + 110);
+    expect(major * 1000 + minor).toBeLessThanOrEqual(1 * 1000 + 94);
   });
 });

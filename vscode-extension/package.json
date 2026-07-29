@@ -15,7 +15,7 @@
     "url": "https://github.com/phuryn/claude-usage"
   },
   "engines": {
-    "vscode": "^1.110.0"
+    "vscode": "^1.94.0"
   },
   "categories": [
     "Other",

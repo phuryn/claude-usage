@@ -8,11 +8,7 @@
 - Added the **`Claude Usage: Open Dashboard in Editor Tab`** command and a matching button in the sidebar's title bar, so the dashboard can be popped out on demand without changing the setting.
 - Added **`claudeUsage.collapseSidebarOnOpenInEditor`** (default `false`) to collapse the sidebar whenever the dashboard opens in an editor tab — via `Claude Usage: Open Dashboard in Editor Tab`, its title-bar button, `Claude Usage: Open Dashboard`, `Claude Usage: Restart Server`, or the activity-bar icon when `openLocation` is `editor` — as long as the Claude Usage view is the one currently showing, so it never closes the Explorer.
 - Exactly one dashboard instance is live at a time: the sidebar shows a short placeholder pointing at the tab whenever the tab owns the dashboard. The editor tab keeps its state across tab switches and closes on window reload.
-- The editor tab's icon is now a glyph contributed via `contributes.icons`, so VS Code paints it with the active theme's `icon.foreground` instead of the fixed ink an SVG carries. Previously the tab icon rendered black on every theme and was effectively invisible on dark ones.
-
-### Packaging
-
-- **Raised the minimum VS Code version from 1.94 to 1.110.** `ThemeIcon` support for `WebviewPanel.iconPath`, which the themed tab icon depends on, landed in 1.110 ([microsoft/vscode#90616](https://github.com/microsoft/vscode/issues/90616)). The extension will not install on older builds.
+- The editor tab's icon is now a glyph contributed via `contributes.icons`, so VS Code paints it with the active theme's `icon.foreground` instead of the fixed ink an SVG carries. Previously the tab icon rendered black on every theme and was effectively invisible on dark ones. Theme-colored tab icons need VS Code 1.110+ ([microsoft/vscode#90616](https://github.com/microsoft/vscode/issues/90616)); older builds pass the icon through harmlessly and show the tab without one, so the minimum supported version is unchanged.
 
 ## v1.5.5 — 2026-07-10
 

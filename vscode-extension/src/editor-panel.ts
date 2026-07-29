@@ -83,6 +83,13 @@ export class DashboardPanel {
     // VS Code paints it with the active theme's `icon.foreground`. An SVG passed
     // as a Uri is drawn as a plain image and keeps whatever ink it was authored
     // with, which goes invisible on roughly half the themes.
+    //
+    // ThemeIcon here needs VS Code 1.110+ (microsoft/vscode#90616). Older builds
+    // are safe: their setter is
+    //   $setIconPath(handle, URI.isUri(value) ? {light: value, dark: value} : value)
+    // so a ThemeIcon passes straight through without throwing and the tab just
+    // renders no icon. That is why engines.vscode stays at ^1.94.0 — raising it
+    // would make the extension uninstallable to protect a 16px decoration.
     if (typeof vscode.ThemeIcon === "function") {
       this.panel.iconPath = new vscode.ThemeIcon(TAB_ICON_ID);
     }
