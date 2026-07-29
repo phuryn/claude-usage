@@ -1,12 +1,20 @@
 import * as vscode from "vscode";
-import { renderHtml, makeNonce, WebviewAction } from "./webview-html";
+import { makeNonce, renderHtml } from "./webview-html";
+import type { WebviewAction } from "./webview-html";
 
 /**
  * Retry button for the panel's error pane. Points at claudeUsage.openInEditor
- * rather than claudeUsage.open so retrying from a tab reopens the tab — with
+ * rather than claudeUsage.open so retrying from a tab reopens the tab. With
  * claudeUsage.open and openLocation="sidebar" it would retry into the sidebar.
  */
 const RETRY_ACTION: WebviewAction = { label: "↻ Retry", command: "claudeUsage.openInEditor" };
+
+/**
+ * Icon id registered in package.json's `contributes.icons`. Referenced as a
+ * ThemeIcon so the tab icon follows the theme's icon.foreground token.
+ * Exported so test/manifest.test.ts can assert the manifest and the code agree.
+ */
+export const TAB_ICON_ID = "claude-usage";
 
 /**
  * The dashboard hosted in an editor tab. A module-level singleton: repeat opens
@@ -71,15 +79,23 @@ export class DashboardPanel {
   private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, onDispose: () => void) {
     this.panel = panel;
 
-    // Resolve the bundled icon for the tab and the status pane's brand header.
-    // Guarded so node-only tests (whose fake panel has no asWebviewUri) don't blow up.
-    if (typeof vscode.Uri?.joinPath === "function") {
+    // The tab icon is a ThemeIcon referencing our `contributes.icons` glyph, so
+    // VS Code paints it with the active theme's `icon.foreground`. An SVG passed
+    // as a Uri is drawn as a plain image and keeps whatever ink it was authored
+    // with, which goes invisible on roughly half the themes.
+    if (typeof vscode.ThemeIcon === "function") {
+      this.panel.iconPath = new vscode.ThemeIcon(TAB_ICON_ID);
+    }
+
+    // The status pane's brand header is a different mechanism: it applies the
+    // SVG as a CSS mask over a colored box, which does recolor, so it keeps
+    // using a webview Uri. Guarded so node-only tests (whose fake panel has no
+    // asWebviewUri) don't blow up.
+    if (typeof vscode.Uri?.joinPath === "function"
+        && typeof this.panel.webview.asWebviewUri === "function") {
       const icon = vscode.Uri.joinPath(extensionUri, "resources", "icon.svg");
-      this.panel.iconPath = icon;
-      if (typeof this.panel.webview.asWebviewUri === "function") {
-        this.iconUri = this.panel.webview.asWebviewUri(icon).toString();
-        this.cspSource = this.panel.webview.cspSource ?? "";
-      }
+      this.iconUri = this.panel.webview.asWebviewUri(icon).toString();
+      this.cspSource = this.panel.webview.cspSource ?? "";
     }
 
     this.panel.onDidDispose(() => {

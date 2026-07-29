@@ -28,6 +28,9 @@ const h = vi.hoisted(() => {
 
 vi.mock("vscode", () => ({
   ViewColumn: { Active: -1, Beside: -2, One: 1 },
+  // Mirrors the real vscode.ThemeIcon: a class whose instances carry an id.
+  // The panel sets iconPath to one of these so VS Code themes the tab icon.
+  ThemeIcon: class { constructor(public readonly id: string) {} },
   Uri: {
     joinPath: (base: unknown, ...parts: string[]) => ({
       toString: () => `${String((base as any)?.path ?? "ext")}/${parts.join("/")}`,
@@ -43,7 +46,8 @@ vi.mock("vscode", () => ({
   },
 }));
 
-import { DashboardPanel } from "../src/editor-panel";
+import * as vscode from "vscode";
+import { DashboardPanel, TAB_ICON_ID } from "../src/editor-panel";
 
 const EXT_URI = { path: "/ext" } as any;
 
@@ -81,6 +85,15 @@ describe("DashboardPanel.createOrShow", () => {
   it("exposes the live instance via get()", () => {
     const panel = DashboardPanel.createOrShow(EXT_URI, () => {});
     expect(DashboardPanel.get()).toBe(panel);
+  });
+
+  it("sets the tab icon to a ThemeIcon so the theme recolors it", () => {
+    DashboardPanel.createOrShow(EXT_URI, () => {});
+    const { iconPath } = h.created[0].panel;
+    // Must be a ThemeIcon, not a Uri: a Uri is drawn as a plain image and keeps
+    // its authored ink, which disappears against half the themes.
+    expect(iconPath).toBeInstanceOf(vscode.ThemeIcon);
+    expect(iconPath.id).toBe(TAB_ICON_ID);
   });
 });
 

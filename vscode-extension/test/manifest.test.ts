@@ -12,6 +12,7 @@ const manifestPath = path.join(__dirname, "..", "package.json");
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 
 import { DashboardSidebar } from "../src/sidebar";
+import { TAB_ICON_ID } from "../src/editor-panel";
 
 describe("package.json manifest", () => {
   it("declares claudeUsage.openInEditor with the exact title and icon", () => {
@@ -43,5 +44,27 @@ describe("package.json manifest", () => {
     expect(prop).toBeDefined();
     expect(prop.type).toBe("boolean");
     expect(prop.default).toBe(false);
+  });
+
+  it("registers the tab icon glyph under the id editor-panel.ts references", () => {
+    const icon = manifest.contributes.icons[TAB_ICON_ID];
+    expect(icon).toBeDefined();
+    expect(icon.default.fontCharacter).toBe("\\E001");
+  });
+
+  it("ships the icon font the glyph points at", () => {
+    const fontPath = manifest.contributes.icons[TAB_ICON_ID].default.fontPath;
+    const resolved = path.join(__dirname, "..", fontPath);
+    expect(fs.existsSync(resolved)).toBe(true);
+    // WOFF magic number: 'wOFF'. Catches a truncated or mis-generated build.
+    expect(fs.readFileSync(resolved).subarray(0, 4).toString("latin1")).toBe("wOFF");
+  });
+
+  it("declares an engines floor new enough for ThemeIcon on WebviewPanel.iconPath", () => {
+    // ThemeIcon support for WebviewPanel.iconPath landed in VS Code 1.110
+    // (microsoft/vscode#90616). Below that the tab icon silently disappears.
+    const floor = manifest.engines.vscode.replace(/^[^\d]*/, "");
+    const [major, minor] = floor.split(".").map(Number);
+    expect(major * 1000 + minor).toBeGreaterThanOrEqual(1 * 1000 + 110);
   });
 });

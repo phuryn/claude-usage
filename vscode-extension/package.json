@@ -15,7 +15,7 @@
     "url": "https://github.com/phuryn/claude-usage"
   },
   "engines": {
-    "vscode": "^1.94.0"
+    "vscode": "^1.110.0"
   },
   "categories": [
     "Other",
@@ -34,6 +34,15 @@
   "main": "./out/extension.js",
   "activationEvents": [],
   "contributes": {
+    "icons": {
+      "claude-usage": {
+        "description": "Claude Usage gauge mark",
+        "default": {
+          "fontPath": "./resources/claude-usage-icons.woff",
+          "fontCharacter": "\\E001"
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {
