@@ -1,16 +1,22 @@
 """Tests for dashboard.py - API endpoint and data retrieval."""
 
+import io
 import json
 import os
+import socket
 import sqlite3
 import tempfile
 import threading
 import unittest
 import urllib.request
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from scanner import get_db, init_db, upsert_sessions, insert_turns
-from dashboard import get_dashboard_data, DashboardHandler, HTML_TEMPLATE
+from dashboard import (
+    get_dashboard_data, DashboardHandler, HTML_TEMPLATE,
+    port_is_taken, create_server, browser_url, serve,
+)
 
 try:
     from http.server import HTTPServer
@@ -492,6 +498,212 @@ class TestPricingParity(unittest.TestCase):
                 CLI_PRICING[model]["output"], js_prices[model]["output"],
                 msg=f"{model} output price mismatch"
             )
+
+
+def _free_port():
+    """Ask the OS for an unused port, then release it."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+class _Squatter:
+    """A listener that accepts connections on `port` and answers nothing.
+
+    Mimics a reverse proxy (OrbStack, Docker Desktop) holding a port: the TCP
+    handshake succeeds, so a browser gets ERR_EMPTY_RESPONSE rather than a
+    connection refusal.
+    """
+
+    def __init__(self, port, family=socket.AF_INET, v6only=True, addr=None):
+        self.sock = socket.socket(family, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if family == socket.AF_INET6:
+            self.sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY,
+                                 1 if v6only else 0)
+        # Defaults to a wildcard bind, which is the interesting case: it
+        # coexists with a later bind to a specific address instead of raising
+        # EADDRINUSE. Pass addr to squat one specific address and block a bind.
+        if addr is None:
+            addr = "::" if family == socket.AF_INET6 else ""
+        self.sock.bind((addr, port))
+        self.sock.listen(5)
+
+    def close(self):
+        self.sock.close()
+
+
+class TestPortIsTaken(unittest.TestCase):
+    def test_free_port_is_not_taken(self):
+        self.assertFalse(port_is_taken(_free_port()))
+
+    def test_ipv4_listener_makes_port_taken(self):
+        port = _free_port()
+        squatter = _Squatter(port, socket.AF_INET)
+        self.addCleanup(squatter.close)
+        self.assertTrue(port_is_taken(port))
+
+    def test_ipv6_only_listener_makes_port_taken(self):
+        """The OrbStack case: nothing on IPv4, a squatter on IPv6.
+
+        `localhost` resolves to ::1 first on macOS, so the browser lands on the
+        squatter even though an IPv4 bind would have succeeded. Probing IPv4
+        alone would report the port as free and miss this entirely.
+        """
+        port = _free_port()
+        try:
+            squatter = _Squatter(port, socket.AF_INET6, v6only=True)
+        except OSError as e:  # pragma: no cover - host without IPv6 loopback
+            self.skipTest(f"no IPv6 loopback available: {e}")
+        self.addCleanup(squatter.close)
+        self.assertTrue(port_is_taken(port))
+
+
+class TestCreateServer(unittest.TestCase):
+    def test_uses_requested_port_when_free(self):
+        port = _free_port()
+        server, actual = create_server("127.0.0.1", port)
+        self.addCleanup(server.server_close)
+        self.assertEqual(actual, port)
+        self.assertEqual(server.socket.getsockname()[1], port)
+
+    def test_falls_back_past_an_ipv4_squatter(self):
+        port = _free_port()
+        squatter = _Squatter(port, socket.AF_INET)
+        self.addCleanup(squatter.close)
+        server, actual = create_server("127.0.0.1", port)
+        self.addCleanup(server.server_close)
+        self.assertNotEqual(actual, port)
+        self.assertGreater(actual, port)
+
+    def test_falls_back_past_an_ipv6_only_squatter(self):
+        """Regression guard for the ERR_EMPTY_RESPONSE bug.
+
+        A bare `ThreadingHTTPServer(("localhost", port))` binds IPv4 happily
+        here -- no EADDRINUSE -- so any fallback keyed on bind failure would
+        keep the port and leave the browser talking to the squatter.
+        """
+        port = _free_port()
+        try:
+            squatter = _Squatter(port, socket.AF_INET6, v6only=True)
+        except OSError as e:  # pragma: no cover - host without IPv6 loopback
+            self.skipTest(f"no IPv6 loopback available: {e}")
+        self.addCleanup(squatter.close)
+        server, actual = create_server("127.0.0.1", port)
+        self.addCleanup(server.server_close)
+        self.assertNotEqual(actual, port)
+
+    def test_raises_when_every_candidate_is_taken(self):
+        port = _free_port()
+        squatters = []
+        for offset in range(3):
+            try:
+                s = _Squatter(port + offset, socket.AF_INET)
+            except OSError:  # pragma: no cover - neighbouring port already used
+                self.skipTest("could not reserve a contiguous port range")
+            squatters.append(s)
+            self.addCleanup(s.close)
+        with self.assertRaises(OSError) as ctx:
+            create_server("127.0.0.1", port, attempts=3)
+        self.assertIn(str(port), str(ctx.exception))
+
+    def test_attempts_bounds_the_search(self):
+        port = _free_port()
+        squatter = _Squatter(port, socket.AF_INET)
+        self.addCleanup(squatter.close)
+        with self.assertRaises(OSError):
+            create_server("127.0.0.1", port, attempts=1)
+
+    def test_single_candidate_failure_names_that_port_plainly(self):
+        """With no range to search, "no free port in range N-N" is noise.
+
+        The VS Code extension surfaces this text in its output channel, so it
+        should read as plainly as the OSError it replaced.
+        """
+        port = _free_port()
+        squatter = _Squatter(port, socket.AF_INET, addr="127.0.0.1")
+        self.addCleanup(squatter.close)
+        with self.assertRaises(OSError) as ctx:
+            create_server("127.0.0.1", port, attempts=1, probe=False)
+        message = str(ctx.exception)
+        self.assertIn(str(port), message)
+        self.assertIn("in use", message)
+        self.assertNotIn("range", message)
+
+
+class TestBrowserUrl(unittest.TestCase):
+    """A bind address is not always an address you can connect to."""
+
+    def test_localhost_becomes_ipv4_literal(self):
+        """getaddrinfo puts ::1 first on macOS, but the server binds IPv4 only,
+        so `localhost` can route a client away from the server entirely."""
+        self.assertEqual(browser_url("localhost", 8081), "http://127.0.0.1:8081")
+
+    def test_wildcard_bind_becomes_ipv4_literal(self):
+        self.assertEqual(browser_url("0.0.0.0", 8081), "http://127.0.0.1:8081")
+
+    def test_ipv6_wildcard_becomes_loopback_literal(self):
+        self.assertEqual(browser_url("::", 8081), "http://[::1]:8081")
+
+    def test_ipv6_literal_gets_brackets(self):
+        self.assertEqual(browser_url("::1", 8081), "http://[::1]:8081")
+
+    def test_explicit_host_is_left_alone(self):
+        self.assertEqual(browser_url("192.168.1.5", 8081), "http://192.168.1.5:8081")
+
+
+class TestServeAnnouncement(unittest.TestCase):
+    @staticmethod
+    def _stop_immediately(_actual_port):
+        raise KeyboardInterrupt
+
+    def _serve_output(self, host, port):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            serve(host=host, port=port, on_ready=self._stop_immediately)
+        return out.getvalue()
+
+    def test_warns_before_announcing_a_moved_port(self):
+        """The explanation has to precede the conclusion it explains.
+
+        Announcing the URL first and only then mentioning the move reads as if
+        two unrelated things happened.
+        """
+        port = _free_port()
+        squatter = _Squatter(port, socket.AF_INET)
+        self.addCleanup(squatter.close)
+
+        printed = self._serve_output("localhost", port)
+
+        self.assertIn(str(port), printed)
+        self.assertIn("in use", printed)
+        self.assertLess(printed.index("in use"), printed.index("Dashboard running"))
+
+    def test_no_warning_when_the_requested_port_was_available(self):
+        printed = self._serve_output("localhost", _free_port())
+        self.assertNotIn("in use", printed)
+
+    def test_announced_url_is_connectable(self):
+        """The line printed to the terminal gets copy-pasted into a browser.
+
+        Printing the raw bind address sends the user to http://localhost:PORT,
+        which resolves to ::1 and misses the IPv4-only server -- the very
+        failure the port fallback just stepped around.
+        """
+        port = _free_port()
+
+        def stop_immediately(_actual_port):
+            raise KeyboardInterrupt
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            serve(host="localhost", port=port, on_ready=stop_immediately)
+
+        printed = out.getvalue()
+        self.assertIn(f"http://127.0.0.1:{port}", printed)
+        self.assertNotIn("localhost", printed)
 
 
 if __name__ == "__main__":

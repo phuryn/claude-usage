@@ -396,9 +396,8 @@ def cmd_stats():
 
 def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, surface=None):
     import threading
-    import time
 
-    from dashboard import serve
+    from dashboard import serve, browser_url
 
     host = host or os.environ.get("HOST", "localhost")
     port = int(port or os.environ.get("PORT", "8080"))
@@ -422,18 +421,23 @@ def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, sur
 
     threading.Thread(target=background_scan, daemon=True).start()
 
-    # Open a browser for users running this as a script (see README). The VS Code
-    # extension passes --no-browser since it embeds the dashboard in a webview.
-    if not no_browser:
-        import webbrowser
+    # Open a browser for users running this as a script (see README). The VS
+    # Code extension passes --no-browser since it embeds the dashboard in a
+    # webview. serve() calls this once the socket is listening and tells us the
+    # port it actually bound, which is not always the one we asked for -- no
+    # sleep to guess at readiness, no guess at the port either.
+    def on_ready(actual_port):
+        if not no_browser:
+            import webbrowser
 
-        def open_browser():
-            time.sleep(1.0)
-            webbrowser.open(f"http://{host}:{port}")
+            webbrowser.open(browser_url(host, actual_port))
 
-        threading.Thread(target=open_browser, daemon=True).start()
-
-    serve(host=host, port=port, surface=surface)
+    # Only the interactive path may drift to another port. Under --no-browser a
+    # supervisor picked this port, polls it for readiness, and keys the
+    # webview's localStorage on that origin (see vscode-extension/src/
+    # extension.ts) -- moving would read as a failed start.
+    serve(host=host, port=port, surface=surface,
+          fallback=not no_browser, on_ready=on_ready)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

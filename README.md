@@ -138,6 +138,8 @@ Claude Code writes one JSONL file per session to `~/.claude/projects/`. Each lin
 
 `dashboard.py` serves a single-page dashboard on `localhost:8080` with Chart.js charts (loaded from CDN). It auto-refreshes every 30 seconds and supports model filtering and a date-range dropdown with bookmarkable URLs. A sticky section nav jumps between sections, and every chart/table can be collapsed (remembered across reloads). The bind address and port can be configured with the `--host` and `--port` flags, or the `HOST` and `PORT` environment variables (defaults: `localhost`, `8080`).
 
+If the port is already in use, the dashboard steps up to the next free one and prints which port it settled on. Port 8080 is a popular default, and a reverse proxy such as OrbStack or Docker Desktop holding it is easy to miss: those accept the connection and answer with nothing, so the browser reports `ERR_EMPTY_RESPONSE` rather than a connection refusal. The dashboard therefore checks whether a port answers before binding it, on both IPv4 and IPv6, since a plain bind can silently coexist with a wildcard one. For the same reason it opens `http://127.0.0.1:PORT` rather than `localhost`: on macOS `localhost` resolves to `::1` first, while the server listens on IPv4. Passing `--no-browser` pins the port instead: a supervising process (the VS Code extension) polls the exact port it asked for, so the server binds that port or exits.
+
 ---
 
 ## Cost estimates
