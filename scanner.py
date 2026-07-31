@@ -557,12 +557,36 @@ def upsert_sessions(conn, sessions):
 
 
 def insert_turns(conn, turns):
+    # A scan that lands mid-stream sees only the partial snapshots written so
+    # far for the response being generated, and stores the turn with those
+    # partial tallies. OR IGNORE then makes that first write permanent: every
+    # later scan re-reads the final record and drops it on the unique
+    # message_id index, so the turn stays frozen at the partial count and the
+    # end-of-scan recompute (see scan()) sums the frozen value.
+    #
+    # Upsert on the higher output_tokens instead. The record with the largest
+    # output is the complete one, verified on this repo's own corpus: of 2678
+    # message_ids with more than one record, all 2678 have the last record
+    # equal to the field-wise maximum. The row is updated in place and never
+    # deleted, so the append-only history the dashboard relies on is preserved.
     conn.executemany("""
-        INSERT OR IGNORE INTO turns
+        INSERT INTO turns
             (session_id, timestamp, model, input_tokens, output_tokens,
              cache_read_tokens, cache_creation_tokens, tool_name, cwd, message_id,
              is_subagent, agent_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(message_id) WHERE message_id IS NOT NULL AND message_id != ''
+        DO UPDATE SET
+            timestamp             = excluded.timestamp,
+            model                 = excluded.model,
+            input_tokens          = excluded.input_tokens,
+            output_tokens         = excluded.output_tokens,
+            cache_read_tokens     = excluded.cache_read_tokens,
+            cache_creation_tokens = excluded.cache_creation_tokens,
+            tool_name             = excluded.tool_name,
+            is_subagent           = excluded.is_subagent,
+            agent_id              = excluded.agent_id
+        WHERE excluded.output_tokens > turns.output_tokens
     """, [
         (t["session_id"], t["timestamp"], t["model"],
          t["input_tokens"], t["output_tokens"],

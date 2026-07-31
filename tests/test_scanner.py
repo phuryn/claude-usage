@@ -324,6 +324,46 @@ class TestMessageIdDedupIntegration(unittest.TestCase):
         # Should still be 1 turn (UNIQUE index prevents duplicate)
         self.assertEqual(count2, 1)
 
+    def test_scan_landing_mid_stream_is_corrected_by_the_next_scan(self):
+        """A turn stored from partial snapshots must not stay frozen.
+
+        Claude Code writes several records per response while it streams, and
+        only the last carries the final tallies. A scan that runs before the
+        response finishes stores the partial ones; the next scan reads the final
+        record and has to correct the turn rather than drop it on the unique
+        message_id index.
+        """
+        with open(self.filepath, "w") as f:
+            f.write(_make_user_record(session_id="sess-1") + "\n")
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-1",
+                                           input_tokens=1200, output_tokens=10) + "\n")
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-1",
+                                           input_tokens=1200, output_tokens=40) + "\n")
+        # Pin mtime so the second scan sees a changed file regardless of clock
+        # resolution on the runner.
+        os.utime(self.filepath, (1_000_000, 1_000_000))
+
+        scan(projects_dir=self.projects_dir.parent.parent,
+             db_path=self.db_path, verbose=False)
+
+        # The response finishes and its final record lands in the transcript.
+        with open(self.filepath, "a") as f:
+            f.write(_make_assistant_record(session_id="sess-1", message_id="msg-1",
+                                           input_tokens=1200, output_tokens=900) + "\n")
+        os.utime(self.filepath, (1_000_100, 1_000_100))
+
+        scan(projects_dir=self.projects_dir.parent.parent,
+             db_path=self.db_path, verbose=False)
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        turns = conn.execute("SELECT * FROM turns").fetchall()
+        self.assertEqual(len(turns), 1, "the streaming records must stay one turn")
+        self.assertEqual(turns[0]["output_tokens"], 900)
+        session = conn.execute("SELECT * FROM sessions").fetchone()
+        self.assertEqual(session["total_output_tokens"], 900)
+        conn.close()
+
     def test_schema_migration_adds_message_id(self):
         """Existing DBs without message_id column should be upgraded."""
         conn = sqlite3.connect(self.db_path)
