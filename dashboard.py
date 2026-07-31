@@ -4,6 +4,7 @@ dashboard.py - Local web dashboard served on localhost:8080.
 
 import json
 import os
+import socket
 import sqlite3
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
@@ -2293,19 +2294,108 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
-def serve(host=None, port=None, surface=None):
+PORT_PROBE_TIMEOUT = 0.2
+PORT_ATTEMPTS = 10
+
+
+def port_is_taken(port, timeout=PORT_PROBE_TIMEOUT):
+    """True if anything already answers on `port`, over IPv4 or IPv6.
+
+    bind() cannot answer this question. TCPServer sets allow_reuse_address, so
+    on macOS/BSD a specific bind (127.0.0.1:8080) coexists happily with a
+    wildcard bind (*:8080) held by a reverse proxy such as OrbStack or Docker
+    Desktop -- no EADDRINUSE. The proxy still wins connections addressed to the
+    family it holds, and answers them with nothing, which a browser reports as
+    ERR_EMPTY_RESPONSE. Both families matter: `localhost` resolves to ::1 first
+    on macOS, so an IPv6-only squatter intercepts the browser even when the
+    IPv4 bind succeeded. Connecting is the only reliable probe.
+    """
+    for family, addr in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        try:
+            sock = socket.socket(family, socket.SOCK_STREAM)
+        except OSError:
+            continue  # host has no support for this family
+        sock.settimeout(timeout)
+        try:
+            sock.connect((addr, port))
+            return True
+        except OSError:
+            pass
+        finally:
+            sock.close()
+    return False
+
+
+def create_server(host, port, attempts=PORT_ATTEMPTS, probe=True):
+    """Bind a dashboard server, stepping past ports that are already in use.
+
+    Returns (server, actual_port). Set probe=False with attempts=1 to demand
+    one exact port and fail loudly -- that is what a supervising process (the
+    VS Code extension) needs, since it polls the port it asked for.
+    """
+    last_error = None
+    for candidate in range(port, port + attempts):
+        if probe and port_is_taken(candidate):
+            continue
+        try:
+            return ThreadingHTTPServer((host, candidate), DashboardHandler), candidate
+        except OSError as e:
+            last_error = e
+            continue
+    if attempts == 1:
+        # No range was searched, so don't describe one. This is the message a
+        # supervising process shows its user.
+        raise OSError(f"Port {port} is already in use.") from last_error
+    last = port + attempts - 1
+    raise OSError(
+        f"No free port available in range {port}-{last}. "
+        f"Free one up, or pass --port with a different starting point."
+    ) from last_error
+
+
+def browser_url(host, port):
+    """The address to hand a client for a server bound to `host`.
+
+    `host` is a bind address, which is not always somewhere you can connect to.
+    `0.0.0.0` and `::` are wildcards, not destinations. `localhost` is worse
+    than useless: getaddrinfo returns ::1 ahead of 127.0.0.1 on macOS while the
+    server binds IPv4 only, so it routes clients to whatever else holds the
+    IPv6 wildcard, or to nothing at all.
+    """
+    if host in ("localhost", "", "0.0.0.0"):
+        return f"http://127.0.0.1:{port}"
+    if host in ("::", "::0"):
+        return f"http://[::1]:{port}"
+    if ":" in host:  # IPv6 literal needs brackets in a URL
+        return f"http://[{host}]:{port}"
+    return f"http://{host}:{port}"
+
+
+def serve(host=None, port=None, surface=None, fallback=True, on_ready=None):
     global SURFACE
     if surface:
         SURFACE = surface
     host = host or os.environ.get("HOST", "localhost")
     port = port or int(os.environ.get("PORT", "8080"))
-    server = ThreadingHTTPServer((host, port), DashboardHandler)
-    print(f"Dashboard running at http://{host}:{port}")
+    if fallback:
+        server, actual_port = create_server(host, port)
+    else:
+        # A supervising process pinned this port; bind it or die, exactly as
+        # before. No probe -- a stale socket in TIME_WAIT must not turn a
+        # restart that bind() would have allowed into a spurious failure.
+        server, actual_port = create_server(host, port, attempts=1, probe=False)
+    if actual_port != port:
+        print(f"Port {port} is in use. Serving on {actual_port} instead.")
+    print(f"Dashboard running at {browser_url(host, actual_port)}")
     print("Press Ctrl+C to stop.")
     try:
+        if on_ready:
+            on_ready(actual_port)
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

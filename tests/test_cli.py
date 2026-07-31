@@ -215,5 +215,40 @@ class TestDashboardNoBrowser(unittest.TestCase):
             mock_serve.assert_called_once()
 
 
+class TestDashboardPortFallback(unittest.TestCase):
+    """Fallback belongs to the interactive path, not the supervised one."""
+
+    def test_cli_run_allows_fallback(self):
+        with mock.patch.object(cli, "cmd_scan"), \
+             mock.patch("dashboard.serve") as mock_serve, \
+             mock.patch("webbrowser.open"), \
+             redirect_stdout(io.StringIO()):
+            cli.cmd_dashboard(host="localhost", port=8080, no_browser=False)
+            self.assertTrue(mock_serve.call_args.kwargs["fallback"])
+
+    def test_no_browser_pins_the_port(self):
+        """The extension polls the exact port it passed (extension.ts:126) and
+        keys the webview's localStorage on that origin, so silently landing
+        elsewhere would read as a failed start."""
+        with mock.patch.object(cli, "cmd_scan"), \
+             mock.patch("dashboard.serve") as mock_serve, \
+             mock.patch("webbrowser.open"), \
+             redirect_stdout(io.StringIO()):
+            cli.cmd_dashboard(host="127.0.0.1", port=9999, no_browser=True)
+            self.assertFalse(mock_serve.call_args.kwargs["fallback"])
+
+    def test_browser_opens_the_port_actually_bound(self):
+        """serve() reports the bound port via on_ready; the browser must follow
+        it, not the port that was originally requested."""
+        with mock.patch.object(cli, "cmd_scan"), \
+             mock.patch("dashboard.serve") as mock_serve, \
+             mock.patch("webbrowser.open") as mock_open, \
+             redirect_stdout(io.StringIO()):
+            cli.cmd_dashboard(host="localhost", port=8080, no_browser=False)
+            on_ready = mock_serve.call_args.kwargs["on_ready"]
+            on_ready(8083)  # serve() landed here after stepping past squatters
+            mock_open.assert_called_once_with("http://127.0.0.1:8083")
+
+
 if __name__ == "__main__":
     unittest.main()
