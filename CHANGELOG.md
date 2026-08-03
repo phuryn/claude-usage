@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.6 — TBD
+
+### Dashboard
+
+- Fixed the dashboard serving a **frozen snapshot** when left open: the browser polls `/api/data` every 30s and the footer advertises "Auto-refresh in 30s", but nothing ever rescanned the transcripts after the startup scan, so the numbers stopped moving the moment that scan finished. `cli.py dashboard` now runs an incremental rescan on the same 30s cadence, so today's usage keeps filling in without a restart.
+- Added `--auto-refresh SECONDS` (and the `AUTO_REFRESH` environment variable) to tune the rescan interval, plus `--no-auto-refresh` / `--auto-refresh 0` to restore the scan-once-at-startup behaviour. Rescans are incremental — `processed_files` skips any transcript whose mtime is unchanged — so a steady-state pass over a ~700-file backlog touches only the live sessions.
+- Fixed a page left open **across midnight** not noticing the calendar moved. Date ranges resolve against the current date, so at midnight "This Month" silently becomes a different month — but nothing re-filtered, so the view kept the old window. Rolling into a month with no data yet (August 1st fell on a Saturday) made a perfectly healthy dashboard look dead. The refresh tick now detects the rollover and re-filters.
+- Fixed the auto-refresh timer being armed **once, against the wrong range**. `rangeIncludesToday()` was evaluated a single time and frozen into whether an interval existed at all, so a range that excluded today killed the timer permanently — it never came back when the calendar moved that range back into view. The tick now runs unconditionally and re-decides on every pass. Restoring the range from the URL also moved ahead of arming the timer: `loadData()` does it too, but it's async, so the timer was previously armed against the `30d` default rather than the range on screen.
+- The dashboard now refreshes on **`visibilitychange`**, so a tab returning from the background catches up immediately instead of waiting out the next tick. Browsers clamp timers hard in hidden tabs (Firefox throttles them to roughly once a second and can stall them further), which is what made a dashboard left open in another tab read as stale on return.
+
 ## v1.5.5 — 2026-07-10
 
 ### Dashboard

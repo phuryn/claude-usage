@@ -23,9 +23,12 @@ python cli.py week                  # last 7 days, per-day + by-model
 python cli.py stats                 # all-time stats
 python cli.py dashboard                          # scan + open http://localhost:8080
 python cli.py dashboard --host 0.0.0.0 --port 9000
+python cli.py dashboard --auto-refresh 120       # rescan every 120s (default 30)
+python cli.py dashboard --no-auto-refresh        # scan once at startup only
 python cli.py scan --projects-dir PATH           # scan a custom transcripts dir
 # or via env vars:
 HOST=0.0.0.0 PORT=9000 python cli.py dashboard
+AUTO_REFRESH=120 python cli.py dashboard
 
 python -m unittest discover -s tests -v             # full test suite (CI runs this)
 python -m unittest tests.test_scanner -v            # one file
@@ -81,7 +84,7 @@ Pricing is duplicated in two places that **must stay in sync**:
 ### Dashboard server
 
 `http.server.BaseHTTPRequestHandler`-based, two endpoints:
-- `GET /api/data` → JSON snapshot from `get_dashboard_data()`. Returns *all* history; client-side filters by date range and model.
+- `GET /api/data` → JSON snapshot from `get_dashboard_data()`. Returns *all* history; client-side filters by date range and model. **It only reads the DB — it never scans.** Freshness comes from the rescan loop in `cli.cmd_dashboard`'s background thread (`--auto-refresh`, default 30s), which is what makes the browser's 30s `/api/data` poll actually show new data. Before that loop existed, a dashboard left open served the startup scan's snapshot forever while the footer cheerfully advertised "Auto-refresh in 30s". If you refactor the scan scheduling, keep *something* writing to the DB while the server runs.
 - `POST /api/rescan` → deletes the DB and runs a full rescan. Passes `db_path` and `projects_dirs` explicitly so tests that monkey-patch the module globals work — scan's default arg values are frozen at def time, so don't switch to bare defaults.
 
 The entire UI lives in `HTML_TEMPLATE` as a raw string. Chart.js is loaded from CDN.

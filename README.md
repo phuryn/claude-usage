@@ -115,6 +115,12 @@ python cli.py dashboard --host 0.0.0.0 --port 9000
 # Environment variables are also supported
 HOST=0.0.0.0 PORT=9000 python cli.py dashboard
 
+# Rescan every 2 minutes instead of the default 30 seconds
+python cli.py dashboard --auto-refresh 120
+
+# Only scan once at startup (the pre-1.5.6 behaviour)
+python cli.py dashboard --no-auto-refresh
+
 # Scan a custom projects directory
 python cli.py scan --projects-dir /path/to/transcripts
 ```
@@ -136,7 +142,7 @@ Claude Code writes one JSONL file per session to `~/.claude/projects/`. Each lin
 
 `scanner.py` parses those files and stores the data in a SQLite database at `~/.claude/usage.db`.
 
-`dashboard.py` serves a single-page dashboard on `localhost:8080` with Chart.js charts (loaded from CDN). It auto-refreshes every 30 seconds and supports model filtering and a date-range dropdown with bookmarkable URLs. A sticky section nav jumps between sections, and every chart/table can be collapsed (remembered across reloads). The bind address and port can be configured with the `--host` and `--port` flags, or the `HOST` and `PORT` environment variables (defaults: `localhost`, `8080`).
+`dashboard.py` serves a single-page dashboard on `localhost:8080` with Chart.js charts (loaded from CDN). It auto-refreshes every 30 seconds — the browser re-polls `/api/data` while the server rescans your transcripts on the same cadence, so a dashboard left open keeps tracking live sessions. Use `--auto-refresh SECONDS` to change the rescan interval or `--no-auto-refresh` to scan only at startup. It also supports model filtering and a date-range dropdown with bookmarkable URLs. A sticky section nav jumps between sections, and every chart/table can be collapsed (remembered across reloads). The bind address and port can be configured with the `--host` and `--port` flags, or the `HOST` and `PORT` environment variables (defaults: `localhost`, `8080`).
 
 ---
 

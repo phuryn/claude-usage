@@ -1,11 +1,12 @@
 """Tests for cli.py - pricing, formatting, and cost calculation."""
 
 import io
+import threading
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 import cli
-from cli import get_pricing, calc_cost, fmt, fmt_cost, PRICING
+from cli import get_pricing, calc_cost, fmt, fmt_cost, PRICING, parse_auto_refresh
 
 
 class TestGetPricing(unittest.TestCase):
@@ -213,6 +214,88 @@ class TestDashboardNoBrowser(unittest.TestCase):
             cli.cmd_dashboard(host="127.0.0.1", port=9999, no_browser=True)
             mock_open.assert_not_called()
             mock_serve.assert_called_once()
+
+
+class TestParseAutoRefresh(unittest.TestCase):
+    """--auto-refresh SECONDS / --no-auto-refresh resolution."""
+
+    def test_absent_returns_none_so_caller_can_use_env_then_default(self):
+        self.assertIsNone(parse_auto_refresh(["--port", "7070"]))
+
+    def test_explicit_seconds(self):
+        self.assertEqual(parse_auto_refresh(["--auto-refresh", "120"]), 120)
+
+    def test_bare_flag_uses_default(self):
+        self.assertEqual(parse_auto_refresh(["--auto-refresh"]), cli.DEFAULT_AUTO_REFRESH)
+
+    def test_flag_followed_by_another_flag_uses_default(self):
+        # parse_named_arg would hand back "--port" here; it must not be read as a value.
+        self.assertEqual(parse_auto_refresh(["--auto-refresh", "--port", "7070"]),
+                         cli.DEFAULT_AUTO_REFRESH)
+
+    def test_no_auto_refresh_disables(self):
+        self.assertEqual(parse_auto_refresh(["--no-auto-refresh"]), 0)
+
+    def test_no_auto_refresh_wins_over_auto_refresh(self):
+        self.assertEqual(parse_auto_refresh(["--auto-refresh", "60", "--no-auto-refresh"]), 0)
+
+    def test_zero_disables(self):
+        self.assertEqual(parse_auto_refresh(["--auto-refresh", "0"]), 0)
+
+    def test_negative_clamps_to_disabled(self):
+        self.assertEqual(parse_auto_refresh(["--auto-refresh", "-5"]), 0)
+
+    def test_non_numeric_exits(self):
+        with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()):
+            parse_auto_refresh(["--auto-refresh", "soon"])
+
+
+class TestDashboardAutoRefreshLoop(unittest.TestCase):
+    """The background thread keeps rescanning, so a long-lived dashboard stays live.
+
+    Without the loop, /api/data serves whatever the single startup scan committed —
+    the browser's 30s poll then re-renders the same frozen snapshot forever.
+    """
+
+    def _run(self, auto_refresh, stop_after, timeout=5):
+        """Drive cmd_dashboard with scan/serve/sleep stubbed. Returns the scan calls."""
+        calls = []
+        done = threading.Event()
+
+        def fake_scan(*args, **kwargs):
+            calls.append(kwargs)
+            if len(calls) >= stop_after:
+                done.set()
+                # BaseException, so the loop's `except Exception` won't swallow it:
+                # unwinds the daemon thread instead of spinning for the whole suite.
+                raise SystemExit
+
+        with mock.patch.object(cli, "cmd_scan", side_effect=fake_scan), \
+             mock.patch("dashboard.serve"), \
+             mock.patch("time.sleep", return_value=None), \
+             redirect_stdout(io.StringIO()):
+            cli.cmd_dashboard(host="127.0.0.1", port=9999, no_browser=True,
+                              auto_refresh=auto_refresh)
+            fired = done.wait(timeout=timeout)
+        return calls, fired
+
+    def test_loop_rescans_after_the_startup_scan(self):
+        calls, fired = self._run(auto_refresh=30, stop_after=3)
+        self.assertTrue(fired, "background loop never rescanned")
+        self.assertGreaterEqual(len(calls), 3)
+
+    def test_startup_scan_is_verbose_and_rescans_are_quiet(self):
+        calls, fired = self._run(auto_refresh=30, stop_after=3)
+        self.assertTrue(fired)
+        # The startup scan reports the backlog; per-tick rescans must not spam stdout.
+        self.assertNotIn("verbose", calls[0])
+        self.assertFalse(calls[1]["verbose"])
+
+    def test_zero_disables_the_loop(self):
+        # Nothing should fire, so a short window is enough — don't stall the suite.
+        calls, fired = self._run(auto_refresh=0, stop_after=2, timeout=1)
+        self.assertFalse(fired, "loop ran despite auto_refresh=0")
+        self.assertEqual(len(calls), 1, "expected only the startup scan")
 
 
 if __name__ == "__main__":
