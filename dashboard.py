@@ -1961,12 +1961,44 @@ async function loadData() {
 }
 
 let autoRefreshTimer = null;
+let lastSeenDate = localISODate(new Date());
+
+// Two things go stale in a page left open for days, and the old "decide once, when the
+// timer is armed" shape got both wrong:
+//
+//   1. The calendar. getRangeBounds() resolves against new Date(), so at midnight a
+//      range like "This Month" silently becomes a *different* month — but nothing
+//      re-filtered on its own, so the view kept showing the old window until the next
+//      /api/data response happened to redraw it. Crossing into a month with no data yet
+//      (Aug 1 fell on a Saturday) then reads as a dead dashboard.
+//   2. The fetch decision. rangeIncludesToday() was evaluated once and frozen into
+//      whether a timer existed at all. Selecting a past range killed the timer for good:
+//      it never came back when the calendar moved that range back into "includes today".
+//
+// So the tick now runs unconditionally and re-decides every time.
+function autoRefreshTick() {
+  const today = localISODate(new Date());
+  if (today !== lastSeenDate) {
+    lastSeenDate = today;
+    // Re-filter even when we're about to skip the fetch — the bounds moved.
+    applyFilter();
+  }
+  if (rangeIncludesToday(selectedRange)) loadData();
+}
+
 function scheduleAutoRefresh() {
   if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
-  if (rangeIncludesToday(selectedRange)) {
-    autoRefreshTimer = setInterval(loadData, 30000);
-  }
+  autoRefreshTimer = setInterval(autoRefreshTick, 30000);
 }
+
+// A backgrounded tab gets its timers clamped hard (Firefox throttles to ~1/s and can
+// stall them further), so a dashboard left open in another tab shows stale numbers for
+// however long it takes the next tick to land after you switch back. Catch up on the
+// spot instead — this is also what repairs the display after a rollover that happened
+// while the tab was hidden.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) autoRefreshTick();
+});
 
 // ── Footer meta: version, extension promo, update check ──────────────────────
 // APP_CONFIG is injected server-side (see do_GET). { version, surface }.
@@ -2182,6 +2214,11 @@ function initSectionNav() {
 
 initFooterMeta();
 initSectionNav();
+// Restore the range from the URL *before* arming the timer. loadData() does its own
+// restore, but it's async — it lands after scheduleAutoRefresh() has already run, so
+// the timer used to be armed against the '30d' default rather than the range actually
+// on screen.
+selectedRange = readURLRange();
 loadData();
 scheduleAutoRefresh();
 </script>

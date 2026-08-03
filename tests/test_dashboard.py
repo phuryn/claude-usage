@@ -494,5 +494,208 @@ class TestPricingParity(unittest.TestCase):
             )
 
 
+def _js_block(header):
+    """Slice a brace-balanced JS declaration out of HTML_TEMPLATE by its header.
+
+    None of the sliced declarations contain a brace inside a string literal, so a
+    naive depth counter is enough (template literals like `${d.getFullYear()}` are
+    themselves balanced).
+    """
+    start = HTML_TEMPLATE.index(header)
+    depth = 0
+    for i in range(HTML_TEMPLATE.index("{", start), len(HTML_TEMPLATE)):
+        if HTML_TEMPLATE[i] == "{":
+            depth += 1
+        elif HTML_TEMPLATE[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return HTML_TEMPLATE[start:i + 1]
+    raise AssertionError(f"unbalanced braces after {header!r}")
+
+
+def _js_line(header):
+    start = HTML_TEMPLATE.index(header)
+    return HTML_TEMPLATE[start:HTML_TEMPLATE.index("\n", start)]
+
+
+# The date/refresh logic pulled straight out of the shipped template, so these tests
+# break if the real code changes. Order matters only for the `let` lines, which run
+# at injection time; the function declarations hoist.
+def _refresh_js():
+    return "\n".join([
+        _js_block("const RANGE_LABELS ="),
+        _js_line("const VALID_RANGES ="),
+        _js_block("function localISODate("),
+        _js_block("function rangeIncludesToday("),
+        _js_block("function getRangeBounds("),
+        _js_block("function autoRefreshTick("),
+        _js_block("function scheduleAutoRefresh("),
+        _js_line("let autoRefreshTimer ="),
+        _js_line("let lastSeenDate ="),
+        # The visibilitychange registration is a bare statement, not a declaration.
+        HTML_TEMPLATE[
+            HTML_TEMPLATE.index("document.addEventListener('visibilitychange'"):
+        ].split("});", 1)[0] + "});",
+    ])
+
+
+HARNESS = r"""
+const RealDate = Date;
+let FAKE = new RealDate(2026, 6, 31, 20, 0, 0);   // Fri Jul 31 2026, local time
+globalThis.Date = class extends RealDate {
+  constructor(...a) { if (a.length === 0) { super(FAKE.getTime()); } else { super(...a); } }
+  static now() { return FAKE.getTime(); }
+};
+
+const calls = { applyFilter: 0, loadData: 0 };
+function applyFilter() { calls.applyFilter++; }
+function loadData() { calls.loadData++; }
+
+let intervalFn = null, intervalMs = null, clearedCount = 0;
+globalThis.setInterval = (fn, ms) => { intervalFn = fn; intervalMs = ms; return 1; };
+globalThis.clearInterval = () => { clearedCount++; };
+
+const listeners = {};
+globalThis.document = {
+  hidden: false,
+  addEventListener: (ev, fn) => { listeners[ev] = fn; },
+};
+
+let selectedRange = '30d';
+const snap = () => ({ ...calls });
+"""
+
+
+@unittest.skipUnless(__import__("shutil").which("node"), "node not installed")
+class TestAutoRefreshTick(unittest.TestCase):
+    """Execute the shipped refresh JS under node with a fake clock and DOM.
+
+    Covers the frontend half of "a long-lived dashboard stays live": a page left open
+    across midnight (and across a month boundary) has to notice the calendar moved.
+    """
+
+    def _run(self, scenario):
+        import subprocess
+        script = "\n".join([HARNESS, _refresh_js(), scenario])
+        with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as fh:
+            fh.write(script)
+            path = fh.name
+        try:
+            proc = subprocess.run(
+                ["node", path], capture_output=True, text=True, timeout=30
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return json.loads(proc.stdout.strip().splitlines()[-1])
+        finally:
+            os.unlink(path)
+
+    def test_month_rollover_refilters(self):
+        """Midnight into a new month re-runs applyFilter so the bounds follow along."""
+        out = self._run(r"""
+        selectedRange = 'month';
+        scheduleAutoRefresh();
+        intervalFn();                                   // tick on Jul 31
+        const beforeRollover = snap();
+        FAKE = new RealDate(2026, 7, 1, 0, 5, 0);       // Sat Aug 1 2026, 00:05
+        intervalFn();
+        const afterRollover = snap();
+        intervalFn();                                   // same day, no second re-filter
+        console.log(JSON.stringify({ beforeRollover, afterRollover, afterSameDay: snap() }));
+        """)
+        # Same day: fetch only, no re-filter.
+        self.assertEqual(out["beforeRollover"], {"applyFilter": 0, "loadData": 1})
+        # Rollover: exactly one re-filter, and the fetch still happens.
+        self.assertEqual(out["afterRollover"], {"applyFilter": 1, "loadData": 2})
+        # Still Aug 1 — the rollover must not re-trigger on every later tick.
+        self.assertEqual(out["afterSameDay"], {"applyFilter": 1, "loadData": 3})
+
+    def test_timer_armed_even_when_range_excludes_today(self):
+        """The timer must exist regardless of range, or it can't see the rollover.
+
+        Previously `scheduleAutoRefresh` only created an interval when the range
+        already included today, so the page went permanently blind to the calendar.
+        """
+        out = self._run(r"""
+        selectedRange = 'prev-month';
+        scheduleAutoRefresh();
+        intervalFn();
+        console.log(JSON.stringify({
+          armed: intervalFn !== null, ms: intervalMs, calls: snap(),
+        }));
+        """)
+        self.assertTrue(out["armed"])
+        self.assertEqual(out["ms"], 30000)
+        # ...but a range that can't contain today still must not fetch.
+        self.assertEqual(out["calls"], {"applyFilter": 0, "loadData": 0})
+
+    def test_rollover_moves_a_range_back_into_today(self):
+        """'prev-month' on Jul 31 is June; on Aug 1 it becomes July — still not today.
+
+        'month' is the one that flips, and the tick has to start fetching again on its
+        own without the user touching the dropdown.
+        """
+        out = self._run(r"""
+        selectedRange = 'month';
+        scheduleAutoRefresh();
+        FAKE = new RealDate(2026, 7, 1, 0, 5, 0);
+        intervalFn();
+        console.log(JSON.stringify({ calls: snap() }));
+        """)
+        self.assertEqual(out["calls"], {"applyFilter": 1, "loadData": 1})
+
+    def test_visibilitychange_catches_up_only_when_shown(self):
+        """A throttled background tab refreshes the moment it comes back."""
+        out = self._run(r"""
+        selectedRange = 'today';
+        scheduleAutoRefresh();
+        document.hidden = true;
+        listeners['visibilitychange']();
+        const whileHidden = snap();
+        document.hidden = false;
+        listeners['visibilitychange']();
+        console.log(JSON.stringify({ whileHidden, whenVisible: snap() }));
+        """)
+        self.assertEqual(out["whileHidden"], {"applyFilter": 0, "loadData": 0})
+        self.assertEqual(out["whenVisible"], {"applyFilter": 0, "loadData": 1})
+
+    def test_rollover_while_hidden_is_repaired_on_focus(self):
+        """The exact reported shape: tab left open, month changes, come back to it."""
+        out = self._run(r"""
+        selectedRange = 'month';
+        scheduleAutoRefresh();
+        document.hidden = true;
+        FAKE = new RealDate(2026, 7, 1, 9, 0, 0);
+        document.hidden = false;
+        listeners['visibilitychange']();
+        console.log(JSON.stringify({ calls: snap() }));
+        """)
+        self.assertEqual(out["calls"], {"applyFilter": 1, "loadData": 1})
+
+
+class TestAutoRefreshWiring(unittest.TestCase):
+    """Source-level checks that don't need node, so CI covers them unconditionally."""
+
+    def test_range_restored_before_timer_is_armed(self):
+        """loadData() is async; its own restore lands too late to arm the timer with.
+
+        Scoped to the init block on purpose — loadData's internal restore sits earlier
+        in the file, so a whole-template ordering check passes even when the init block
+        is missing the synchronous restore entirely.
+        """
+        init = HTML_TEMPLATE[HTML_TEMPLATE.rindex("initSectionNav();"):]
+        self.assertIn("selectedRange = readURLRange();", init)
+        self.assertLess(
+            init.index("selectedRange = readURLRange();"),
+            init.index("loadData();"),
+        )
+
+    def test_tick_is_scheduled_not_loaddata(self):
+        """The interval must run the tick, not loadData directly."""
+        self.assertIn("setInterval(autoRefreshTick, 30000)", HTML_TEMPLATE)
+
+    def test_visibilitychange_listener_registered(self):
+        self.assertIn("document.addEventListener('visibilitychange'", HTML_TEMPLATE)
+
+
 if __name__ == "__main__":
     unittest.main()
