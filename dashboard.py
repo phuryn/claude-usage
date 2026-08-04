@@ -240,6 +240,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <title>Claude Code Usage Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>window.APP_CONFIG = __APP_CONFIG_JSON__;</script>
+<script>
+// Resolve the theme before first paint to avoid a flash of the wrong scheme.
+// Preference lives in localStorage ('dark' | 'light' | 'system'); 'system'
+// follows the OS. The full theme logic (toggle, chart repaint) is further down.
+(function() {
+  let pref = 'system';
+  try {
+    const v = localStorage.getItem('cu_theme');
+    if (v === 'dark' || v === 'light' || v === 'system') pref = v;
+  } catch (e) {}
+  const dark = pref === 'dark' || (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+})();
+</script>
 <style>
   :root {
     --bg: #161617;      /* page base */
@@ -253,22 +267,51 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     --red: #C74E39;
     --raised: #2E2F31;  /* hover / raised surfaces — top of the elevation ladder */
     --selected: #262626;  /* selected chips / tabs (neutral, not accent) */
+    --scroll-track: #121314;
+    --scroll-thumb: #28292B;
+    --scroll-thumb-hover: #8B8B8D;
+    --shadow-panel: 0 8px 24px rgba(0,0,0,0.35);
+    --shadow-bar: 0 2px 8px rgba(0,0,0,0.18);
     --jump-h: 45px;  /* sticky jump-bar height; JS keeps it in sync for scroll offsets */
+    color-scheme: dark;  /* native controls (select, scrollbars) match the theme */
+  }
+  /* Light theme — same warm/neutral family as the dark palette, mirrored onto
+     paper surfaces. Text accents (--blue/--green/--accent/--red) are darker
+     than their dark-theme cousins so they keep contrast on white; the chart
+     palette in JS (CHART_THEMES) stays in sync with these. */
+  html[data-theme="light"] {
+    --bg: #F4F2EE;
+    --card: #FDFCFB;
+    --border: #E2E0DA;
+    --text: #3A3A38;
+    --muted: #8F8D85;
+    --accent: #C05F3C;
+    --blue: #2F7FA6;
+    --green: #3D8B5F;
+    --red: #B0402C;
+    --raised: #EFECE7;
+    --selected: #E7E4DE;
+    --scroll-track: #ECEAE5;
+    --scroll-thumb: #CFCDC7;
+    --scroll-thumb-hover: #97958E;
+    --shadow-panel: 0 8px 24px rgba(0,0,0,0.14);
+    --shadow-bar: 0 2px 8px rgba(0,0,0,0.07);
+    color-scheme: light;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
 
   /* VS Code-style scrollbars. The dashboard renders inside a webview iframe,
      which doesn't inherit VS Code's --vscode-* theme variables, so we set the
-     scrollbar here: no arrows, grey thumb (#28292B, #8B8B8D on hover) over a
-     #121314 track, in a 21px gutter. Also fits the dark UI standalone. */
-  * { scrollbar-width: auto; scrollbar-color: #28292B #121314; }
+     scrollbar here: no arrows, grey thumb over a recessed track, in a 21px
+     gutter. Colors come from the theme variables above. */
+  * { scrollbar-width: auto; scrollbar-color: var(--scroll-thumb) var(--scroll-track); }
   ::-webkit-scrollbar { width: 21px; height: 21px; }
-  ::-webkit-scrollbar-track { background: #121314; }
-  ::-webkit-scrollbar-thumb { background-color: #28292B; border: 3px solid transparent; background-clip: padding-box; }
-  ::-webkit-scrollbar-thumb:hover { background-color: #8B8B8D; }
-  ::-webkit-scrollbar-thumb:active { background-color: #8B8B8D; }
-  ::-webkit-scrollbar-corner { background: #121314; }
+  ::-webkit-scrollbar-track { background: var(--scroll-track); }
+  ::-webkit-scrollbar-thumb { background-color: var(--scroll-thumb); border: 3px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
+  ::-webkit-scrollbar-thumb:active { background-color: var(--scroll-thumb-hover); }
+  ::-webkit-scrollbar-corner { background: var(--scroll-track); }
 
   header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
   header h1 { font-size: 18px; font-weight: 600; color: var(--text); }
@@ -283,7 +326,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     mask: url("icon.svg") no-repeat center / contain;
   }
   header .meta { color: var(--muted); font-size: 12px; text-align: right; line-height: 1.5; margin-right: 20px; }
-  #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 4px; }
+  .header-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  /* Theme picker — icon-only trigger showing the selected mode (sun / moon /
+     monitor); the dropdown lists all three with icon + label. Same open/close
+     mechanics as the model filter panel. */
+  .theme-select { position: relative; flex-shrink: 0; }
+  .theme-trigger { display: flex; align-items: center; justify-content: center; width: 30px; height: 27px; padding: 0; background: var(--card); border: 1px solid var(--border); border-radius: 6px; color: var(--muted); cursor: pointer; transition: border-color 0.15s, color 0.15s; }
+  .theme-trigger:hover, .theme-trigger.open { border-color: var(--accent); color: var(--text); }
+  .theme-trigger svg { display: none; }
+  .theme-trigger[data-pref="light"] .theme-icon-light,
+  .theme-trigger[data-pref="dark"] .theme-icon-dark,
+  .theme-trigger[data-pref="system"] .theme-icon-system { display: block; }
+  .theme-panel { position: absolute; top: calc(100% + 6px); right: 0; z-index: 60; min-width: 120px; display: flex; flex-direction: column; gap: 2px; padding: 6px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-panel); }
+  .theme-panel[hidden] { display: none; }
+  .theme-option { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; text-align: left; white-space: nowrap; transition: background 0.12s, color 0.12s; }
+  .theme-option:hover { background: var(--raised); color: var(--text); }
+  .theme-option.active { background: var(--selected); color: var(--text); border-color: var(--border); font-weight: 600; }
+  .theme-option svg { flex-shrink: 0; }
+  #rescan-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
   #rescan-btn:hover { color: var(--text); border-color: var(--accent); }
   #rescan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -297,7 +357,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #model-trigger-label { flex: 1; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .model-caret { color: var(--muted); font-size: 10px; flex-shrink: 0; transition: transform 0.15s; }
   .model-trigger.open .model-caret { transform: rotate(180deg); }
-  .model-panel { position: absolute; top: calc(100% + 6px); left: 0; z-index: 50; min-width: 250px; max-width: 340px; max-height: 360px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
+  .model-panel { position: absolute; top: calc(100% + 6px); left: 0; z-index: 50; min-width: 250px; max-width: 340px; max-height: 360px; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px; box-shadow: var(--shadow-panel); }
   .model-panel[hidden] { display: none; }
   .model-panel-actions { display: flex; gap: 6px; padding-bottom: 8px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
   .model-group-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding: 8px 8px 4px; }
@@ -392,14 +452,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* Sticky table-of-contents for the long report: three compact entries —
      Overview, plus Graphs and Tables menus that reveal their sections on hover
      (or keyboard focus). Stays small so it never crowds the narrow VS Code panel. */
-  #jump-bar { position: sticky; top: 0; z-index: 20; background: var(--card); border-bottom: 1px solid var(--border); padding: 7px 24px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
+  #jump-bar { position: sticky; top: 0; z-index: 20; background: var(--card); border-bottom: 1px solid var(--border); padding: 7px 24px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; box-shadow: var(--shadow-bar); }
   .jump-menu { position: relative; }
   .jump-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 3px 11px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s; }
   .jump-trigger svg { display: block; }
   .jump-caret { font-size: 9px; }
   .jump-trigger:hover, .jump-menu:focus-within .jump-trigger { color: var(--text); background: var(--raised); }
   .jump-trigger.active { color: var(--text); border-color: var(--border); }
-  .jump-panel { position: absolute; top: calc(100% + 5px); left: 0; z-index: 50; min-width: 160px; display: none; flex-direction: column; gap: 2px; padding: 6px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
+  .jump-panel { position: absolute; top: calc(100% + 5px); left: 0; z-index: 50; min-width: 160px; display: none; flex-direction: column; gap: 2px; padding: 6px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-panel); }
   /* Invisible bridge over the 5px gap so the menu doesn't close as the pointer
      travels from the trigger down to the panel. */
   .jump-panel::before { content: ""; position: absolute; left: 0; right: 0; top: -8px; height: 8px; }
@@ -442,7 +502,21 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <h1>Claude Code Usage</h1>
   </div>
   <div class="meta" id="meta">Loading...</div>
-  <button id="rescan-btn" onclick="triggerRescan()" title="Scan for new usage since the last update. Adds new turns without affecting existing history.">&#x21bb; Rescan</button>
+  <div class="header-actions">
+    <div class="theme-select" id="theme-select">
+      <button class="theme-trigger" id="theme-trigger" data-pref="system" aria-haspopup="true" aria-expanded="false" aria-label="Color theme" title="Color theme" onclick="toggleThemePanel(event)">
+        <svg class="theme-icon-light" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        <svg class="theme-icon-dark" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        <svg class="theme-icon-system" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+      </button>
+      <div class="theme-panel" id="theme-panel" hidden>
+        <button class="theme-option" data-theme="light" onclick="setTheme('light')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>Light</button>
+        <button class="theme-option" data-theme="dark" onclick="setTheme('dark')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>Dark</button>
+        <button class="theme-option" data-theme="system" onclick="setTheme('system')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>Auto</button>
+      </div>
+    </div>
+    <button id="rescan-btn" onclick="triggerRescan()" title="Scan for new usage since the last update. Adds new turns without affecting existing history.">&#x21bb; Rescan</button>
+  </div>
 </header>
 
 <div id="filter-bar">
@@ -796,17 +870,34 @@ function fmtCostBig(c) { return '$' + c.toLocaleString(undefined, { minimumFract
 // Warm/neutral palette kept in sync with the CSS :root variables so charts match
 // the Claude Code interface (less blue). Chart legends/axes use C.axis (a touch
 // lighter than --muted so small labels stay legible on the dark card); grid uses
-// C.border.
+// C.border. The theme-dependent keys are swapped in place by applyTheme() —
+// every chart is destroyed and rebuilt on render, so a repaint picks them up.
+const CHART_THEMES = {
+  dark: {
+    text:   '#BFBFBF',
+    muted:  '#4F4F50',
+    axis:   '#6F6F70',
+    border: '#2C2D2E',
+    card:   '#1E1F20',
+    blue:   '#48A0C7',
+    green:  '#74C991',
+    red:    '#C74E39',
+    accent: '#d97757',
+  },
+  light: {  // mirrors the html[data-theme="light"] CSS variables
+    text:   '#3A3A38',
+    muted:  '#8F8D85',
+    axis:   '#75736C',
+    border: '#E6E4DE',
+    card:   '#FDFCFB',
+    blue:   '#2F7FA6',
+    green:  '#3D8B5F',
+    red:    '#B0402C',
+    accent: '#C05F3C',
+  },
+};
 const C = {
-  text:   '#BFBFBF',
-  muted:  '#4F4F50',
-  axis:   '#6F6F70',
-  border: '#2C2D2E',
-  card:   '#1E1F20',
-  blue:   '#48A0C7',
-  green:  '#74C991',
-  red:    '#C74E39',
-  accent: '#d97757',
+  ...CHART_THEMES.dark,
   amber:  '#D9A84E',
   purple: '#9B7EC7',
   teal:   '#5BB8A3',
@@ -862,6 +953,71 @@ Chart.defaults.plugins.tooltip.callbacks.labelColor = (ctx) => {
   if (ds.type === 'line') col = ds.borderColor;
   return { borderColor: col, backgroundColor: col, borderWidth: 0 };
 };
+
+// ── Theme ──────────────────────────────────────────────────────────────────
+// Preference ('dark' | 'light' | 'system') persists in localStorage; the head
+// script applied it before first paint. Here we keep the chart palette, the
+// html[data-theme] attribute, and the header toggle in sync, and follow OS
+// changes live while in 'system' mode.
+const THEME_KEY = 'cu_theme';
+const systemDarkMQ = window.matchMedia('(prefers-color-scheme: dark)');
+
+function themePref() {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    if (v === 'dark' || v === 'light' || v === 'system') return v;
+  } catch (e) {}
+  return 'system';
+}
+
+function applyTheme() {
+  const pref = themePref();
+  const theme = (pref === 'dark' || (pref === 'system' && systemDarkMQ.matches)) ? 'dark' : 'light';
+  document.documentElement.dataset.theme = theme;
+  Object.assign(C, CHART_THEMES[theme]);
+  Chart.defaults.color = C.axis;
+  const trigger = document.getElementById('theme-trigger');
+  if (trigger) trigger.dataset.pref = pref;  // CSS shows the matching icon
+  document.querySelectorAll('.theme-option').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.theme === pref)
+  );
+  if (rawData) applyFilter();  // repaint charts with the new palette
+}
+
+function setTheme(pref) {
+  try { localStorage.setItem(THEME_KEY, pref); } catch (e) {}
+  applyTheme();
+  closeThemePanel();
+}
+
+function toggleThemePanel(event) {
+  if (event) event.stopPropagation();
+  const panel = document.getElementById('theme-panel');
+  const trigger = document.getElementById('theme-trigger');
+  const open = panel.hidden;
+  panel.hidden = !open;
+  trigger.classList.toggle('open', open);
+  trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function closeThemePanel() {
+  const panel = document.getElementById('theme-panel');
+  if (!panel || panel.hidden) return;
+  panel.hidden = true;
+  const trigger = document.getElementById('theme-trigger');
+  trigger.classList.remove('open');
+  trigger.setAttribute('aria-expanded', 'false');
+}
+
+document.addEventListener('click', (e) => {
+  const sel = document.getElementById('theme-select');
+  if (sel && !sel.contains(e.target)) closeThemePanel();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeThemePanel(); });
+
+// Older webviews may only support the deprecated addListener API.
+if (systemDarkMQ.addEventListener) systemDarkMQ.addEventListener('change', () => { if (themePref() === 'system') applyTheme(); });
+else if (systemDarkMQ.addListener) systemDarkMQ.addListener(() => { if (themePref() === 'system') applyTheme(); });
 
 // Legend visibility must survive repaints (filter changes, auto-refresh, sort) —
 // the charts are destroyed and rebuilt each render, which otherwise resets any
@@ -2180,6 +2336,7 @@ function initSectionNav() {
   updateActive();
 }
 
+applyTheme();
 initFooterMeta();
 initSectionNav();
 loadData();
