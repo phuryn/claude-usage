@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.6 — TBD
+
+### Project / docs
+
+- `scripts/run-docker.sh` now auto-falls-back to the next free port when its default (9898) is taken, instead of failing the `docker run` with a bind error.
+- Added `scripts/install-autostart.sh` to run the dashboard container automatically at login/boot (macOS LaunchAgent, Linux systemd user unit).
+
 ## v1.5.5 — 2026-07-10
 
 ### Dashboard
