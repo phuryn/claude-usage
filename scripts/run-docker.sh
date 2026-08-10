@@ -17,10 +17,10 @@ port_in_use() {
   fi
 }
 
-echo "▶  Checking for running container..."
-if docker ps -q --filter "name=^${CONTAINER}$" | grep -q .; then
-  echo "⏹  Stopping ${CONTAINER}..."
-  docker stop "$CONTAINER"
+echo "▶  Checking for existing container..."
+if docker ps -aq --filter "name=^${CONTAINER}$" | grep -q .; then
+  echo "⏹  Removing existing ${CONTAINER}..."
+  docker rm -f "$CONTAINER"
 fi
 
 while port_in_use "$PORT"; do
@@ -43,7 +43,8 @@ echo "🔨  Building image..."
 docker build -t "$IMAGE" .
 
 echo "🚀  Starting container..."
-docker run --rm -d \
+docker run -d \
+  --restart unless-stopped \
   --name "$CONTAINER" \
   --network "$NETWORK" \
   -p "$PORT:8080" \
