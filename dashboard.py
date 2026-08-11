@@ -1433,7 +1433,7 @@ function renderHourlyChart(agg) {
         },
       },
       scales: {
-        x: { ticks: { color: C.axis, maxRotation: 0, autoSkip: false, font: { size: 10 } }, grid: { color: C.border } },
+        x: { ticks: { color: C.axis, minRotation: 0, maxRotation: 90, autoSkip: false, font: { size: 10 } }, grid: { color: C.border } },
         y:  { position: 'left',  beginAtZero: true, ticks: { color: C.axis, callback: v => v.toFixed(1) },     grid: { color: C.border }, title: { display: true, text: 'Avg turns / hour',         color: C.axis, font: { size: 11 } } },
         y1: { position: 'right', beginAtZero: true, ticks: { color: C.axis, callback: v => fmt(v) }, grid: { drawOnChartArea: false },   title: { display: true, text: 'Avg output tokens / hour', color: C.axis, font: { size: 11 } } },
       }
