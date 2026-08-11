@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.6 — TBD
+
+### Dashboard
+
+- Fixed the **hour labels on the Average Hourly Distribution chart overlapping into an unreadable smear** on narrower windows. The x axis was pinned to `maxRotation: 0` with `autoSkip: false`, so Chart.js could neither tilt the labels nor drop any — it just crammed all 24 `HH:00` ticks into whatever width was available. The axis now allows rotation up to 90°, so the labels stay horizontal when there's room and tilt progressively as the chart narrows, matching the Daily Token Usage chart's behaviour. All 24 hours remain visible at every width.
+
 ## v1.5.5 — 2026-07-10
 
 ### Dashboard
