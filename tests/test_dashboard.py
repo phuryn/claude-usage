@@ -494,5 +494,79 @@ class TestPricingParity(unittest.TestCase):
             )
 
 
+class TestMixedModelSessionCost(unittest.TestCase):
+    """A session's tokens must be priced by the model that produced them.
+
+    The `sessions` table stores one primary-model label (opus > sonnet > haiku),
+    so pricing summed session tokens by that label overcharges any session that
+    also ran cheaper models (subagents, or a mid-session /model switch).
+    """
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        conn = get_db(self.db_path)
+        init_db(conn)
+        upsert_sessions(conn, [{
+            "session_id": "sess-mixed", "project_name": "user/proj",
+            "first_timestamp": "2026-04-08T09:00:00Z",
+            "last_timestamp": "2026-04-08T10:00:00Z",
+            "git_branch": "main", "model": "claude-opus-4-1",  # primary label
+            "total_input_tokens": 300, "total_output_tokens": 3000,
+            "total_cache_read": 30000, "total_cache_creation": 3000,
+            "turn_count": 2,
+        }])
+        insert_turns(conn, [
+            {"session_id": "sess-mixed", "timestamp": "2026-04-08T09:10:00Z",
+             "model": "claude-opus-4-1", "input_tokens": 100, "output_tokens": 1000,
+             "cache_read_tokens": 10000, "cache_creation_tokens": 1000,
+             "tool_name": None, "cwd": "/tmp"},
+            {"session_id": "sess-mixed", "timestamp": "2026-04-08T09:20:00Z",
+             "model": "claude-haiku-4-5", "input_tokens": 200, "output_tokens": 2000,
+             "cache_read_tokens": 20000, "cache_creation_tokens": 2000,
+             "tool_name": None, "cwd": "/tmp"},
+        ])
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_session_carries_per_model_breakdown(self):
+        data = get_dashboard_data(self.db_path)
+        session = next(s for s in data["sessions_all"] if s["session_id"] == "sess-mixed")
+        by_model = {m["model"]: m for m in session["by_model"]}
+        self.assertEqual(set(by_model), {"claude-opus-4-1", "claude-haiku-4-5"},
+                         "by_model must split the session's tokens by producing model")
+        self.assertEqual(by_model["claude-haiku-4-5"]["output"], 2000)
+        self.assertEqual(by_model["claude-opus-4-1"]["cache_read"], 10000)
+        # The split must be lossless against the session rollup.
+        for field in ("input", "output", "cache_read", "cache_creation"):
+            self.assertEqual(sum(m[field] for m in session["by_model"]), session[field],
+                             f"by_model {field} must sum to the session total")
+
+    def test_per_model_pricing_is_cheaper_than_the_primary_label(self):
+        """The bug this guards: haiku turns billed at opus rates."""
+        import cli
+        data = get_dashboard_data(self.db_path)
+        session = next(s for s in data["sessions_all"] if s["session_id"] == "sess-mixed")
+        per_model = sum(cli.calc_cost(m["model"], m["input"], m["output"],
+                                      m["cache_read"], m["cache_creation"])
+                        for m in session["by_model"])
+        single_label = cli.calc_cost(session["model"], session["input"], session["output"],
+                                     session["cache_read"], session["cache_creation"])
+        self.assertLess(per_model, single_label)
+
+    def test_js_prices_sessions_per_model(self):
+        """The cost math runs in JS; keep the session sites off the single-label path."""
+        # assertTrue, not assertIn: assertIn dumps the whole template on failure.
+        fallback = "  return calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);"
+        self.assertTrue("function sessionCost(s)" in HTML_TEMPLATE,
+                        "sessionCost missing from dashboard JS")
+        self.assertFalse("calcCost(s.model," in HTML_TEMPLATE.replace(fallback, ""),
+                         "a session is still priced by its single primary-model label")
+
+
 if __name__ == "__main__":
     unittest.main()
