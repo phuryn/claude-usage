@@ -7,7 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scanner import get_db, init_db, parse_jsonl_file, scan
+from scanner import (
+    get_db, init_db, parse_jsonl_file, scan, extract_agent_attribution,
+)
 
 NL = chr(10)  # avoid backslash-escaped newline literals in source
 
@@ -166,6 +168,135 @@ class TestSubagentScanIntegration(unittest.TestCase):
         tables = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertIn("agents", tables)
+        conn.close()
+
+
+def _async_dispatch(session_id="s1", agent_id="agent-1",
+                    timestamp="2026-04-08T10:01:00Z"):
+    """A background (isAsync) dispatch launch record: agentId but no agentType."""
+    return json.dumps({
+        "type": "user",
+        "sessionId": session_id,
+        "timestamp": timestamp,
+        "toolUseResult": {
+            "agentId": agent_id,
+            "isAsync": True,
+            "status": "async_launched",
+            "description": "Do the thing",
+            "resolvedModel": "claude-sonnet-5",
+        },
+    })
+
+
+class TestAgentAttribution(unittest.TestCase):
+    """attributionAgent on the subagent's own records names it (issue: 'unknown')."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def _write(self, relpath, lines):
+        path = os.path.join(self.tmpdir, relpath)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            f.write(NL.join(lines) + NL)
+        return path
+
+    def test_extract_reads_name_and_id(self):
+        rec = {"type": "assistant", "agentId": "agent-x",
+               "attributionAgent": "Explore"}
+        self.assertEqual(extract_agent_attribution(rec),
+                         {"source": "attribution", "agent_id": "agent-x",
+                          "agent_type": "Explore"})
+
+    def test_extract_requires_both_fields(self):
+        self.assertIsNone(extract_agent_attribution({"agentId": "agent-x"}))
+        self.assertIsNone(extract_agent_attribution({"attributionAgent": "Explore"}))
+
+    def test_parse_captures_attribution(self):
+        path = self._write(os.path.join("proj", "subagents", "agent-1.jsonl"), [
+            _assistant(extra={"agentId": "agent-1", "attributionAgent": "herald"}),
+        ])
+        _, _, agents, _ = parse_jsonl_file(path)
+        self.assertEqual(len(agents), 1)
+        self.assertEqual(agents[0]["agent_id"], "agent-1")
+        self.assertEqual(agents[0]["agent_type"], "herald")
+        self.assertEqual(agents[0]["source"], "attribution")
+
+    def test_dispatch_name_wins_over_attribution(self):
+        """A parent-supplied agentType is authoritative and is never clobbered."""
+        projects = Path(self.tmpdir) / "projects"
+        parent = projects / "user" / "proj"
+        parent.mkdir(parents=True)
+        with open(parent / "sess-1.jsonl", "w") as f:
+            f.write(_dispatch(session_id="sess-1", agent_id="agent-1",
+                              agent_type="Explore") + NL)
+        sub = parent / "subagents"
+        sub.mkdir()
+        with open(sub / "agent-1.jsonl", "w") as f:
+            f.write(_assistant(session_id="sess-1", message_id="m-sub",
+                               extra={"agentId": "agent-1",
+                                      "attributionAgent": "something-else"}) + NL)
+
+        db = Path(self.tmpdir) / "usage.db"
+        scan(projects_dir=projects, db_path=db, verbose=False)
+        conn = sqlite3.connect(db)
+        self.assertEqual(
+            conn.execute("SELECT agent_type FROM agents WHERE agent_id='agent-1'")
+                .fetchone()[0], "Explore")
+        conn.close()
+
+    def test_async_dispatch_is_named_from_attribution(self):
+        """The real-world 'unknown' case: background dispatch, no agentType."""
+        projects = Path(self.tmpdir) / "projects"
+        parent = projects / "user" / "proj"
+        parent.mkdir(parents=True)
+        with open(parent / "sess-1.jsonl", "w") as f:
+            f.write(_async_dispatch(session_id="sess-1", agent_id="agent-9") + NL)
+        sub = parent / "subagents"
+        sub.mkdir()
+        with open(sub / "agent-9.jsonl", "w") as f:
+            f.write(_assistant(session_id="sess-1", message_id="m-sub",
+                               input_tokens=300,
+                               extra={"agentId": "agent-9",
+                                      "attributionAgent": "general-purpose"}) + NL)
+
+        db = Path(self.tmpdir) / "usage.db"
+        scan(projects_dir=projects, db_path=db, verbose=False)
+        conn = sqlite3.connect(db)
+        self.assertEqual(
+            conn.execute("SELECT agent_type FROM agents WHERE agent_id='agent-9'")
+                .fetchone()[0], "general-purpose")
+        conn.close()
+
+    def test_backfill_names_agents_in_already_scanned_db(self):
+        """Files already in processed_files are skipped; the backfill covers them."""
+        projects = Path(self.tmpdir) / "projects"
+        parent = projects / "user" / "proj"
+        parent.mkdir(parents=True)
+        sub = parent / "subagents"
+        sub.mkdir(parents=True)
+        with open(sub / "agent-7.jsonl", "w") as f:
+            f.write(_assistant(session_id="sess-1", message_id="m-sub",
+                               extra={"agentId": "agent-7",
+                                      "attributionAgent": "archivist"}) + NL)
+
+        db = Path(self.tmpdir) / "usage.db"
+        scan(projects_dir=projects, db_path=db, verbose=False)
+
+        # Simulate a DB produced before attribution existed: drop the name and
+        # the backfill marker, leaving processed_files intact.
+        conn = sqlite3.connect(db)
+        conn.execute("DELETE FROM agents")
+        conn.execute("DELETE FROM schema_meta WHERE key='agent_type_backfill_done'")
+        conn.commit()
+        conn.close()
+
+        scan(projects_dir=projects, db_path=db, verbose=False)
+
+        conn = sqlite3.connect(db)
+        self.assertEqual(
+            conn.execute("SELECT agent_type FROM agents WHERE agent_id='agent-7'")
+                .fetchone()[0], "archivist")
         conn.close()
 
 
