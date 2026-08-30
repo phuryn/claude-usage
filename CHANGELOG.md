@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.6 — TBD
+
+### Scanner
+
+- Named subagent dispatches that previously showed as **unknown** in *Top Subagent Dispatches* and the subagent breakdown. The scanner learned an agent's name only from the parent's closing `toolUseResult`, which carries `agentType` only when the dispatch ran **synchronously and completed**; a background (`isAsync`) dispatch logs `status: "async_launched"` with no `agentType`, so every one of them was unnamed. The subagent's own transcript records carry `attributionAgent` alongside `agentId`, so the name is now read from there as well — independent of how the dispatch was launched or whether it finished. A parent-supplied `agentType` still wins where present; attribution only fills gaps.
+- Added a one-time backfill (`agent_type_backfill_done` in `schema_meta`, mirroring the existing topic backfill) so existing databases pick up the names without a full rescan — already-processed transcripts are re-read for `attributionAgent` records only, leaving `turns` untouched so token totals cannot drift.
+
 ## v1.5.5 — 2026-07-10
 
 ### Dashboard

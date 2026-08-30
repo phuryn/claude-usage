@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 # runtime version has to live here as a constant. Keep this in lockstep with the
 # top CHANGELOG heading and vscode-extension/package.json (a parity test guards
 # all three; see tests/test_version.py).
-VERSION = "1.5.5"
+VERSION = "1.5.6"
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 XCODE_PROJECTS_DIR = Path.home() / "Library" / "Developer" / "Xcode" / "CodingAssistant" / "ClaudeAgentConfig" / "projects"
@@ -221,6 +221,50 @@ def _backfill_topics(conn, jsonl_files):
     return len(titles)
 
 
+def _backfill_agent_types(conn, jsonl_files):
+    """One-time backfill of subagent names for a DB scanned before attribution.
+
+    Same shape as _backfill_topics: files already in processed_files are skipped
+    by an incremental scan, so their ``attributionAgent`` records are never seen
+    and those agents keep rendering as 'unknown'. Re-read just those records
+    (turns are left untouched, so token totals cannot drift) and name any agent
+    that has no name yet — including agents with no ``agents`` row at all, which
+    is the usual case for background dispatches. Runs once, gated by a flag in
+    schema_meta (see scan()). Returns the number of agents named.
+    """
+    named = {r["agent_id"] for r in conn.execute(
+        "SELECT agent_id FROM agents WHERE agent_type IS NOT NULL AND agent_type != ''")}
+
+    found = {}  # agent_id -> agent_type
+    for filepath in jsonl_files:
+        try:
+            with open(filepath, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    # Cheap prefilter: skip JSON-parsing lines that cannot match.
+                    if "attributionAgent" not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    attribution = extract_agent_attribution(record)
+                    if attribution is None:
+                        continue
+                    if attribution["agent_id"] in named:
+                        continue
+                    found.setdefault(attribution["agent_id"], attribution["agent_type"])
+        except Exception as e:
+            print(f"  Warning: error reading {filepath}: {e}")
+
+    if found:
+        upsert_agents(conn, [
+            {"source": "attribution", "agent_id": aid, "agent_type": atype}
+            for aid, atype in found.items()
+        ])
+        conn.commit()
+    return len(found)
+
+
 def project_name_from_cwd(cwd):
     """Derive a friendly project name from cwd path."""
     if not cwd:
@@ -278,6 +322,7 @@ def extract_agent_dispatch(record):
     if not agent_id or not agent_type:
         return None
     return {
+        "source": "dispatch",
         "agent_id": agent_id,
         "agent_type": agent_type,
         "dispatched_in_session": record.get("sessionId"),
@@ -289,29 +334,76 @@ def extract_agent_dispatch(record):
     }
 
 
+def extract_agent_attribution(record):
+    """Pull the subagent's name off one of its *own* transcript records.
+
+    ``extract_agent_dispatch`` reads the parent's closing ``toolUseResult``,
+    which only carries ``agentType`` when the dispatch ran synchronously and
+    completed. A background dispatch (``isAsync``) logs a launch record with
+    ``status: 'async_launched'`` and no ``agentType`` at all, so those agents
+    end up with no row in ``agents`` and render as 'unknown'.
+
+    Every assistant record inside the subagent's own jsonl carries
+    ``attributionAgent`` (the same human-readable name: 'general-purpose',
+    'Explore', a plugin agent like 'health:coach') alongside ``agentId``, so
+    the name is recoverable regardless of how the dispatch was launched or
+    whether it ever finished. This yields a name-only record; the parent's
+    dispatch record remains the source for stats and status.
+    """
+    agent_type = record.get("attributionAgent")
+    if not agent_type:
+        return None
+    agent_id = record_agent_id(record)
+    if not agent_id:
+        return None
+    return {"source": "attribution", "agent_id": agent_id, "agent_type": agent_type}
+
+
 def upsert_agents(conn, agents):
-    """Insert or update agent dispatch metadata. Last write wins per agent_id."""
+    """Insert or update agent metadata, routed by each record's ``source``.
+
+    Full dispatch records (from the parent's ``toolUseResult``) overwrite every
+    column — last write wins per agent_id, as before. Attribution records carry
+    a name only, and never clobber a name already learned from a dispatch.
+    Dispatches are applied first so that ordering is independent of the order
+    files happen to be scanned in.
+    """
     if not agents:
         return
-    conn.executemany("""
-        INSERT INTO agents
-            (agent_id, agent_type, dispatched_in_session, completed_at,
-             status, total_tokens, total_duration_ms, tool_use_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(agent_id) DO UPDATE SET
-            agent_type            = excluded.agent_type,
-            dispatched_in_session = excluded.dispatched_in_session,
-            completed_at          = excluded.completed_at,
-            status                = excluded.status,
-            total_tokens          = excluded.total_tokens,
-            total_duration_ms     = excluded.total_duration_ms,
-            tool_use_count        = excluded.tool_use_count
-    """, [
-        (a["agent_id"], a["agent_type"], a.get("dispatched_in_session"),
-         a.get("completed_at"), a.get("status"),
-         a.get("total_tokens"), a.get("total_duration_ms"), a.get("tool_use_count"))
-        for a in agents
-    ])
+
+    dispatches = [a for a in agents if a.get("source", "dispatch") != "attribution"]
+    attributions = [a for a in agents if a.get("source") == "attribution"]
+
+    if dispatches:
+        conn.executemany("""
+            INSERT INTO agents
+                (agent_id, agent_type, dispatched_in_session, completed_at,
+                 status, total_tokens, total_duration_ms, tool_use_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(agent_id) DO UPDATE SET
+                agent_type            = excluded.agent_type,
+                dispatched_in_session = excluded.dispatched_in_session,
+                completed_at          = excluded.completed_at,
+                status                = excluded.status,
+                total_tokens          = excluded.total_tokens,
+                total_duration_ms     = excluded.total_duration_ms,
+                tool_use_count        = excluded.tool_use_count
+        """, [
+            (a["agent_id"], a["agent_type"], a.get("dispatched_in_session"),
+             a.get("completed_at"), a.get("status"),
+             a.get("total_tokens"), a.get("total_duration_ms"), a.get("tool_use_count"))
+            for a in dispatches
+        ])
+
+    if attributions:
+        # COALESCE(NULLIF(...)) keeps an existing dispatch-derived name; it only
+        # fills a row that has none (or that this statement just created).
+        conn.executemany("""
+            INSERT INTO agents (agent_id, agent_type)
+            VALUES (?, ?)
+            ON CONFLICT(agent_id) DO UPDATE SET
+                agent_type = COALESCE(NULLIF(agents.agent_type, ''), excluded.agent_type)
+        """, [(a["agent_id"], a["agent_type"]) for a in attributions])
 
 
 def parse_jsonl_file(filepath):
@@ -371,6 +463,10 @@ def parse_jsonl_file(filepath):
                     dispatch = extract_agent_dispatch(record)
                     if dispatch is not None:
                         agents[dispatch["agent_id"]] = dispatch
+
+                attribution = extract_agent_attribution(record)
+                if attribution is not None:
+                    agents.setdefault(attribution["agent_id"], attribution)
 
                 timestamp = record.get("timestamp", "")
                 cwd = record.get("cwd", "")
@@ -606,6 +702,16 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
         if verbose and filled:
             print(f"Backfilled topic for {filled} existing session(s).")
 
+    # Same for subagent names: DBs scanned before attributionAgent was read have
+    # unnamed agents (shown as 'unknown') that an incremental scan would never
+    # revisit. No-ops on a fresh DB, where the agents table is still empty.
+    if _meta_get(conn, "agent_type_backfill_done") != "1":
+        named = _backfill_agent_types(conn, jsonl_files)
+        _meta_set(conn, "agent_type_backfill_done", "1")
+        conn.commit()
+        if verbose and named:
+            print(f"Backfilled name for {named} existing subagent dispatch(es).")
+
     new_files = 0
     updated_files = 0
     skipped_files = 0
@@ -700,6 +806,10 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                             dispatch = extract_agent_dispatch(record)
                             if dispatch is not None:
                                 agents[dispatch["agent_id"]] = dispatch
+
+                        attribution = extract_agent_attribution(record)
+                        if attribution is not None:
+                            agents.setdefault(attribution["agent_id"], attribution)
 
                         timestamp = record.get("timestamp", "")
                         cwd = record.get("cwd", "")
