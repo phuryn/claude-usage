@@ -50,7 +50,7 @@ claude-usage dashboard
 
 > Homebrew has disabled installing a formula from an arbitrary raw URL, so tap the repo first (thanks @adrianlungu for the working incantation in #46).
 
-After install, the `claude-usage` command is on your `PATH` and accepts the same subcommands as `python cli.py` (`scan`, `today`, `stats`, `dashboard`).
+After install, the `claude-usage` command is on your `PATH` and accepts the same subcommands as `python cli.py` (`scan`, `today`, `week`, `stats`, `breakdown`, `dashboard`).
 
 ### Any OS (uv tool / pipx)
 ```
@@ -105,6 +105,13 @@ python cli.py week
 
 # Show all-time statistics (in terminal)
 python cli.py stats
+
+# Break usage down by agent, skill, MCP server, or thread type (active/background),
+# crossed with model, day, or month
+python cli.py breakdown --by agent --group model
+python cli.py breakdown --by skill --group day --days 30
+python cli.py breakdown --by mcp
+python cli.py breakdown --by thread --group month
 
 # Scan + open browser dashboard at http://localhost:8080
 python cli.py dashboard

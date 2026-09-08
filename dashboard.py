@@ -219,6 +219,120 @@ def get_dashboard_data(db_path=DB_PATH):
         "status":         r["status"],
     } for r in top_dispatch_rows]
 
+    # ── Generalized breakdown: agent / skill / mcp / thread-type, by day & model ──
+    # One flat row set the client aggregates by category and/or by day/month/model,
+    # mirroring how daily_by_model already gets re-aggregated client-side. Each
+    # dimension's category expression normalizes to a single 'category' column so
+    # the JS side can treat all four dimensions identically.
+    BREAKDOWN_DIMENSIONS = {
+        "agent":  ("COALESCE(NULLIF(t.attribution_agent, ''), 'none')", "t.attribution_agent IS NOT NULL AND t.attribution_agent != ''"),
+        "skill":  ("COALESCE(NULLIF(t.attribution_skill, ''), 'none')", "t.attribution_skill IS NOT NULL AND t.attribution_skill != ''"),
+        "mcp":    ("COALESCE(NULLIF(t.mcp_server, ''), 'none')",        "t.mcp_server IS NOT NULL AND t.mcp_server != ''"),
+        "thread": ("COALESCE(t.thread_type, 'active')",                 "1=1"),
+    }
+
+    breakdown_rows = []
+    for dimension, (cat_expr, presence_filter) in BREAKDOWN_DIMENSIONS.items():
+        dim_rows = conn.execute(f"""
+            SELECT
+                substr(t.timestamp, 1, 10)               as day,
+                {cat_expr}                                as category,
+                COALESCE(NULLIF(t.model, ''), 'unknown')  as model,
+                SUM(t.input_tokens)                       as input,
+                SUM(t.output_tokens)                      as output,
+                SUM(t.cache_read_tokens)                  as cache_read,
+                SUM(t.cache_creation_tokens)               as cache_creation,
+                COUNT(*)                                  as turns
+            FROM turns t
+            WHERE {presence_filter}
+            GROUP BY day, category, model
+        """).fetchall()
+        for r in dim_rows:
+            breakdown_rows.append({
+                "dimension":      dimension,
+                "day":            r["day"],
+                "category":       r["category"],
+                "model":          r["model"],
+                "input":          r["input"] or 0,
+                "output":         r["output"] or 0,
+                "cache_read":     r["cache_read"] or 0,
+                "cache_creation": r["cache_creation"] or 0,
+                "turns":          r["turns"] or 0,
+            })
+
+    # ── Activity split: one mutually-exclusive category per turn, by day & model ──
+    # breakdown_rows above lets a turn appear under *multiple* dimensions at once
+    # (e.g. a subagent turn that also called an MCP tool counts under both
+    # 'agent' and 'mcp') — summing those together would double-count. The
+    # Active/Agent/Skill/MCP pie needs slices that sum to the true total, so this
+    # assigns each turn to exactly one bucket, in priority order: a subagent turn
+    # is 'Agent' (regardless of whether it also used a skill/MCP tool), else a
+    # skill invocation is 'Skill', else an MCP tool call is 'MCP', else it's a
+    # plain human-driven 'Active' turn. Hooks aren't included: Claude Code hooks
+    # are local shell commands that run outside the model call — they carry no
+    # token cost of their own and never appear as an attributable field in the
+    # JSONL transcripts, so there's nothing to attribute a cost to.
+    ACTIVITY_CATEGORY_EXPR = """
+        CASE
+            WHEN t.is_subagent = 1 THEN 'Agent'
+            WHEN t.attribution_skill IS NOT NULL AND t.attribution_skill != '' THEN 'Skill'
+            WHEN t.mcp_server IS NOT NULL AND t.mcp_server != '' THEN 'MCP'
+            ELSE 'Active'
+        END
+    """
+    activity_daily_rows = conn.execute(f"""
+        SELECT
+            substr(t.timestamp, 1, 10)               as day,
+            {ACTIVITY_CATEGORY_EXPR}                  as category,
+            COALESCE(NULLIF(t.model, ''), 'unknown')  as model,
+            SUM(t.input_tokens)                       as input,
+            SUM(t.output_tokens)                      as output,
+            SUM(t.cache_read_tokens)                  as cache_read,
+            SUM(t.cache_creation_tokens)               as cache_creation,
+            COUNT(*)                                  as turns
+        FROM turns t
+        GROUP BY day, category, model
+    """).fetchall()
+    activity_by_category = [{
+        "day":            r["day"],
+        "category":       r["category"],
+        "model":          r["model"],
+        "input":          r["input"] or 0,
+        "output":         r["output"] or 0,
+        "cache_read":     r["cache_read"] or 0,
+        "cache_creation": r["cache_creation"] or 0,
+        "turns":          r["turns"] or 0,
+    } for r in activity_daily_rows]
+
+    # ── Context injected by hooks, by day & hook ──────────────────────────────
+    # One row per (day, hook_name, hook_event, command); hook_name already
+    # includes the matcher (e.g. "SessionStart:startup", "PreToolUse:Bash"), so
+    # it's the most specific stable label a hook has. Note there is no
+    # per-skill/per-agent breakdown here: Claude Code's hook_success records
+    # identify the hook script that ran, not which skill/plugin's content it
+    # happened to print — a single SessionStart hook can (and in practice does)
+    # concatenate several plugins' loader banners into one injection.
+    hook_rows = conn.execute("""
+        SELECT
+            substr(timestamp, 1, 10)                    as day,
+            COALESCE(NULLIF(hook_name, ''), 'unknown')   as hook_name,
+            COALESCE(NULLIF(hook_event, ''), 'unknown')  as hook_event,
+            COALESCE(NULLIF(command, ''), '')            as command,
+            SUM(injected_chars)                          as chars,
+            COUNT(*)                                     as events
+        FROM hook_events
+        GROUP BY day, hook_name, hook_event, command
+        ORDER BY day
+    """).fetchall()
+    hook_injections = [{
+        "day":        r["day"],
+        "hook_name":  r["hook_name"],
+        "hook_event": r["hook_event"],
+        "command":    r["command"],
+        "chars":      r["chars"] or 0,
+        "events":     r["events"] or 0,
+    } for r in hook_rows]
+
     conn.close()
 
     return {
@@ -228,6 +342,9 @@ def get_dashboard_data(db_path=DB_PATH):
         "sessions_all":    sessions_all,
         "subagent_by_type": subagent_by_type,
         "top_dispatches":  top_dispatches,
+        "breakdown_rows":  breakdown_rows,
+        "activity_by_category": activity_by_category,
+        "hook_injections": hook_injections,
         "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -368,6 +485,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .section-header .section-title { margin-bottom: 0; }
   .export-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 3px 10px; border-radius: 5px; cursor: pointer; font-size: 11px; }
   .export-btn:hover { color: var(--text); border-color: var(--accent); }
+  .breakdown-controls { display: flex; align-items: center; gap: 8px; }
+  .breakdown-controls select { appearance: none; -webkit-appearance: none; padding: 4px 26px 4px 8px; background: var(--card); border: 1px solid var(--border); border-radius: 5px; color: var(--text); font-size: 11px; cursor: pointer; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0l5 6 5-6z' fill='%23888'/></svg>"); background-repeat: no-repeat; background-position: right 8px center; }
   .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
   .table-foot { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 12px; }
   .table-foot:empty { margin-top: 0; }
@@ -488,7 +607,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <button class="jump-link" data-target="sec-hourly">Distribution</button>
       <button class="jump-link" data-target="sec-models">By Model</button>
       <button class="jump-link" data-target="sec-projects">Top Projects</button>
+      <button class="jump-link" data-target="sec-hooks">Hooks</button>
+      <button class="jump-link" data-target="sec-hooks-source">Hooks by Source</button>
       <button class="jump-link" data-target="sec-subagents">Subagents</button>
+      <button class="jump-link" data-target="sec-thread-pie">Active/Background</button>
+      <button class="jump-link" data-target="sec-activity-pie">Activity Split</button>
     </div>
   </div>
   <div class="jump-menu jump-menu-end">
@@ -497,6 +620,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       Tables <span class="jump-caret">&#9662;</span>
     </button>
     <div class="jump-panel">
+      <button class="jump-link" data-target="sec-breakdown">Breakdown</button>
       <button class="jump-link" data-target="sec-cost-model">Cost by Model</button>
       <button class="jump-link" data-target="sec-dispatches">Dispatches</button>
       <button class="jump-link" data-target="sec-sessions">Sessions</button>
@@ -535,10 +659,54 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <h2><span class="card-caret">&#9656;</span>Top Projects by Tokens</h2>
       <div class="chart-wrap"><canvas id="chart-project"></canvas></div>
     </div>
+    <div class="chart-card wide" id="sec-hooks" data-card="hooks-chart">
+      <h2><span class="card-caret">&#9656;</span><span id="hooks-chart-title">Context Injected by Hooks</span> <span class="info-icon" tabindex="0" role="img" aria-label="About this chart" title="Measures the size (characters) of additionalContext each hook injects into the model's context — not a dollar cost, hook injections aren't billed separately. Labeled by hook (event:matcher) — see the chart below to break this down by the plugin/script actually responsible. Hooks with no additionalContext (most PreToolUse/PostToolUse pass/fail gates) inject nothing measurable and don't appear."><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></h2>
+      <div class="chart-wrap"><canvas id="chart-hooks"></canvas></div>
+    </div>
+    <div class="chart-card wide" id="sec-hooks-source" data-card="hooks-source-chart">
+      <h2><span class="card-caret">&#9656;</span><span id="hooks-source-chart-title">Context Injected — by Plugin / Hook Script</span> <span class="info-icon" tabindex="0" role="img" aria-label="About this chart" title="Drills the chart above down by the command each hook actually ran (its plugin/skill script), not just the event:matcher name — several plugins can share a hook_name like SessionStart:startup, so this is what actually separates 'how much is agent X injecting' from 'how much is agent Y injecting'. There is no true agent/skill/mcp field on hook records; the script path is the closest identity Claude Code's transcripts carry. MCP servers don't hook SessionStart, so they never appear here — see Cost by Activity above for MCP's share of turn cost instead."><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></h2>
+      <div class="chart-wrap"><canvas id="chart-hooks-source"></canvas></div>
+    </div>
     <div class="chart-card wide" id="sec-subagents" data-card="subagent-chart">
       <h2><span class="card-caret">&#9656;</span><span id="subagent-chart-title">Subagent Tokens by Type</span></h2>
       <div class="chart-wrap"><canvas id="chart-subagent"></canvas></div>
     </div>
+    <div class="chart-card" id="sec-thread-pie" data-card="thread-pie">
+      <h2><span class="card-caret">&#9656;</span><span id="thread-pie-title">Cost by Thread Type</span></h2>
+      <div class="chart-wrap"><canvas id="chart-thread-pie"></canvas></div>
+    </div>
+    <div class="chart-card" id="sec-activity-pie" data-card="activity-pie">
+      <h2><span class="card-caret">&#9656;</span><span id="activity-pie-title">Cost by Activity</span> <span class="info-icon" tabindex="0" role="img" aria-label="About this chart" title="Each turn counts once, in priority order: Agent (dispatched subagent) > Skill > MCP > Active (a plain human-driven turn). Hooks aren't shown — they're local shell commands that run outside the model call, so they carry no token cost and never appear in the transcripts."><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></h2>
+      <div class="chart-wrap"><canvas id="chart-activity-pie"></canvas></div>
+    </div>
+  </div>
+  <div class="table-card" id="sec-breakdown" data-card="breakdown">
+    <div class="section-header">
+      <div class="section-title"><span class="card-caret">&#9656;</span>Usage Breakdown</div>
+      <div class="breakdown-controls">
+        <select id="breakdown-dim-select" onchange="setBreakdownDim(this.value)" title="What to break usage down by">
+          <option value="agent">By Agent</option>
+          <option value="skill">By Skill</option>
+          <option value="mcp">By MCP Server</option>
+          <option value="thread">By Thread Type (active/background)</option>
+        </select>
+        <select id="breakdown-group-select" onchange="setBreakdownGroup(this.value)" title="How to split each category">
+          <option value="model">Split by Model</option>
+          <option value="day">Split by Day</option>
+          <option value="month">Split by Month</option>
+        </select>
+        <button class="export-btn" onclick="exportBreakdownCSV()" title="Export this breakdown to CSV">&#x2913; CSV</button>
+      </div>
+    </div>
+    <table>
+      <thead><tr>
+        <th id="breakdown-th-category">Agent</th>
+        <th id="breakdown-th-group">Model</th>
+        <th>Turns</th><th>Input</th><th>Output</th><th>Est. Cost</th><th>% of Total</th>
+      </tr></thead>
+      <tbody id="breakdown-body"></tbody>
+    </table>
+    <div class="table-foot" id="breakdown-foot"></div>
   </div>
   <div class="table-card" id="sec-cost-model" data-card="cost-by-model">
     <div class="section-title"><span class="card-caret">&#9656;</span>Cost by Model</div>
@@ -551,6 +719,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th class="sortable" onclick="setModelSort('cache_read')">Cache Read <span class="sort-icon" id="msort-cache_read"></span></th>
         <th class="sortable" onclick="setModelSort('cache_creation')">Cache Creation <span class="sort-icon" id="msort-cache_creation"></span></th>
         <th class="sortable" onclick="setModelSort('cost')">Est. Cost <span class="sort-icon" id="msort-cost"></span></th>
+        <th>% of Total</th>
       </tr></thead>
       <tbody id="model-cost-body"></tbody>
     </table>
@@ -561,7 +730,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <table>
       <thead><tr>
         <th>Type</th><th>Started</th><th>Model</th><th>Turns</th><th>Tool Uses</th>
-        <th>Duration</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Tokens</th><th>Est. Cost</th>
+        <th>Duration</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Tokens</th><th>Est. Cost</th><th>% of Total</th>
       </tr></thead>
       <tbody id="dispatches-body"></tbody>
     </table>
@@ -581,6 +750,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th class="sortable" onclick="setSessionSort('input')">Input <span class="sort-icon" id="sort-icon-input"></span></th>
         <th class="sortable" onclick="setSessionSort('output')">Output <span class="sort-icon" id="sort-icon-output"></span></th>
         <th class="sortable" onclick="setSessionSort('cost')">Est. Cost <span class="sort-icon" id="sort-icon-cost"></span></th>
+        <th>% of Total</th>
       </tr></thead>
       <tbody id="sessions-body"></tbody>
     </table>
@@ -596,6 +766,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th class="sortable" onclick="setProjectSort('input')">Input <span class="sort-icon" id="psort-input"></span></th>
         <th class="sortable" onclick="setProjectSort('output')">Output <span class="sort-icon" id="psort-output"></span></th>
         <th class="sortable" onclick="setProjectSort('cost')">Est. Cost <span class="sort-icon" id="psort-cost"></span></th>
+        <th>% of Total</th>
       </tr></thead>
       <tbody id="project-cost-body"></tbody>
     </table>
@@ -612,6 +783,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th class="sortable" onclick="setProjectBranchSort('input')">Input <span class="sort-icon" id="pbsort-input"></span></th>
         <th class="sortable" onclick="setProjectBranchSort('output')">Output <span class="sort-icon" id="pbsort-output"></span></th>
         <th class="sortable" onclick="setProjectBranchSort('cost')">Est. Cost <span class="sort-icon" id="pbsort-cost"></span></th>
+        <th>% of Total</th>
       </tr></thead>
       <tbody id="project-branch-cost-body"></tbody>
     </table>
@@ -659,6 +831,11 @@ let lastByModel = [];
 let lastByProject = [];
 let lastByProjectBranch = [];
 let lastFilteredDispatches = [];
+let breakdownDim = 'agent';     // 'agent' | 'skill' | 'mcp' | 'thread'
+let breakdownGroup = 'model';   // 'model' | 'day' | 'month'
+let lastBreakdownRows = [];
+const BREAKDOWN_DIM_LABELS = { agent: 'Agent', skill: 'Skill', mcp: 'MCP Server', thread: 'Thread Type' };
+const BREAKDOWN_GROUP_LABELS = { model: 'Model', day: 'Day', month: 'Month' };
 let sessionSortDir = 'desc';
 
 // Tables reveal rows in steps: 10 -> 25 -> 50, capped at 50 because rendering
@@ -689,6 +866,7 @@ let sessionsLimit = TABLE_STEPS[0];
 let projectLimit = TABLE_STEPS[0];
 let branchLimit = TABLE_STEPS[0];
 let dispatchesLimit = TABLE_STEPS[0];
+let breakdownLimit = TABLE_STEPS[0];
 let hourlyTZ = 'local';  // 'local' or 'utc'
 
 // ── Peak-hour config ───────────────────────────────────────────────────────
@@ -782,6 +960,25 @@ function calcCost(model, inp, out, cacheRead, cacheCreation) {
   );
 }
 
+// Cache-only slice of calcCost (cache read + cache write), for the Cache Cost
+// stat card — same per-model pricing, just without the input/output terms.
+function calcCacheCost(model, cacheRead, cacheCreation) {
+  if (!isBillable(model)) return 0;
+  const p = getPricing(model);
+  if (!p) return 0;
+  return cacheRead * p.cache_read / 1e6 + cacheCreation * p.cache_write / 1e6;
+}
+
+// Input/output-only slice of calcCost — the complement of calcCacheCost, so
+// tokenCost + cacheCost always equals the full cost (see the Token Cost /
+// Cache Cost stat cards).
+function calcTokenCost(model, inp, out) {
+  if (!isBillable(model)) return 0;
+  const p = getPricing(model);
+  if (!p) return 0;
+  return inp * p.input / 1e6 + out * p.output / 1e6;
+}
+
 // ── Formatting ─────────────────────────────────────────────────────────────
 function fmt(n) {
   if (n >= 1e9) return (n/1e9).toFixed(2)+'B';
@@ -791,6 +988,7 @@ function fmt(n) {
 }
 function fmtCost(c)    { return '$' + c.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 }); }
 function fmtCostBig(c) { return '$' + c.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function pct(part, whole) { return whole ? Math.round((part || 0) / whole * 100) + '%' : '0%'; }
 
 // ── Chart colors ───────────────────────────────────────────────────────────
 // Warm/neutral palette kept in sync with the CSS :root variables so charts match
@@ -868,7 +1066,7 @@ Chart.defaults.plugins.tooltip.callbacks.labelColor = (ctx) => {
 // series the user toggled off. We track hidden series by label per chart and
 // reapply on rebuild: dataset charts via `dataset.hidden`, the doughnut via
 // per-slice data visibility (see applyModelHidden).
-const hiddenSeries = { daily: new Set(), hourly: new Set(), project: new Set(), model: new Set(), subagent: new Set() };
+const hiddenSeries = { daily: new Set(), hourly: new Set(), project: new Set(), model: new Set(), subagent: new Set(), threadPie: new Set(), activityPie: new Set() };
 function legendToggle(key) {
   return (e, item, legend) => {
     const ci = legend.chart;
@@ -949,6 +1147,16 @@ function setHourlyTZ(mode) {
   document.querySelectorAll('.tz-btn').forEach(btn =>
     btn.classList.toggle('active', btn.dataset.tz === mode)
   );
+  applyFilter();
+}
+
+function setBreakdownDim(dim) {
+  breakdownDim = dim;
+  applyFilter();
+}
+
+function setBreakdownGroup(group) {
+  breakdownGroup = group;
   applyFilter();
 }
 
@@ -1243,6 +1451,63 @@ function applyFilter() {
   }
   const byProjectBranch = Object.values(projBranchMap).sort((a, b) => b.cost - a.cost);
 
+  // Cost by thread type (active/background) — thread_type is already a
+  // mutually-exclusive partition of every turn, so this reuses breakdown_rows
+  // directly rather than needing its own query.
+  const threadCostMap = {};
+  for (const r of (rawData.breakdown_rows || [])) {
+    if (r.dimension !== 'thread') continue;
+    if (!selectedModels.has(r.model)) continue;
+    if (start && r.day < start) continue;
+    if (end && r.day > end) continue;
+    if (!threadCostMap[r.category]) threadCostMap[r.category] = { category: r.category, cost: 0, turns: 0 };
+    threadCostMap[r.category].cost += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation);
+    threadCostMap[r.category].turns += r.turns;
+  }
+  const byThreadCost = Object.values(threadCostMap).sort((a, b) => b.cost - a.cost);
+  const activeCost = threadCostMap.active ? threadCostMap.active.cost : 0;
+  const backgroundCost = threadCostMap.background ? threadCostMap.background.cost : 0;
+
+  // Cost by activity (Active/Agent/Skill/MCP) — one mutually-exclusive category
+  // per turn, computed server-side (see activity_by_category / ACTIVITY_CATEGORY_EXPR
+  // in get_dashboard_data) so the slices sum to the true total.
+  const activityCostMap = {};
+  for (const r of (rawData.activity_by_category || [])) {
+    if (!selectedModels.has(r.model)) continue;
+    if (start && r.day < start) continue;
+    if (end && r.day > end) continue;
+    if (!activityCostMap[r.category]) activityCostMap[r.category] = { category: r.category, cost: 0, turns: 0 };
+    activityCostMap[r.category].cost += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation);
+    activityCostMap[r.category].turns += r.turns;
+  }
+  const byActivityCost = Object.values(activityCostMap).sort((a, b) => b.cost - a.cost);
+
+  // Context injected by hooks (filtered by range only — hooks have no model).
+  const hookMap = {};
+  for (const r of (rawData.hook_injections || [])) {
+    if (start && r.day < start) continue;
+    if (end && r.day > end) continue;
+    if (!hookMap[r.hook_name]) hookMap[r.hook_name] = { hook_name: r.hook_name, hook_event: r.hook_event, chars: 0, events: 0 };
+    hookMap[r.hook_name].chars += r.chars;
+    hookMap[r.hook_name].events += r.events;
+  }
+  const byHook = Object.values(hookMap).sort((a, b) => b.chars - a.chars);
+
+  // Same data, drilled down by the hook's actual command (its plugin/skill
+  // script) instead of hook_name — several plugins can share a hook_name like
+  // "SessionStart:startup", so this is what actually separates one plugin's
+  // injection from another's.
+  const hookSourceMap = {};
+  for (const r of (rawData.hook_injections || [])) {
+    if (start && r.day < start) continue;
+    if (end && r.day > end) continue;
+    const key = r.command || 'unknown';
+    if (!hookSourceMap[key]) hookSourceMap[key] = { command: key, chars: 0, events: 0 };
+    hookSourceMap[key].chars += r.chars;
+    hookSourceMap[key].events += r.events;
+  }
+  const byHookSource = Object.values(hookSourceMap).sort((a, b) => b.chars - a.chars);
+
   // Totals
   const totals = {
     sessions:       filteredSessions.length,
@@ -1252,9 +1517,13 @@ function applyFilter() {
     cache_read:     byModel.reduce((s, m) => s + m.cache_read, 0),
     cache_creation: byModel.reduce((s, m) => s + m.cache_creation, 0),
     cost:           byModel.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0),
+    cacheCost:      byModel.reduce((s, m) => s + calcCacheCost(m.model, m.cache_read, m.cache_creation), 0),
+    tokenCost:      byModel.reduce((s, m) => s + calcTokenCost(m.model, m.input, m.output), 0),
     subagent_tokens: (rawData.subagent_by_type || [])
       .filter(r => selectedModels.has(r.model) && (!start || r.day >= start) && (!end || r.day <= end))
       .reduce((s, r) => s + r.input + r.output + r.cache_read + r.cache_creation, 0),
+    activeCost,
+    backgroundCost,
   };
 
   // Hourly aggregation (filtered by model + range, then bucketed by UTC hour)
@@ -1280,6 +1549,46 @@ function applyFilter() {
     (b.input + b.output + b.cache_read + b.cache_creation) -
     (a.input + a.output + a.cache_read + a.cache_creation));
 
+  // Usage breakdown: category (agent/skill/mcp/thread) x group (model/day/month),
+  // filtered by range + selected models. Grouping by 'day' skips the range filter
+  // on the bucket itself (the bucket *is* the day), 'month' re-buckets days into
+  // "YYYY-MM", and 'model' collapses everything into one row per category.
+  const breakdownMap = {};
+  for (const r of (rawData.breakdown_rows || [])) {
+    if (r.dimension !== breakdownDim) continue;
+    if (!selectedModels.has(r.model)) continue;
+    if (start && r.day < start) continue;
+    if (end && r.day > end) continue;
+    const bucket = breakdownGroup === 'model' ? r.model
+                 : breakdownGroup === 'month' ? r.day.slice(0, 7)
+                 : r.day;
+    const key = r.category + '\x00' + bucket;
+    if (!breakdownMap[key]) {
+      breakdownMap[key] = { category: r.category, bucket, model: breakdownGroup === 'model' ? r.model : null, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0, cost: 0 };
+    }
+    const b = breakdownMap[key];
+    b.input          += r.input;
+    b.output         += r.output;
+    b.cache_read     += r.cache_read;
+    b.cache_creation += r.cache_creation;
+    b.turns          += r.turns;
+    b.cost           += calcCost(r.model, r.input, r.output, r.cache_read, r.cache_creation);
+  }
+  const breakdownTable = Object.values(breakdownMap);
+  // Rank categories by total tokens desc, keeping each category's buckets together
+  // and sorted (models by tokens desc, day/month chronologically).
+  const catTotals = {};
+  for (const r of breakdownTable) {
+    catTotals[r.category] = (catTotals[r.category] || 0) + r.input + r.output;
+  }
+  breakdownTable.sort((a, b) => {
+    const ct = catTotals[b.category] - catTotals[a.category];
+    if (ct !== 0) return ct;
+    if (a.category !== b.category) return a.category < b.category ? -1 : 1;
+    if (breakdownGroup === 'model') return (b.input + b.output) - (a.input + a.output);
+    return a.bucket < b.bucket ? -1 : a.bucket > b.bucket ? 1 : 0;
+  });
+
   // Top dispatches: filter by range + selected model. Keep the full filtered set
   // (already ranked by tokens server-side) so the table can page it like Recent
   // Sessions — show more/less plus CSV export of everything.
@@ -1291,6 +1600,10 @@ function applyFilter() {
   document.getElementById('daily-chart-title').textContent = 'Daily Token Usage \u2014 ' + RANGE_LABELS[selectedRange];
   document.getElementById('hourly-chart-title').textContent = 'Average Hourly Distribution \u2014 ' + RANGE_LABELS[selectedRange];
   document.getElementById('subagent-chart-title').textContent = 'Subagent Tokens by Type \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('thread-pie-title').textContent = 'Cost by Thread Type \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('activity-pie-title').textContent = 'Cost by Activity \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('hooks-chart-title').textContent = 'Context Injected by Hooks \u2014 ' + RANGE_LABELS[selectedRange];
+  document.getElementById('hooks-source-chart-title').textContent = 'Context Injected \u2014 by Plugin / Hook Script \u2014 ' + RANGE_LABELS[selectedRange];
 
   renderStats(totals);
   renderDailyChart(daily);
@@ -1298,6 +1611,10 @@ function applyFilter() {
   renderModelChart(byModel);
   renderProjectChart(byProject);
   renderSubagentChart(byAgentType);
+  renderThreadPieChart(byThreadCost);
+  renderActivityPieChart(byActivityCost);
+  renderHooksChart(byHook);
+  renderHooksSourceChart(byHookSource);
   lastFilteredDispatches = filteredDispatches;
   renderTopDispatches(lastFilteredDispatches);
   lastFilteredSessions = sortSessions(filteredSessions);
@@ -1308,6 +1625,8 @@ function applyFilter() {
   renderModelCostTable(lastByModel);
   renderProjectCostTable(lastByProject);
   renderProjectBranchCostTable(lastByProjectBranch);
+  lastBreakdownRows = breakdownTable;
+  renderBreakdownTable(lastBreakdownRows);
 }
 
 // ── Renderers ──────────────────────────────────────────────────────────────
@@ -1321,7 +1640,11 @@ function renderStats(t) {
     { label: 'Subagent Tokens', value: fmt(t.subagent_tokens || 0), sub: 'included in totals' },
     { label: 'Cache Read',     value: fmt(t.cache_read),           sub: 'from prompt cache' },
     { label: 'Cache Creation', value: fmt(t.cache_creation),       sub: 'writes to prompt cache' },
+    { label: 'Token Cost',     value: fmtCostBig(t.tokenCost || 0), sub: t.cost ? pct(t.tokenCost, t.cost) + ' of total' : 'input + output', color: C.purple },
+    { label: 'Cache Cost',     value: fmtCostBig(t.cacheCost || 0), sub: t.cost ? pct(t.cacheCost, t.cost) + ' of total' : 'read + creation', color: C.teal },
     { label: 'Est. Cost',      value: fmtCostBig(t.cost),          sub: 'API pricing, June 2026', color: C.green },
+    { label: 'Active Cost',     value: fmtCostBig(t.activeCost || 0),     sub: t.cost ? pct(t.activeCost, t.cost) + ' of total' : rangeLabel, color: C.blue },
+    { label: 'Background Cost', value: fmtCostBig(t.backgroundCost || 0), sub: t.cost ? pct(t.backgroundCost, t.cost) + ' of total' : rangeLabel, color: C.accent },
   ];
   document.getElementById('stats-row').innerHTML = stats.map(s => `
     <div class="stat-card">
@@ -1424,10 +1747,11 @@ function renderHourlyChart(agg) {
               return h.peak ? base + ' · Peak — Anthropic US hours' : base;
             },
             label: (item) => {
+              const seriesTotal = item.dataset.data.reduce((s, v) => s + v, 0);
               if (item.dataset.label && item.dataset.label.indexOf('turns') !== -1) {
-                return ' Avg turns: ' + item.parsed.y.toFixed(2);
+                return ' Avg turns: ' + item.parsed.y.toFixed(2) + ' (' + pct(item.parsed.y, seriesTotal) + ' of 24h avg)';
               }
-              return ' Avg output: ' + fmt(item.parsed.y);
+              return ' Avg output: ' + fmt(item.parsed.y) + ' (' + pct(item.parsed.y, seriesTotal) + ' of 24h avg)';
             },
           }
         },
@@ -1461,9 +1785,12 @@ function renderDailyChart(daily) {
       plugins: {
         legend: { onClick: legendToggle('daily'), labels: { color: C.axis, boxWidth: 12 } },
         tooltip: { callbacks: {
-          label: item => item.dataset.label === 'Est. Cost'
-            ? ` Est. Cost: ${fmtCost(item.raw)}`
-            : ` ${item.dataset.label}: ${fmt(item.raw)}`
+          label: item => {
+            const seriesTotal = item.dataset.data.reduce((s, v) => s + v, 0);
+            return item.dataset.label === 'Est. Cost'
+              ? ` Est. Cost: ${fmtCost(item.raw)} (${pct(item.raw, seriesTotal)} of shown period)`
+              : ` ${item.dataset.label}: ${fmt(item.raw)} (${pct(item.raw, seriesTotal)} of shown period)`;
+          }
         }}
       },
       scales: {
@@ -1500,7 +1827,10 @@ function renderModelChart(byModel) {
             ci.update();
           },
         },
-        tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${fmt(ctx.raw)} tokens` } }
+        tooltip: { callbacks: { label: ctx => {
+          const total = byModel.reduce((s, m) => s + m.input + m.output, 0);
+          return ` ${ctx.label}: ${fmt(ctx.raw)} tokens (${pct(ctx.raw, total)})`;
+        } } }
       }
     }
   });
@@ -1511,8 +1841,63 @@ function renderModelChart(byModel) {
   charts.model.update();
 }
 
+const THREAD_COLORS = { active: C.blue, background: C.accent };
+const ACTIVITY_COLORS = { Active: C.blue, Agent: C.purple, Skill: C.amber, MCP: C.teal };
+const THREAD_LABELS = { active: 'Active', background: 'Background' };
+
+// Shared renderer for the two cost-by-category pies (thread type, activity
+// split) — same doughnut-with-toggleable-legend shape as renderModelChart,
+// parameterized by chart key / canvas / row shape / color lookup / display label.
+function renderCostPieChart(chartKey, canvasId, rows, colorMap, labelFor) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  if (charts[chartKey]) charts[chartKey].destroy();
+  if (!rows.length || !rows.some(r => r.cost > 0)) { charts[chartKey] = null; return; }
+  const colors = rows.map(r => colorMap[r.category] || '#7FA98C');
+  charts[chartKey] = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: rows.map(r => labelFor(r.category)),
+      datasets: [{ data: rows.map(r => r.cost), backgroundColor: colors, hoverBackgroundColor: colors, hoverOffset: 8, borderWidth: 2, borderColor: C.card, hoverBorderColor: C.card }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, resizeDelay: 150,
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { color: C.axis, boxWidth: 12, font: { size: 11 } },
+          onClick: (e, item, legend) => {
+            const ci = legend.chart;
+            ci.toggleDataVisibility(item.index);
+            const label = ci.data.labels[item.index];
+            if (!ci.getDataVisibility(item.index)) hiddenSeries[chartKey].add(label); else hiddenSeries[chartKey].delete(label);
+            ci.update();
+          },
+        },
+        tooltip: { callbacks: { label: ctx => {
+          const total = rows.reduce((s, r) => s + r.cost, 0);
+          return ` ${ctx.label}: ${fmtCost(ctx.raw)} (${pct(ctx.raw, total)}, ${rows[ctx.dataIndex].turns} turns)`;
+        } } }
+      }
+    }
+  });
+  rows.forEach((r, i) => {
+    const label = labelFor(r.category);
+    if (hiddenSeries[chartKey].has(label) && charts[chartKey].getDataVisibility(i)) charts[chartKey].toggleDataVisibility(i);
+  });
+  charts[chartKey].update();
+}
+
+function renderThreadPieChart(byThreadCost) {
+  renderCostPieChart('threadPie', 'chart-thread-pie', byThreadCost, THREAD_COLORS, c => THREAD_LABELS[c] || c);
+}
+
+function renderActivityPieChart(byActivityCost) {
+  renderCostPieChart('activityPie', 'chart-activity-pie', byActivityCost, ACTIVITY_COLORS, c => c);
+}
+
 function renderProjectChart(byProject) {
   const top = byProject.slice(0, 10);
+  const grandTotal = byProject.reduce((s, p) => s + p.input + p.output, 0);
   const ctx = document.getElementById('chart-project').getContext('2d');
   if (charts.project) charts.project.destroy();
   if (!top.length) { charts.project = null; return; }
@@ -1527,9 +1912,109 @@ function renderProjectChart(byProject) {
     },
     options: {
       indexAxis: 'y', responsive: true, maintainAspectRatio: false, resizeDelay: 150,
-      plugins: { legend: { onClick: legendToggle('project'), labels: { color: C.axis, boxWidth: 12 } } },
+      plugins: {
+        legend: { onClick: legendToggle('project'), labels: { color: C.axis, boxWidth: 12 } },
+        tooltip: { callbacks: {
+          label: ctx => ` ${ctx.dataset.label}: ${fmt(ctx.raw)} (${pct(ctx.raw, grandTotal)} of all input+output)`,
+          footer: items => {
+            const p = top[items[0].dataIndex];
+            const rowTotal = p.input + p.output;
+            return ` Project total: ${fmt(rowTotal)} (${pct(rowTotal, grandTotal)})`;
+          }
+        } }
+      },
       scales: {
         x: { ticks: { color: C.axis, callback: v => fmt(v) }, grid: { color: C.border } },
+        y: { ticks: { color: C.axis, font: { size: 11 } }, grid: { color: C.border } },
+      }
+    }
+  });
+}
+
+// Rough chars-to-tokens estimate for display only (~4 chars/token, English
+// prose average) — hook injections aren't billed, so there's no real price to
+// show; this just gives a sense of scale relative to the token charts above.
+function estTokens(chars) { return Math.round(chars / 4); }
+
+function renderHooksChart(byHook) {
+  const top = byHook.slice(0, 10);
+  const grandTotal = byHook.reduce((s, h) => s + h.chars, 0);
+  const ctx = document.getElementById('chart-hooks').getContext('2d');
+  if (charts.hooks) charts.hooks.destroy();
+  if (!top.length) { charts.hooks = null; return; }
+  charts.hooks = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: top.map(h => h.hook_name.length > 28 ? '…' + h.hook_name.slice(-26) : h.hook_name),
+      datasets: [
+        { label: 'Injected', data: top.map(h => h.chars), backgroundColor: TOKEN_COLORS.output, hoverBackgroundColor: TOKEN_HOVER.output },
+      ]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false, resizeDelay: 150,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => {
+          const h = top[ctx.dataIndex];
+          return ` ${fmt(h.chars)} chars (${pct(h.chars, grandTotal)}, ~${fmt(estTokens(h.chars))} tokens) across ${h.events} event${h.events === 1 ? '' : 's'}`;
+        } } }
+      },
+      scales: {
+        x: { ticks: { color: C.axis, callback: v => fmt(v) }, grid: { color: C.border }, title: { display: true, text: 'Characters injected', color: C.axis, font: { size: 11 } } },
+        y: { ticks: { color: C.axis, font: { size: 11 } }, grid: { color: C.border } },
+      }
+    }
+  });
+}
+
+// Reduce a hook's raw command string to the part that actually identifies its
+// plugin/skill — the filename of the script it runs, e.g.:
+//   "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd" session-start  ->  run-hook.cmd
+//   bash "${CLAUDE_PLUGIN_ROOT}/scripts/announce-ars-loaded.sh"  ->  announce-ars-loaded.sh
+// A quoted segment (if any) is preferred over the first token — commands run
+// through an interpreter (`bash "<script>"`) would otherwise collapse to just
+// "bash", losing the one part that actually varies between plugins.
+// `${CLAUDE_PLUGIN_ROOT}/` is a literal, unexpanded placeholder shared by every
+// plugin hook, so it's stripped rather than shown as if it were a real path.
+function hookSourceLabel(command) {
+  if (!command) return 'unknown';
+  const quoted = command.match(/"([^"]+)"/);
+  const path = (quoted ? quoted[1] : command.split(/\s+/)[0]).replace(/^\$\{CLAUDE_PLUGIN_ROOT\}\//, '');
+  const parts = path.split('/');
+  return parts[parts.length - 1] || path;
+}
+
+function renderHooksSourceChart(byHookSource) {
+  const top = byHookSource.slice(0, 10);
+  const grandTotal = byHookSource.reduce((s, h) => s + h.chars, 0);
+  const ctx = document.getElementById('chart-hooks-source').getContext('2d');
+  if (charts.hooksSource) charts.hooksSource.destroy();
+  if (!top.length) { charts.hooksSource = null; return; }
+  charts.hooksSource = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: top.map(h => hookSourceLabel(h.command)),
+      datasets: [
+        { label: 'Injected', data: top.map(h => h.chars), backgroundColor: MODEL_COLORS, hoverBackgroundColor: MODEL_COLORS },
+      ]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false, resizeDelay: 150,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: {
+          title: items => hookSourceLabel(top[items[0].dataIndex].command),
+          label: ctx => {
+            const h = top[ctx.dataIndex];
+            return [
+              ` ${fmt(h.chars)} chars (${pct(h.chars, grandTotal)}, ~${fmt(estTokens(h.chars))} tokens) across ${h.events} event${h.events === 1 ? '' : 's'}`,
+              ` ${h.command}`,
+            ];
+          }
+        } }
+      },
+      scales: {
+        x: { ticks: { color: C.axis, callback: v => fmt(v) }, grid: { color: C.border }, title: { display: true, text: 'Characters injected', color: C.axis, font: { size: 11 } } },
         y: { ticks: { color: C.axis, font: { size: 11 } }, grid: { color: C.border } },
       }
     }
@@ -1553,14 +2038,23 @@ function renderSubagentChart(byType) {
     },
     options: {
       indexAxis: 'y', responsive: true, maintainAspectRatio: false, resizeDelay: 150,
+      // 'index' + intersect:false: hovering anywhere on a category's row shows
+      // all 4 stacked series together, not just the one segment under the
+      // cursor — the footer's "Total" (and % of grand total) needs every
+      // series present in `items` to sum correctly.
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { onClick: legendToggle('subagent'), labels: { color: C.axis, boxWidth: 12 } },
         tooltip: { callbacks: {
-          label: ctx => ` ${ctx.dataset.label}: ${fmt(ctx.raw)}`,
+          label: ctx => {
+            const seriesTotal = byType.reduce((s, t) => s + t[ctx.dataset.label.toLowerCase().replace(' ', '_')], 0);
+            return ` ${ctx.dataset.label}: ${fmt(ctx.raw)} (${pct(ctx.raw, seriesTotal)})`;
+          },
           footer: items => {
             const total = items.reduce((s, it) => s + it.raw, 0);
+            const grandTotal = byType.reduce((s, t) => s + t.input + t.output + t.cache_read + t.cache_creation, 0);
             const row = byType[items[0].dataIndex];
-            return ` Total: ${fmt(total)} · ${row.turns} turns`;
+            return ` Total: ${fmt(total)} (${pct(total, grandTotal)}) · ${row.turns} turns`;
           }
         } }
       },
@@ -1575,11 +2069,12 @@ function renderSubagentChart(byType) {
 function renderTopDispatches(rows) {
   const body = document.getElementById('dispatches-body');
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="11" class="muted" style="text-align:center;padding:24px">No subagent dispatches in selected range.</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="muted" style="text-align:center;padding:24px">No subagent dispatches in selected range.</td></tr>';
     renderTableToggle('dispatches-foot', 0, dispatchesLimit, 'lessDispatchRows', 'moreDispatchRows', 'exportDispatchesCSV');
     return;
   }
   const shown = rows.slice(0, shownCount(dispatchesLimit, rows.length));
+  const grandTotal = rows.reduce((s, d) => s + calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation), 0);
   body.innerHTML = shown.map(d => {
     const tokensTotal = d.input + d.output + d.cache_read + d.cache_creation;
     const cost = calcCost(d.model, d.input, d.output, d.cache_read, d.cache_creation);
@@ -1600,9 +2095,43 @@ function renderTopDispatches(rows) {
       <td class="num">${fmt(d.cache_read)}</td>
       <td class="num"><strong>${fmt(tokensTotal)}</strong></td>
       ${costCell}
+      <td class="num">${pct(cost, grandTotal)}</td>
     </tr>`;
   }).join('');
   renderTableToggle('dispatches-foot', rows.length, dispatchesLimit, 'lessDispatchRows', 'moreDispatchRows', 'exportDispatchesCSV');
+}
+
+function renderBreakdownTable(rows) {
+  document.getElementById('breakdown-th-category').textContent = BREAKDOWN_DIM_LABELS[breakdownDim];
+  document.getElementById('breakdown-th-group').textContent = BREAKDOWN_GROUP_LABELS[breakdownGroup];
+
+  const body = document.getElementById('breakdown-body');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">No usage recorded for this breakdown in the selected range.</td></tr>';
+    renderTableToggle('breakdown-foot', 0, breakdownLimit, 'lessBreakdownRows', 'moreBreakdownRows', 'exportBreakdownCSV');
+    return;
+  }
+  const shown = rows.slice(0, shownCount(breakdownLimit, rows.length));
+  const grandTotal = rows.reduce((s, r) => s + r.cost, 0);
+  body.innerHTML = shown.map(r => {
+    const bucketCell = breakdownGroup === 'model'
+      ? `<span class="model-tag">${esc(r.bucket)}</span>`
+      : esc(r.bucket);
+    const billable = r.model ? isBillable(r.model) : r.cost > 0;
+    const costCell = billable
+      ? `<td class="cost">${fmtCost(r.cost)}</td>`
+      : `<td class="cost-na">n/a</td>`;
+    return `<tr>
+      <td>${esc(r.category)}</td>
+      <td>${bucketCell}</td>
+      <td class="num">${r.turns}</td>
+      <td class="num">${fmt(r.input)}</td>
+      <td class="num">${fmt(r.output)}</td>
+      ${costCell}
+      <td class="num">${pct(r.cost, grandTotal)}</td>
+    </tr>`;
+  }).join('');
+  renderTableToggle('breakdown-foot', rows.length, breakdownLimit, 'lessBreakdownRows', 'moreBreakdownRows', 'exportBreakdownCSV');
 }
 
 // Fills a table card's footer with the row-reveal control. Three states:
@@ -1649,9 +2178,12 @@ function moreBranchRows()  { branchLimit   = nextTableLimit(branchLimit,   lastB
 function lessBranchRows()  { branchLimit   = TABLE_STEPS[0]; renderProjectBranchCostTable(lastByProjectBranch); scrollTableToTop('project-branch-cost-body'); }
 function moreDispatchRows(){ dispatchesLimit = nextTableLimit(dispatchesLimit, lastFilteredDispatches.length); renderTopDispatches(lastFilteredDispatches); }
 function lessDispatchRows(){ dispatchesLimit = TABLE_STEPS[0]; renderTopDispatches(lastFilteredDispatches);            scrollTableToTop('dispatches-body'); }
+function moreBreakdownRows(){ breakdownLimit = nextTableLimit(breakdownLimit, lastBreakdownRows.length); renderBreakdownTable(lastBreakdownRows); }
+function lessBreakdownRows(){ breakdownLimit = TABLE_STEPS[0]; renderBreakdownTable(lastBreakdownRows);  scrollTableToTop('breakdown-body'); }
 
 function renderSessionsTable(sessions) {
   const shown = sessions.slice(0, shownCount(sessionsLimit, sessions.length));
+  const grandTotal = sessions.reduce((s, sess) => s + calcCost(sess.model, sess.input, sess.output, sess.cache_read, sess.cache_creation), 0);
   document.getElementById('sessions-body').innerHTML = shown.map(s => {
     const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
     const costCell = isBillable(s.model)
@@ -1671,6 +2203,7 @@ function renderSessionsTable(sessions) {
       <td class="num">${fmt(s.input)}</td>
       <td class="num">${fmt(s.output)}</td>
       ${costCell}
+      <td class="num">${pct(cost, grandTotal)}</td>
     </tr>`;
   }).join('');
   renderTableToggle('sessions-foot', sessions.length, sessionsLimit, 'lessSessionRows', 'moreSessionRows', 'exportSessionsCSV');
@@ -1712,6 +2245,7 @@ function sortModels(byModel) {
 function renderModelCostTable(byModel) {
   const sorted = sortModels(byModel);
   const shown = sorted.slice(0, shownCount(modelLimit, sorted.length));
+  const grandTotal = sorted.reduce((s, m) => s + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0);
   document.getElementById('model-cost-body').innerHTML = shown.map(m => {
     const cost = calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation);
     const costCell = isBillable(m.model)
@@ -1725,6 +2259,7 @@ function renderModelCostTable(byModel) {
       <td class="num">${fmt(m.cache_read)}</td>
       <td class="num">${fmt(m.cache_creation)}</td>
       ${costCell}
+      <td class="num">${pct(cost, grandTotal)}</td>
     </tr>`;
   }).join('');
   renderTableToggle('model-cost-foot', sorted.length, modelLimit, 'lessModelRows', 'moreModelRows', 'exportModelCSV');
@@ -1761,6 +2296,7 @@ function sortProjects(byProject) {
 function renderProjectCostTable(byProject) {
   const sorted = sortProjects(byProject);
   const shown = sorted.slice(0, shownCount(projectLimit, sorted.length));
+  const grandTotal = sorted.reduce((s, p) => s + p.cost, 0);
   document.getElementById('project-cost-body').innerHTML = shown.map(p => {
     return `<tr>
       <td>${esc(p.project)}</td>
@@ -1769,6 +2305,7 @@ function renderProjectCostTable(byProject) {
       <td class="num">${fmt(p.input)}</td>
       <td class="num">${fmt(p.output)}</td>
       <td class="cost">${fmtCost(p.cost)}</td>
+      <td class="num">${pct(p.cost, grandTotal)}</td>
     </tr>`;
   }).join('');
   renderTableToggle('project-cost-foot', sorted.length, projectLimit, 'lessProjectRows', 'moreProjectRows', 'exportProjectsCSV');
@@ -1811,6 +2348,7 @@ function sortProjectBranch(rows) {
 function renderProjectBranchCostTable(rows) {
   const sorted = sortProjectBranch(rows);
   const shown = sorted.slice(0, shownCount(branchLimit, sorted.length));
+  const grandTotal = sorted.reduce((s, pb) => s + pb.cost, 0);
   document.getElementById('project-branch-cost-body').innerHTML = shown.map(pb => {
     return `<tr>
       <td>${esc(pb.project)}</td>
@@ -1820,6 +2358,7 @@ function renderProjectBranchCostTable(rows) {
       <td class="num">${fmt(pb.input)}</td>
       <td class="num">${fmt(pb.output)}</td>
       <td class="cost">${fmtCost(pb.cost)}</td>
+      <td class="num">${pct(pb.cost, grandTotal)}</td>
     </tr>`;
   }).join('');
   renderTableToggle('project-branch-cost-foot', sorted.length, branchLimit, 'lessBranchRows', 'moreBranchRows', 'exportProjectBranchCSV');
@@ -1885,6 +2424,12 @@ function exportProjectBranchCSV() {
     return [pb.project, pb.branch, pb.sessions, pb.turns, pb.input, pb.output, pb.cache_read, pb.cache_creation, pb.cost.toFixed(4)];
   });
   downloadCSV('projects_by_branch', header, rows);
+}
+
+function exportBreakdownCSV() {
+  const header = [BREAKDOWN_DIM_LABELS[breakdownDim], BREAKDOWN_GROUP_LABELS[breakdownGroup], 'Turns', 'Input', 'Output', 'Est. Cost'];
+  const rows = lastBreakdownRows.map(r => [r.category, r.bucket, r.turns, r.input, r.output, r.cost.toFixed(4)]);
+  downloadCSV('breakdown_by_' + breakdownDim + '_' + breakdownGroup, header, rows);
 }
 
 function exportDispatchesCSV() {
