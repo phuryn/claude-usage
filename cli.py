@@ -394,6 +394,112 @@ def cmd_stats():
     conn.close()
 
 
+BREAKDOWN_DIMENSIONS = {
+    "agent":  ("attribution_agent", "Agent",       "attribution_agent IS NOT NULL AND attribution_agent != ''"),
+    "skill":  ("attribution_skill", "Skill",       "attribution_skill IS NOT NULL AND attribution_skill != ''"),
+    "mcp":    ("mcp_server",        "MCP Server",  "mcp_server IS NOT NULL AND mcp_server != ''"),
+    "thread": ("thread_type",       "Thread Type", "1=1"),
+}
+
+BREAKDOWN_GROUPS = {
+    "model": "COALESCE(NULLIF(model, ''), 'unknown')",
+    "day":   "substr(timestamp, 1, 10)",
+    "month": "substr(timestamp, 1, 7)",
+}
+
+
+def cmd_breakdown(by="agent", group="model", days=None, limit=15):
+    if by not in BREAKDOWN_DIMENSIONS:
+        print(f"Unknown --by '{by}'. Choose from: {', '.join(BREAKDOWN_DIMENSIONS)}")
+        sys.exit(1)
+    if group not in BREAKDOWN_GROUPS:
+        print(f"Unknown --group '{group}'. Choose from: {', '.join(BREAKDOWN_GROUPS)}")
+        sys.exit(1)
+
+    col, label, presence_filter = BREAKDOWN_DIMENSIONS[by]
+    group_expr = BREAKDOWN_GROUPS[group]
+    cat_expr = f"COALESCE(NULLIF({col}, ''), 'none')" if by != "thread" else "COALESCE(thread_type, 'active')"
+
+    conn = require_db()
+
+    where_parts = [presence_filter]
+    params = []
+    if days is not None:
+        where_parts.append("timestamp >= datetime('now', ?)")
+        params.append(f"-{days} days")
+    where_sql = " AND ".join(where_parts)
+
+    rows = conn.execute(f"""
+        SELECT
+            {cat_expr}                 as category,
+            {group_expr}                as bucket,
+            COALESCE(NULLIF(model, ''), 'unknown') as model,
+            SUM(input_tokens)           as inp,
+            SUM(output_tokens)          as out,
+            SUM(cache_read_tokens)      as cr,
+            SUM(cache_creation_tokens)  as cc,
+            COUNT(*)                    as turns
+        FROM turns
+        WHERE {where_sql}
+        GROUP BY category, bucket, model
+    """, params).fetchall()
+    conn.close()
+
+    period_label = f"last {days} day(s)" if days is not None else "all time"
+    print()
+    hr()
+    print(f"  Breakdown by {label}, grouped by {group}  ({period_label})")
+    hr()
+
+    if not rows:
+        print(f"  No usage recorded for this breakdown.")
+        print()
+        return
+
+    # category -> totals, and category -> bucket -> totals
+    cat_totals = {}
+    cat_buckets = {}
+    for r in rows:
+        cost = calc_cost(r["model"], r["inp"] or 0, r["out"] or 0, r["cr"] or 0, r["cc"] or 0)
+        tokens = (r["inp"] or 0) + (r["out"] or 0)
+
+        ct = cat_totals.setdefault(r["category"], {"turns": 0, "inp": 0, "out": 0, "cost": 0.0})
+        ct["turns"] += r["turns"]
+        ct["inp"]   += r["inp"] or 0
+        ct["out"]   += r["out"] or 0
+        ct["cost"]  += cost
+
+        bt = cat_buckets.setdefault(r["category"], {}).setdefault(
+            r["bucket"], {"turns": 0, "inp": 0, "out": 0, "cost": 0.0}
+        )
+        bt["turns"] += r["turns"]
+        bt["inp"]   += r["inp"] or 0
+        bt["out"]   += r["out"] or 0
+        bt["cost"]  += cost
+
+    top_categories = sorted(
+        cat_totals.items(), key=lambda kv: kv[1]["inp"] + kv[1]["out"], reverse=True
+    )[:limit]
+
+    grand_turns = grand_inp = grand_out = 0
+    grand_cost = 0.0
+
+    for category, ct in top_categories:
+        grand_turns += ct["turns"]
+        grand_inp   += ct["inp"]
+        grand_out   += ct["out"]
+        grand_cost  += ct["cost"]
+        print(f"  {category:<30}  turns={ct['turns']:<5}  in={fmt(ct['inp']):<8}  out={fmt(ct['out']):<8}  cost={fmt_cost(ct['cost'])}")
+        for bucket in sorted(cat_buckets[category]):
+            bt = cat_buckets[category][bucket]
+            print(f"    {bucket:<28}  turns={bt['turns']:<5}  in={fmt(bt['inp']):<8}  out={fmt(bt['out']):<8}  cost={fmt_cost(bt['cost'])}")
+
+    hr()
+    print(f"  {'TOTAL (shown)':<30}  turns={grand_turns:<5}  in={fmt(grand_inp):<8}  out={fmt(grand_out):<8}  cost={fmt_cost(grand_cost)}")
+    hr()
+    print()
+
+
 def cmd_dashboard(projects_dir=None, host=None, port=None, no_browser=False, surface=None):
     import threading
     import time
@@ -446,6 +552,9 @@ Usage:
   python cli.py today                        Show today's usage summary
   python cli.py week                         Show last 7 days (per-day + by-model)
   python cli.py stats                        Show all-time statistics
+  python cli.py breakdown [--by agent|skill|mcp|thread] [--group model|day|month] [--days N] [--limit N]
+                                                 Show usage broken down by agent/skill/mcp/thread-type,
+                                                 crossed with model, day, or month (default: --by agent --group model)
   python cli.py dashboard [--projects-dir PATH] [--host HOST] [--port PORT] [--no-browser] [--surface SURFACE]
                                                  Scan + start dashboard (opens a browser unless --no-browser)
   python cli.py --version                    Print the version and exit
@@ -456,6 +565,7 @@ COMMANDS = {
     "today": cmd_today,
     "week": cmd_week,
     "stats": cmd_stats,
+    "breakdown": cmd_breakdown,
     "dashboard": cmd_dashboard,
 }
 
@@ -490,6 +600,15 @@ def main():
         )
     elif command == "scan" and projects_dir:
         cmd_scan(projects_dir=projects_dir)
+    elif command == "breakdown":
+        days_arg = parse_named_arg(rest, "--days")
+        limit_arg = parse_named_arg(rest, "--limit")
+        cmd_breakdown(
+            by=parse_named_arg(rest, "--by") or "agent",
+            group=parse_named_arg(rest, "--group") or "model",
+            days=int(days_arg) if days_arg else None,
+            limit=int(limit_arg) if limit_arg else 15,
+        )
     else:
         COMMANDS[command]()
 

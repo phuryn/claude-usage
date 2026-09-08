@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.6.0 — TBD
+
+### Scanner / CLI
+
+- Added attribution capture for **agent, skill, MCP server, and thread type** (active vs. background) on every turn — sourced from `attributionAgent`, `attributionSkill`, `attributionMcpServer`/`attributionMcpTool`, and `origin.kind` in the JSONL records. New `turns` columns: `attribution_agent`, `attribution_skill`, `attribution_plugin`, `mcp_server`, `mcp_tool`, `thread_type`.
+- Added `python cli.py breakdown [--by agent|skill|mcp|thread] [--group model|day|month] [--days N] [--limit N]` — usage broken down by category, crossed with model, day, or month.
+- Fixed **project names fragmenting across git worktrees**: `project_name_from_cwd` now resolves each cwd's actual git repo (walking `.git` worktree pointer files up to the main repo's `commondir`), so every worktree of a repo reports the same project instead of one bogus "project" per worktree directory. Branch is unaffected (each worktree already reported its own via the JSONL's `gitBranch`) and gains a filesystem fallback (reading the worktree's own `HEAD`) for the rare case that field is missing. Falls back to the old path heuristic for non-git or no-longer-accessible directories. A one-time backfill recomputes `project_name` for existing sessions on the next scan.
+- Added **hook injection tracking**: a new `hook_events` table captures how much context (characters) each hook injects, parsed from `type: "attachment"` / `hook_success` records' `stdout` (the `hookSpecificOutput.additionalContext` a hook returns per Claude Code's hook-output protocol) — this is how skills/plugins piggyback a SessionStart hook to load their instructions. Labeled by `hook_name` (event:matcher, e.g. `SessionStart:startup`) and `hook_event`; hooks with no `additionalContext` (most PreToolUse/PostToolUse pass/fail gates) aren't recorded, since there's nothing measurable to attribute. A one-time backfill picks this up from already-scanned transcripts too.
+
+### Dashboard
+
+- Added a **Usage Breakdown** table card with dimension (Agent / Skill / MCP Server / Thread Type) and grouping (Model / Day / Month) selectors, respecting the existing date-range and model filters, with CSV export.
+- Added **Active Cost**, **Background Cost**, **Token Cost** (input + output), and **Cache Cost** (cache read + cache creation) stat cards (with % of total) to the top overview row — Token Cost + Cache Cost always sum to Est. Cost, same as Active + Background.
+- Added two doughnut charts: **Cost by Thread Type** (Active vs. Background) and **Cost by Activity** (Active / Agent / Skill / MCP — each turn counted exactly once, in that priority order, so the slices sum to the true total instead of double-counting turns that match more than one dimension). Both sit below Subagent Tokens by Type.
+- Added a **Context Injected by Hooks** bar chart (characters injected per hook, top 10, date-range filtered), plus a drilldown **Context Injected — by Plugin / Hook Script** chart grouped by the hook's actual command instead of its event:matcher name — several plugins can share a hook_name like `SessionStart:startup`, so this is what actually separates one plugin's injection from another's. There's no true agent/skill/mcp field on hook records; the script path (e.g. `run-hook.cmd`, `announce-ars-loaded.sh`) is the closest identity Claude Code's transcripts carry, and MCP servers don't hook SessionStart so they never appear here.
+- Every chart tooltip now shows a percentage alongside its value (e.g. "Input: 3.9K (56%)"), computed against that chart's true total — not just the top-N slice shown. Fixed a related bug in the Subagent Tokens chart: its stacked bars were missing `interaction: {mode: 'index'}`, so hovering only ever saw the one segment under the cursor, making its "Total" footer (and the new %) silently wrong; hovering a row now shows all four series together.
+- Added a **% of Total** column (of cost) to Cost by Model, Cost by Project, Cost by Project & Branch, Recent Sessions, Top Subagent Dispatches, and Usage Breakdown — computed against the full filtered set, not just the rows currently shown.
+
 ## v1.5.5 — 2026-07-10
 
 ### Dashboard

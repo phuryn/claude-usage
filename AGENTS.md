@@ -21,6 +21,7 @@ python cli.py scan                  # incremental scan (fast on re-run)
 python cli.py today                 # today's usage by model
 python cli.py week                  # last 7 days, per-day + by-model
 python cli.py stats                 # all-time stats
+python cli.py breakdown --by agent  # usage by agent/skill/mcp/thread x model/day/month
 python cli.py dashboard                          # scan + open http://localhost:8080
 python cli.py dashboard --host 0.0.0.0 --port 9000
 python cli.py scan --projects-dir PATH           # scan a custom transcripts dir
@@ -60,13 +61,15 @@ A conditional unique index on `turns.message_id` (where non-empty) lets `INSERT 
 
 ### Non-obvious invariants
 
-These three things will bite you if you don't know them:
+These four things will bite you if you don't know them:
 
 1. **Streaming dedupe by `message.id`.** Claude Code writes multiple JSONL records per API response — only the *last* one for a given `message.id` has the final usage tallies. `parse_jsonl_file` keeps the last record per `message_id` in a dict; earlier records are discarded. Don't sum across records of the same `message_id`.
 
 2. **Session totals are recomputed from `turns` at the end of `scan()`.** During an incremental scan `upsert_sessions` adds tokens additively, but `insert_turns` uses `INSERT OR IGNORE` against the `message_id` unique index — so if a turn is a duplicate, session totals would drift. The final `UPDATE sessions ... (SELECT SUM ... FROM turns)` block reconciles this. Preserve it if you refactor scan logic.
 
 3. **Session primary model priority is opus > sonnet > haiku** (`_model_priority` in [scanner.py](scanner.py)). This prevents a subagent's haiku turn from overwriting the session's opus model when an existing session is updated. Per-turn model is always honored in the `turns` table; only the session-level summary uses the priority.
+
+4. **`project_name_from_cwd` prefers the actual git repo over the path.** It walks up from `cwd` to the nearest `.git`, resolving worktree pointer files (`gitdir: <path>`) through their `commondir` to the *main* checkout's directory — so every worktree of a repo collapses into one project instead of one bogus project per worktree path. Results are `lru_cache`d per cwd string (`_resolve_git` in [scanner.py](scanner.py)), so it only touches the filesystem once per distinct cwd in a scan. It falls back to the old last-two-path-components heuristic when `cwd` isn't (or is no longer) an accessible git working tree — this is also what keeps the plain-path unit tests passing, since they use fictional paths that don't exist on disk. A session's `git_branch` still comes from the JSONL's own `gitBranch` field first (Claude Code already reports it per-worktree correctly); `_resolve_git` only supplies it as a fallback when that field is missing, reading it from the *worktree's own* `HEAD` (not the common one) so it stays worktree-correct. A DB scanned before this existed gets its sessions' `project_name` recomputed once via `_backfill_project_names`, gated by the `project_git_backfill_done` schema_meta marker — mirrors the topic-backfill pattern just above it.
 
 ### Cost calculation
 
