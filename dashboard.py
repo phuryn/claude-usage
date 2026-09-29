@@ -735,8 +735,18 @@ function tzDisplayName(tzMode) {
 const PRICING = {
   // Fable / Mythos — Anthropic's most capable class, priced at 2x Opus.
   // (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
+  // Fable 5.1 (2026-09): cache read 0.025x — NOT derivable from input; 1h cache write $20.00.
+  'claude-fable-5-1':  { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 0.25 },
   'claude-fable-5':    { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
   'claude-mythos-5':   { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
+  // Opus 5 launched 2026-07-24 at Opus 4.8's price point. Sonnet 5: the
+  // planned $3/$15 step-up (2026-09-01) was cancelled on 2026-08-10; $2/$10
+  // is the permanent standard rate.
+  // Opus 5.5 (2026-09): cache read 0.05x — NOT derivable from input; 1h cache write $8.00.
+  'claude-opus-5-5':   { input:  4.00, output: 20.00, cache_write:  5.00, cache_read: 0.20 },
+  'claude-opus-5':     { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
+  'claude-opus-5-thinking': { input: 5.00, output: 25.00, cache_write: 6.25, cache_read: 0.50 },
+  'claude-sonnet-5':   { input:  2.00, output: 10.00, cache_write:  2.50, cache_read: 0.20 },
   'claude-opus-4-8':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-7':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
