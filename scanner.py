@@ -389,6 +389,11 @@ def parse_jsonl_file(filepath):
                     }
                 else:
                     meta = session_meta[session_id]
+                    # A session first seen via a title record (custom-title /
+                    # ai-title carry no cwd) was created as "unknown"; adopt the
+                    # project from the first record that does carry a cwd.
+                    if cwd and meta["project_name"] == "unknown":
+                        meta["project_name"] = project_name_from_cwd(cwd)
                     if timestamp and (not meta["first_timestamp"] or timestamp < meta["first_timestamp"]):
                         meta["first_timestamp"] = timestamp
                     if timestamp and (not meta["last_timestamp"] or timestamp > meta["last_timestamp"]):
@@ -536,8 +541,11 @@ def upsert_sessions(conn, sessions):
             existing_topic = existing_row["topic"]
             topic_to_set = new_topic if new_topic else existing_topic
 
+            # A row created from a title-only prefix may carry project "unknown";
+            # a later chunk that saw a cwd gets to fill it in (never the reverse).
             conn.execute("""
                 UPDATE sessions SET
+                    project_name = COALESCE(NULLIF(project_name, 'unknown'), ?),
                     last_timestamp = MAX(last_timestamp, ?),
                     total_input_tokens = total_input_tokens + ?,
                     total_output_tokens = total_output_tokens + ?,
@@ -548,6 +556,7 @@ def upsert_sessions(conn, sessions):
                     topic = ?
                 WHERE session_id = ?
             """, (
+                s["project_name"],
                 s["last_timestamp"],
                 s["total_input_tokens"], s["total_output_tokens"],
                 s["total_cache_read"], s["total_cache_creation"],
@@ -717,6 +726,8 @@ def scan(projects_dir=None, projects_dirs=None, db_path=DB_PATH, verbose=True):
                             }
                         else:
                             meta = new_session_metas[session_id]
+                            if cwd and meta["project_name"] == "unknown":
+                                meta["project_name"] = project_name_from_cwd(cwd)
                             if timestamp and (not meta["last_timestamp"] or timestamp > meta["last_timestamp"]):
                                 meta["last_timestamp"] = timestamp
                             if timestamp and (not meta["first_timestamp"] or timestamp < meta["first_timestamp"]):

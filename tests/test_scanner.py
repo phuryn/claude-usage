@@ -763,6 +763,76 @@ class TestSessionTopic(unittest.TestCase):
         self.assertIsNone(metas[0]["topic"])
 
 
+class TestProjectNameFromTitleFirstSession(unittest.TestCase):
+    """A session renamed with /rename starts its JSONL with a custom-title
+    record that carries no cwd. The project must still come from the first
+    record that has one, not stay "unknown" forever."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def _write_jsonl(self, lines):
+        path = os.path.join(self.tmpdir, "t.jsonl")
+        with open(path, "w") as f:
+            for line in lines:
+                f.write(line + "\n")
+        return path
+
+    def test_title_record_first_then_cwd_from_user_record(self):
+        path = self._write_jsonl([
+            _make_custom_title_record(title="Netomat-internal-net"),
+            _make_user_record(cwd="/home/user/netomat/homenet"),
+            _make_assistant_record(cwd="/home/user/netomat/homenet"),
+        ])
+        metas, _, _, _ = parse_jsonl_file(path)
+        self.assertEqual(metas[0]["project_name"], "netomat/homenet")
+        self.assertEqual(metas[0]["topic"], "Netomat-internal-net")
+
+    def test_ai_title_first_then_cwd_from_assistant_record(self):
+        path = self._write_jsonl([
+            _make_ai_title_record(title="guess"),
+            _make_assistant_record(cwd="/home/user/clients/bbip"),
+        ])
+        metas, _, _, _ = parse_jsonl_file(path)
+        self.assertEqual(metas[0]["project_name"], "clients/bbip")
+
+    def test_first_cwd_wins_over_later_different_cwd(self):
+        path = self._write_jsonl([
+            _make_custom_title_record(title="t"),
+            _make_user_record(cwd="/home/user/first/proj"),
+            _make_assistant_record(cwd="/home/user/other/dir"),
+        ])
+        metas, _, _, _ = parse_jsonl_file(path)
+        self.assertEqual(metas[0]["project_name"], "first/proj")
+
+    def test_scan_backfills_unknown_row_on_incremental_rescan(self):
+        # First scan sees only the title record + a cwd-less user record, so the
+        # row is stored as "unknown". The next chunk carries a cwd; the UPDATE
+        # path must fill the project in instead of keeping "unknown".
+        import time
+        projects_dir = Path(self.tmpdir) / "projects" / "user" / "proj"
+        projects_dir.mkdir(parents=True)
+        db_path = Path(self.tmpdir) / "usage.db"
+        filepath = projects_dir / "sess-1.jsonl"
+        with open(filepath, "w") as f:
+            f.write(_make_custom_title_record(title="t") + "\n")
+            f.write(_make_assistant_record(cwd="", timestamp="2026-04-08T09:00:00Z") + "\n")
+        scan(projects_dir=projects_dir.parent.parent, db_path=db_path, verbose=False)
+        conn = sqlite3.connect(db_path)
+        self.assertEqual(conn.execute("SELECT project_name FROM sessions").fetchone()[0], "unknown")
+        conn.close()
+
+        time.sleep(0.05)
+        with open(filepath, "a") as f:
+            f.write(_make_assistant_record(cwd="/home/user/real/proj",
+                                           timestamp="2026-04-08T09:01:00Z",
+                                           message_id="msg-2") + "\n")
+        scan(projects_dir=projects_dir.parent.parent, db_path=db_path, verbose=False)
+        conn = sqlite3.connect(db_path)
+        self.assertEqual(conn.execute("SELECT project_name FROM sessions").fetchone()[0], "real/proj")
+        conn.close()
+
+
 class TestSessionTopicScan(unittest.TestCase):
     """Topic persistence through scan(): DB write, incremental capture, and the
     no-phantom-row guard (#147)."""
