@@ -737,6 +737,13 @@ const PRICING = {
   // (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
   'claude-fable-5':    { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
   'claude-mythos-5':   { input: 10.00, output: 50.00, cache_write: 12.50, cache_read: 1.00 },
+  // Claude 5.5 generation (claude.com/pricing#api, checked 2026-10-22). Without
+  // explicit entries these resolve through the substring fallback to 4.x prices.
+  'claude-opus-5-5':   { input:  4.00, output: 20.00, cache_write:  5.00, cache_read: 0.20 },
+  'claude-sonnet-5-5': { input:  2.00, output: 10.00, cache_write:  2.50, cache_read: 0.10 },
+  // Haiku 5.5: prompts <= 100K tokens rate. Prompts above 100K cost 5x; that
+  // needs per-turn prompt size and is not modelled (long prompts underestimated).
+  'claude-haiku-5-5':  { input:  0.10, output:  0.50, cache_write:  0.125, cache_read: 0.01 },
   'claude-opus-4-8':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-7':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },
   'claude-opus-4-6':   { input:  5.00, output: 25.00, cache_write:  6.25, cache_read: 0.50 },

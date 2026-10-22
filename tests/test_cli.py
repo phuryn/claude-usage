@@ -56,6 +56,23 @@ class TestGetPricing(unittest.TestCase):
         self.assertEqual(p["input"], 5.00)
         self.assertEqual(p["output"], 25.00)
 
+    def test_claude_5_5_models_have_explicit_entries(self):
+        """The 5.5 generation must not fall back to 4.x family prices: Opus 5.5
+        read through the 'opus' fallback was priced at Opus 4.8's $0.50 cache
+        read instead of $0.20, which overstated typical Claude Code spend ~80%."""
+        expected = {
+            "claude-opus-5-5":   (4.00, 20.00, 0.20, 5.00),
+            "claude-sonnet-5-5": (2.00, 10.00, 0.10, 2.50),
+            "claude-haiku-5-5":  (0.10,  0.50, 0.01, 0.125),
+        }
+        for model, (inp, out, read, write) in expected.items():
+            for name in (model, model + "-20260901"):
+                with self.subTest(name=name):
+                    p = get_pricing(name)
+                    self.assertEqual(
+                        (p["input"], p["output"], p["cache_read"], p["cache_write"]),
+                        (inp, out, read, write))
+
     def test_opus_4_7_has_explicit_entry(self):
         """Regression guard for issue #61 — Opus 4.7 must be present."""
         p = get_pricing("claude-opus-4-7")
