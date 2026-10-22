@@ -23,6 +23,14 @@ PRICING = {
     # (Mythos 5 shares Fable 5's pricing; Project-Glasswing access only.)
     "claude-fable-5":    {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50},
     "claude-mythos-5":   {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_write": 12.50},
+    # Claude 5.5 generation (claude.com/pricing#api, checked 2026-10-22). Without
+    # explicit entries these resolve through the substring fallback to 4.x prices.
+    "claude-opus-5-5":   {"input": 4.00, "output": 20.00, "cache_read": 0.20, "cache_write": 5.00},
+    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cache_read": 0.10, "cache_write": 2.50},
+    # Haiku 5.5 has two tiers; this is the prompts <= 100K tokens rate. Prompts
+    # above 100K cost 5x ($0.50 / $2.50 / $0.625 / $0.05), which needs per-turn
+    # prompt size and is not modelled, so long Haiku prompts are underestimated.
+    "claude-haiku-5-5":  {"input": 0.10, "output":  0.50, "cache_read": 0.01, "cache_write": 0.125},
     "claude-opus-4-8":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-7":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-6":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
