@@ -246,7 +246,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     --card: #1E1F20;    /* raised one step above the page */
     --border: #2C2D2E;
     --text: #BFBFBF;
-    --muted: #4F4F50;
+    --muted: #7C7C7E;
     --accent: #d97757;
     --blue: #48A0C7;
     --green: #74C991;
@@ -794,13 +794,13 @@ function fmtCostBig(c) { return '$' + c.toLocaleString(undefined, { minimumFract
 
 // ── Chart colors ───────────────────────────────────────────────────────────
 // Warm/neutral palette kept in sync with the CSS :root variables so charts match
-// the Claude Code interface (less blue). Chart legends/axes use C.axis (a touch
-// lighter than --muted so small labels stay legible on the dark card); grid uses
+// the Claude Code interface (less blue). Chart legends/axes use C.axis (kept
+// equal to --muted, ~4:1 on the card so small labels stay legible); grid uses
 // C.border.
 const C = {
   text:   '#BFBFBF',
-  muted:  '#4F4F50',
-  axis:   '#6F6F70',
+  muted:  '#7C7C7E',
+  axis:   '#7C7C7E',
   border: '#2C2D2E',
   card:   '#1E1F20',
   blue:   '#48A0C7',
