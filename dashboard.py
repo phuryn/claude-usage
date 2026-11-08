@@ -113,6 +113,38 @@ def get_dashboard_data(db_path=DB_PATH):
         ORDER BY last_timestamp DESC
     """).fetchall()
 
+    # Per-session, per-day, per-model token breakdown. Session rows only hold
+    # lifetime totals, so a session that spans several months would otherwise be
+    # counted in full in every range it touches. The client sums just the rows
+    # inside the selected range, and prices each model's share separately
+    # (sub-agent turns on cheaper models aren't billed at the main-model rate).
+    breakdown_rows = conn.execute("""
+        SELECT
+            session_id,
+            substr(timestamp, 1, 10)   as day,
+            COALESCE(NULLIF(model, ''), 'unknown') as model,
+            SUM(input_tokens)          as input,
+            SUM(output_tokens)         as output,
+            SUM(cache_read_tokens)     as cache_read,
+            SUM(cache_creation_tokens) as cache_creation,
+            COUNT(*)                   as turns
+        FROM turns
+        GROUP BY session_id, day, COALESCE(NULLIF(model, ''), 'unknown')
+        ORDER BY session_id, day
+    """).fetchall()
+
+    session_breakdown = {}
+    for r in breakdown_rows:
+        session_breakdown.setdefault(r["session_id"], []).append({
+            "day":            r["day"],
+            "model":          r["model"],
+            "input":          r["input"] or 0,
+            "output":         r["output"] or 0,
+            "cache_read":     r["cache_read"] or 0,
+            "cache_creation": r["cache_creation"] or 0,
+            "turns":          r["turns"] or 0,
+        })
+
     sessions_all = []
     for r in session_rows:
         try:
@@ -137,6 +169,7 @@ def get_dashboard_data(db_path=DB_PATH):
             "output":        r["total_output_tokens"] or 0,
             "cache_read":    r["total_cache_read"] or 0,
             "cache_creation": r["total_cache_creation"] or 0,
+            "by_day":        session_breakdown.get(r["session_id"], []),
         })
 
     # ── Subagent breakdown by type, by day & model ────────────────────────────
@@ -782,6 +815,55 @@ function calcCost(model, inp, out, cacheRead, cacheCreation) {
   );
 }
 
+// Restricts a session to the selected range + models by summing its per-day
+// breakdown, so a long-lived session only contributes the usage that falls
+// inside the range. Returns null when nothing in the session matches. Sessions
+// without a breakdown (payload from an older server) keep the old behaviour:
+// lifetime totals, included when the session's last activity is in range.
+function scopeSession(s, start, end) {
+  if (!s.by_day || !s.by_day.length) {
+    const inRange = (!start || s.last_date >= start) && (!end || s.last_date <= end);
+    return inRange && selectedModels.has(s.model) ? s : null;
+  }
+  const scoped = { ...s, input: 0, output: 0, cache_read: 0, cache_creation: 0, turns: 0 };
+  const byModel = {};
+  for (const r of s.by_day) {
+    if (!selectedModels.has(r.model)) continue;
+    if ((start && r.day < start) || (end && r.day > end)) continue;
+    scoped.input          += r.input;
+    scoped.output         += r.output;
+    scoped.cache_read     += r.cache_read;
+    scoped.cache_creation += r.cache_creation;
+    scoped.turns          += r.turns;
+    const m = byModel[r.model] || (byModel[r.model] = { model: r.model, input: 0, output: 0, cache_read: 0, cache_creation: 0 });
+    m.input += r.input; m.output += r.output; m.cache_read += r.cache_read; m.cache_creation += r.cache_creation;
+  }
+  if (!scoped.turns) return null;
+  scoped.by_model = Object.values(byModel);
+  return scoped;
+}
+
+// Prices a session's tokens per turn model (via its by_model breakdown)
+// instead of its single primary model, so sub-agent turns on cheaper models
+// aren't billed at the session's main-model rate. Falls back to calcCost on
+// the session totals for old DBs / an empty breakdown.
+function sessionCost(s) {
+  if (s.by_model && s.by_model.length) {
+    return s.by_model.reduce((sum, m) => sum + calcCost(m.model, m.input, m.output, m.cache_read, m.cache_creation), 0);
+  }
+  return calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+}
+
+// A session can be billable even when its primary model isn't (e.g. a
+// non-billable main model that dispatched a billable sub-agent), so this
+// checks the whole breakdown rather than just s.model.
+function sessionIsBillable(s) {
+  if (s.by_model && s.by_model.length) {
+    return s.by_model.some(m => isBillable(m.model));
+  }
+  return isBillable(s.model);
+}
+
 // ── Formatting ─────────────────────────────────────────────────────────────
 function fmt(n) {
   if (n >= 1e9) return (n/1e9).toFixed(2)+'B';
@@ -1149,8 +1231,8 @@ function sortSessions(sessions) {
   return [...sessions].sort((a, b) => {
     let av, bv;
     if (sessionSortCol === 'cost') {
-      av = calcCost(a.model, a.input, a.output, a.cache_read, a.cache_creation);
-      bv = calcCost(b.model, b.input, b.output, b.cache_read, b.cache_creation);
+      av = sessionCost(a);
+      bv = sessionCost(b);
     } else if (sessionSortCol === 'duration_min') {
       av = parseFloat(a.duration_min) || 0;
       bv = parseFloat(b.duration_min) || 0;
@@ -1201,9 +1283,9 @@ function applyFilter() {
   }
 
   // Filter sessions by model + date range
-  const filteredSessions = rawData.sessions_all.filter(s =>
-    selectedModels.has(s.model) && (!start || s.last_date >= start) && (!end || s.last_date <= end)
-  );
+  const filteredSessions = rawData.sessions_all
+    .map(s => scopeSession(s, start, end))
+    .filter(Boolean);
 
   // Add session counts into modelMap
   for (const s of filteredSessions) {
@@ -1223,7 +1305,7 @@ function applyFilter() {
     p.cache_creation += s.cache_creation;
     p.turns          += s.turns;
     p.sessions++;
-    p.cost += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    p.cost += sessionCost(s);
   }
   const byProject = Object.values(projMap).sort((a, b) => (b.input + b.output) - (a.input + a.output));
 
@@ -1239,7 +1321,7 @@ function applyFilter() {
     pb.cache_creation += s.cache_creation;
     pb.turns          += s.turns;
     pb.sessions++;
-    pb.cost += calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    pb.cost += sessionCost(s);
   }
   const byProjectBranch = Object.values(projBranchMap).sort((a, b) => b.cost - a.cost);
 
@@ -1653,8 +1735,8 @@ function lessDispatchRows(){ dispatchesLimit = TABLE_STEPS[0]; renderTopDispatch
 function renderSessionsTable(sessions) {
   const shown = sessions.slice(0, shownCount(sessionsLimit, sessions.length));
   document.getElementById('sessions-body').innerHTML = shown.map(s => {
-    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
-    const costCell = isBillable(s.model)
+    const cost = sessionCost(s);
+    const costCell = sessionIsBillable(s)
       ? `<td class="cost">${fmtCost(cost)}</td>`
       : `<td class="cost-na">n/a</td>`;
     const titleCell = s.topic
@@ -1865,7 +1947,7 @@ function exportModelCSV() {
 function exportSessionsCSV() {
   const header = ['Session', 'Project', 'Title', 'Last Active', 'Duration (min)', 'Model', 'Turns', 'Input', 'Output', 'Cache Read', 'Cache Creation', 'Est. Cost'];
   const rows = lastFilteredSessions.map(s => {
-    const cost = calcCost(s.model, s.input, s.output, s.cache_read, s.cache_creation);
+    const cost = sessionCost(s);
     return [s.session_id, s.project, s.topic, s.last, s.duration_min, s.model, s.turns, s.input, s.output, s.cache_read, s.cache_creation, cost.toFixed(4)];
   });
   downloadCSV('sessions', header, rows);

@@ -494,5 +494,134 @@ class TestPricingParity(unittest.TestCase):
             )
 
 
+class TestSessionByDayBreakdown(unittest.TestCase):
+    """Regression (#160): a session's turns can span multiple models (e.g. a
+    sub-agent dispatch on a cheaper model). sessions_all must carry a
+    per-model token breakdown so the dashboard prices each model's share
+    separately instead of billing the whole session at its primary model."""
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        conn = get_db(self.db_path)
+        init_db(conn)
+        upsert_sessions(conn, [{
+            "session_id": "sess-multi", "project_name": "user/myproject",
+            "first_timestamp": "2026-04-08T09:00:00Z",
+            "last_timestamp": "2026-04-08T10:00:00Z",
+            "git_branch": "main", "model": "claude-fable-5",
+            "total_input_tokens": 6000, "total_output_tokens": 2500,
+            "total_cache_read": 300, "total_cache_creation": 100,
+            "turn_count": 3,
+        }])
+        insert_turns(conn, [
+            {
+                "session_id": "sess-multi", "timestamp": "2026-04-08T09:00:00Z",
+                "model": "claude-fable-5", "input_tokens": 3000,
+                "output_tokens": 1500, "cache_read_tokens": 200,
+                "cache_creation_tokens": 50, "tool_name": None, "cwd": "/tmp",
+                "message_id": "msg-multi-1",
+            },
+            {
+                "session_id": "sess-multi", "timestamp": "2026-04-08T09:15:00Z",
+                "model": "claude-fable-5", "input_tokens": 2000,
+                "output_tokens": 500, "cache_read_tokens": 50,
+                "cache_creation_tokens": 20, "tool_name": None, "cwd": "/tmp",
+                "message_id": "msg-multi-2",
+            },
+            {
+                "session_id": "sess-multi", "timestamp": "2026-04-08T09:30:00Z",
+                "model": "claude-sonnet-4-6", "input_tokens": 1000,
+                "output_tokens": 500, "cache_read_tokens": 50,
+                "cache_creation_tokens": 30, "tool_name": None, "cwd": "/tmp",
+                "message_id": "msg-multi-3", "is_subagent": 1,
+            },
+        ])
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_by_model_has_both_models(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        session = data["sessions_all"][0]
+        self.assertIn("by_day", session)
+        models = {m["model"] for m in session["by_day"]}
+        self.assertEqual(models, {"claude-fable-5", "claude-sonnet-4-6"})
+
+    def test_by_model_per_model_sums(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        session = data["sessions_all"][0]
+        by_model = {m["model"]: m for m in session["by_day"]}
+        fable = by_model["claude-fable-5"]
+        self.assertEqual(fable["input"], 5000)
+        self.assertEqual(fable["output"], 2000)
+        self.assertEqual(fable["cache_read"], 250)
+        self.assertEqual(fable["cache_creation"], 70)
+        sonnet = by_model["claude-sonnet-4-6"]
+        self.assertEqual(sonnet["input"], 1000)
+        self.assertEqual(sonnet["output"], 500)
+        self.assertEqual(sonnet["cache_read"], 50)
+        self.assertEqual(sonnet["cache_creation"], 30)
+
+    def test_by_model_totals_match_session_totals(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        session = data["sessions_all"][0]
+        self.assertEqual(sum(m["input"] for m in session["by_day"]), session["input"])
+        self.assertEqual(sum(m["output"] for m in session["by_day"]), session["output"])
+        self.assertEqual(sum(m["cache_read"] for m in session["by_day"]), session["cache_read"])
+        self.assertEqual(sum(m["cache_creation"] for m in session["by_day"]), session["cache_creation"])
+
+    def test_by_day_rows_carry_day_and_turns(self):
+        data = get_dashboard_data(db_path=self.db_path)
+        rows = data["sessions_all"][0]["by_day"]
+        self.assertTrue(all(r["day"] == "2026-04-08" for r in rows))
+        self.assertEqual(sum(r["turns"] for r in rows), 3)
+
+
+class TestLongLivedSessionByDay(unittest.TestCase):
+    """A session spanning two months must expose per-day rows so the client can
+    count only the usage that falls inside the selected range."""
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmpfile.close()
+        self.db_path = Path(self.tmpfile.name)
+        conn = get_db(self.db_path)
+        init_db(conn)
+        upsert_sessions(conn, [{
+            "session_id": "sess-long", "project_name": "user/myproject",
+            "first_timestamp": "2026-07-27T06:00:00Z",
+            "last_timestamp": "2026-11-08T07:00:00Z",
+            "git_branch": "main", "model": "claude-opus-5-5",
+            "total_input_tokens": 30, "total_output_tokens": 300,
+            "total_cache_read": 0, "total_cache_creation": 0,
+            "turn_count": 3,
+        }])
+        insert_turns(conn, [
+            {"session_id": "sess-long", "timestamp": ts, "model": "claude-opus-5-5",
+             "input_tokens": 10, "output_tokens": 100, "cache_read_tokens": 0,
+             "cache_creation_tokens": 0, "tool_name": None, "cwd": "/tmp",
+             "message_id": f"msg-long-{i}"}
+            for i, ts in enumerate(
+                ["2026-07-27T06:00:00Z", "2026-10-01T06:00:00Z", "2026-11-08T07:00:00Z"])
+        ])
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.unlink(self.db_path)
+
+    def test_per_day_rows_sum_to_lifetime_but_split_by_day(self):
+        session = get_dashboard_data(db_path=self.db_path)["sessions_all"][0]
+        rows = session["by_day"]
+        self.assertEqual([r["day"] for r in rows], ["2026-07-27", "2026-10-01", "2026-11-08"])
+        self.assertEqual(sum(r["output"] for r in rows), session["output"])
+        november = [r for r in rows if r["day"].startswith("2026-11")]
+        self.assertEqual(sum(r["output"] for r in november), 100)
+
+
 if __name__ == "__main__":
     unittest.main()
